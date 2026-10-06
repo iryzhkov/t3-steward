@@ -138,8 +138,9 @@ const (
 	PackageCapabilityCommitBundle = "campaign-commit-bundle-v1"
 	// PackageCapabilityContinuationCheckpoint is the continuation.md
 	// checkpoint contract. A package that declares it tells the worker that
-	// this coordinator accepts the attempt's latest snapshot in its result,
-	// and it may carry the snapshot an earlier attempt of the task left.
+	// this coordinator accepts the attempt's snapshots as checkpoint uploads
+	// while it runs and the latest one in its result, and it may carry the
+	// snapshot an earlier attempt of the task left.
 	PackageCapabilityContinuationCheckpoint = "continuation-checkpoint-v1"
 )
 

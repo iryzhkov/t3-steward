@@ -1036,15 +1036,7 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
-	// The checkpoint is optional evidence and goes only where the upload would
-	// still be accepted with it; it never costs the result its publication.
-	if continuation != nil {
-		if err := d.resultAdmission(pkg, message, archive, continuation)(finalized.Artifacts); err != nil {
-			d.logger().Warn("the continuation checkpoint does not fit the result upload; the result goes without it",
-				"attempt", pkg.Identity.AttemptID, "error", err)
-			continuation = nil
-		}
-	}
+	continuation = d.admitContinuation(pkg, message, archive, finalized.Artifacts, continuation)
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, Continuation: continuation,
 	}); err != nil {
@@ -1064,6 +1056,22 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return fmt.Errorf("%w: %v", ErrSettleUnproven, err)
 	}
 	return nil
+}
+
+// admitContinuation returns the checkpoint a result may carry: the checkpoint
+// is optional evidence and goes only where the upload, by object and in
+// total, would still be accepted with it. It never costs a result, failed or
+// not, its publication.
+func (d *LocalDriver) admitContinuation(pkg workerproto.ExecutionPackage, message string, archive []byte, artifacts []domain.Artifact, continuation *ContinuationSnapshot) *ContinuationSnapshot {
+	if continuation == nil {
+		return nil
+	}
+	if err := d.resultAdmission(pkg, message, archive, continuation)(artifacts); err != nil {
+		d.logger().Warn("the continuation checkpoint does not fit the result upload; the result goes without it",
+			"attempt", pkg.Identity.AttemptID, "error", err)
+		return nil
+	}
+	return continuation
 }
 
 // collectedTurn retains the first terminal observation, including failed raw
@@ -1227,7 +1235,7 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	// publishes the bounded envelope alone.
 	var continuation *ContinuationSnapshot
 	if !permanentCollectionIntent(failure) {
-		continuation = d.continuationForResult(ctx, pkg, workspace, "")
+		continuation = d.admitContinuation(pkg, message, archive, nil, d.continuationForResult(ctx, pkg, workspace, ""))
 	}
 	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, Continuation: continuation,

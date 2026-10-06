@@ -88,19 +88,23 @@ type AttemptRecord struct {
 	// Continuation is the attempt's latest continuation.md checkpoint taken
 	// at a turn end or a pause: its digest, size and time, never its content,
 	// which the attempt directory keeps.
-	Continuation     *domain.ContinuationCheckpoint            `json:"continuation,omitempty"`
-	Assignment       domain.Assignment                         `json:"assignment"`
-	Package          workerproto.ExecutionPackageManifest      `json:"package"`
-	Phase            Phase                                     `json:"phase"`
-	WorkspacePath    string                                    `json:"workspacePath,omitempty"`
-	ThreadID         string                                    `json:"threadId,omitempty"`
-	Failure          string                                    `json:"failure,omitempty"`
-	CommandRequests  map[string]domain.WorkerCommand           `json:"commandRequests,omitempty"`
-	CommandResults   map[string]domain.WorkerAcknowledgement   `json:"commandResults,omitempty"`
-	ThrottleRequests map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
-	ThrottleResults  map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
-	PendingThrottle  *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
-	PrepareAttempts  int                                       `json:"prepareAttempts,omitempty"`
+	Continuation *domain.ContinuationCheckpoint `json:"continuation,omitempty"`
+	// PendingContinuation is a pause snapshot owed: it is journaled with the
+	// stop itself and cleared once the snapshot is taken, so a worker that
+	// dies, or fails to take it, in between takes it on its next reconcile.
+	PendingContinuation *PendingContinuation                      `json:"pendingContinuation,omitempty"`
+	Assignment          domain.Assignment                         `json:"assignment"`
+	Package             workerproto.ExecutionPackageManifest      `json:"package"`
+	Phase               Phase                                     `json:"phase"`
+	WorkspacePath       string                                    `json:"workspacePath,omitempty"`
+	ThreadID            string                                    `json:"threadId,omitempty"`
+	Failure             string                                    `json:"failure,omitempty"`
+	CommandRequests     map[string]domain.WorkerCommand           `json:"commandRequests,omitempty"`
+	CommandResults      map[string]domain.WorkerAcknowledgement   `json:"commandResults,omitempty"`
+	ThrottleRequests    map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
+	ThrottleResults     map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
+	PendingThrottle     *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
+	PrepareAttempts     int                                       `json:"prepareAttempts,omitempty"`
 	// FirstPrepareFailure keeps the first causal preparation failure, which a
 	// later retry would otherwise overwrite in Failure.
 	FirstPrepareFailure string    `json:"firstPrepareFailure,omitempty"`

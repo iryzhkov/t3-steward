@@ -16,10 +16,13 @@ import (
 )
 
 // The coordinator's half of the continuation.md checkpoint contract. A
-// worker's result may carry the attempt's latest snapshot of continuation.md
-// and the metadata describing it; the coordinator keeps the snapshot as a
-// checkpoint artifact dated by its capture, and hands the latest one of a
-// task to the task's next attempt as an input.
+// worker hands each new snapshot of continuation.md, with the metadata
+// describing it, to the coordinator while the attempt runs (see
+// CoordinatorCheckpointImporter.importContinuation), and its result may carry
+// the latest one again. The coordinator keeps each snapshot as a checkpoint
+// artifact dated by its capture, and hands the latest one of a task to the
+// task's next attempt as an input, whether or not the attempt that took it
+// ever published a result.
 
 // isContinuationResultObject reports whether a result object is the snapshot
 // or its metadata under the attempt's own fixed identity.
@@ -88,19 +91,21 @@ func keepContinuationCheckpoint(artifacts []domain.Artifact, payloads [][]byte, 
 
 // LatestContinuationArtifact returns the newest continuation snapshot the
 // coordinator holds for a task of a run, by capture time, leaving out the
-// named attempt's own. Ties break on the attempt ID so the answer never
-// depends on storage order.
+// named attempt's own. A snapshot counts whether it arrived while its attempt
+// ran or with its result. Ties break on the attempt ID, then the artifact ID,
+// so the answer never depends on storage order.
 func LatestContinuationArtifact(artifacts []domain.Artifact, runID, taskID, excludeAttemptID string) *domain.Artifact {
 	var latest *domain.Artifact
 	for index := range artifacts {
 		artifact := artifacts[index]
 		if artifact.Kind != domain.ArtifactCheckpoint || artifact.Name != domain.ContinuationArtifactName ||
 			artifact.WorkflowRunID != runID || artifact.TaskID != taskID || artifact.AttemptID == "" ||
-			artifact.AttemptID == excludeAttemptID || artifact.ID != domain.ContinuationArtifactID(artifact.AttemptID) {
+			artifact.AttemptID == excludeAttemptID || !domain.IsContinuationSnapshotID(artifact.ID, artifact.AttemptID) {
 			continue
 		}
 		if latest == nil || artifact.CreatedAt.After(latest.CreatedAt) ||
-			(artifact.CreatedAt.Equal(latest.CreatedAt) && artifact.AttemptID > latest.AttemptID) {
+			(artifact.CreatedAt.Equal(latest.CreatedAt) && (artifact.AttemptID > latest.AttemptID ||
+				artifact.AttemptID == latest.AttemptID && artifact.ID > latest.ID)) {
 			copy := artifact
 			latest = &copy
 		}

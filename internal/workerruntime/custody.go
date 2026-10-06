@@ -510,6 +510,39 @@ func (s *CustodyStore) PublishCheckpoint(ctx context.Context, pkg workerproto.Ex
 	}, nil
 }
 
+// PublishContinuation retains a continuation.md snapshot a running attempt
+// took and advertises it, with its metadata, as an immutable upload on the
+// checkpoint channel. The manifest and both objects are named by the
+// attempt and the snapshot's sequence, so a replay is the same upload and a
+// newer snapshot is a new one.
+func (s *CustodyStore) PublishContinuation(ctx context.Context, pkg workerproto.ExecutionPackage, snapshot ContinuationSnapshot) error {
+	checkpoint := snapshot.Checkpoint
+	if checkpoint.AttemptID != pkg.Identity.AttemptID || checkpoint.Sequence < 1 {
+		return errors.New("publish continuation checkpoint: the snapshot belongs to another attempt")
+	}
+	raw, err := json.Marshal(checkpoint)
+	if err != nil {
+		return err
+	}
+	snapshotID := domain.ContinuationLiveArtifactID(checkpoint.AttemptID, checkpoint.Sequence)
+	metadataID := domain.ContinuationLiveMetadataArtifactID(checkpoint.AttemptID, checkpoint.Sequence)
+	objects := []workerproto.ArtifactObject{
+		objectForBytes(snapshotID, "checkpoints/"+snapshotID+".md", string(domain.ArtifactCheckpoint), "text/markdown", snapshot.Data),
+		objectForBytes(metadataID, "checkpoints/"+metadataID+".json", string(domain.ArtifactCheckpoint), "application/json", raw),
+	}
+	if objects[0].SHA256 != checkpoint.SHA256 || objects[0].Size != checkpoint.Size {
+		return errors.New("publish continuation checkpoint: the snapshot does not match its checkpoint")
+	}
+	for index, data := range [][]byte{snapshot.Data, raw} {
+		if err := s.storeObject(bytes.NewReader(data), objects[index]); err != nil {
+			return fmt.Errorf("publish continuation checkpoint: %w", err)
+		}
+	}
+	// The purpose contains "checkpoint-", so the coordinator polls it with the
+	// other checkpoints; the zero-padded sequence keeps snapshots in order.
+	return s.publishManifest(ctx, pkg, fmt.Sprintf("checkpoint-continuation-%020d", checkpoint.Sequence), objects)
+}
+
 // BuildUpload opens one complete immutable outbox manifest for authenticated transfer.
 
 // PendingUploadFor authorizes a complete ordered transfer from the immutable outbox.

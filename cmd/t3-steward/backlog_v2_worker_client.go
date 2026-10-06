@@ -276,7 +276,11 @@ func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorW
 			continue
 		}
 		report.Checkpoints = append(report.Checkpoints, imported)
-		return report, session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID)
+		if err := session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID); err != nil || imported.Name != domain.ContinuationArtifactName {
+			return report, err
+		}
+		// A continuation.md snapshot arrives at every turn end of every running
+		// attempt; the pass goes on so they do not queue behind one another.
 	}
 	return report, nil
 }

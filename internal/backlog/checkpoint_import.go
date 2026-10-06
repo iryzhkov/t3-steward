@@ -3,6 +3,7 @@ package backlog
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +51,9 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	if err := workerproto.ValidateArtifactTransferManifest(manifest, i.MaxArtifactBytes, i.MaxTotalBytes, now); err != nil {
 		return domain.Artifact{}, err
 	}
+	if isContinuationUpload(manifest) {
+		return i.importContinuation(ctx, response, opener, now)
+	}
 	// A checkpoint announced under an earlier coordinator epoch is still this
 	// worker's own execution, exactly as a result is (ResultImporter). Requiring
 	// the current epoch made every checkpoint pending across a coordinator
@@ -72,7 +76,7 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	if err != nil {
 		return domain.Artifact{}, err
 	}
-	assignment, attempt, task, err := checkpointImportBinding(records, manifest)
+	assignment, attempt, task, err := checkpointImportBinding(records, manifest, object.ID)
 	if err != nil {
 		if checkpointBindingIsFinal(assignment, attempt, manifest) {
 			return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
@@ -91,22 +95,8 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 		}
 		return domain.Artifact{}, err
 	}
-	reader, err := opener.OpenWorkerUpload(ctx, object)
+	data, err := i.readCheckpointObject(ctx, opener, object)
 	if err != nil {
-		return domain.Artifact{}, fmt.Errorf("open worker checkpoint %q: %w", object.ID, err)
-	}
-	data, readErr := io.ReadAll(io.LimitReader(reader, object.Size+1))
-	closeErr := reader.Close()
-	if readErr != nil {
-		return domain.Artifact{}, readErr
-	}
-	if closeErr != nil {
-		return domain.Artifact{}, closeErr
-	}
-	if int64(len(data)) != object.Size {
-		return domain.Artifact{}, errors.New("worker checkpoint size changed")
-	}
-	if err := workerproto.VerifyArtifact(bytes.NewReader(data), object, i.MaxArtifactBytes); err != nil {
 		return domain.Artifact{}, err
 	}
 	artifact := domain.Artifact{
@@ -120,6 +110,114 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
 		AttemptRevision: attempt.Revision, Artifact: artifact,
 	}, bytes.NewReader(data))
+}
+
+// readCheckpointObject reads one announced object and verifies it against
+// the manifest's size and digest.
+func (i CoordinatorCheckpointImporter) readCheckpointObject(ctx context.Context, opener WorkerUploadOpener, object workerproto.ArtifactObject) ([]byte, error) {
+	reader, err := opener.OpenWorkerUpload(ctx, object)
+	if err != nil {
+		return nil, fmt.Errorf("open worker checkpoint %q: %w", object.ID, err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(reader, object.Size+1))
+	closeErr := reader.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if int64(len(data)) != object.Size {
+		return nil, errors.New("worker checkpoint size changed")
+	}
+	if err := workerproto.VerifyArtifact(bytes.NewReader(data), object, i.MaxArtifactBytes); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// isContinuationUpload reports whether a checkpoint-channel upload is a
+// continuation.md snapshot a running attempt handed on: the snapshot and the
+// metadata describing it, in that order.
+func isContinuationUpload(manifest workerproto.ArtifactTransferManifest) bool {
+	return len(manifest.Objects) == 2 &&
+		strings.HasPrefix(manifest.Objects[0].ID, "continuation-") &&
+		strings.HasPrefix(manifest.Objects[1].ID, "continuation-meta-")
+}
+
+// importContinuation imports a continuation.md snapshot a worker took at a
+// turn end or a pause, while its attempt still holds its assignment. It is
+// what lets a superseded attempt, which never publishes a result, hand its
+// latest checkpoint to the task's next attempt.
+//
+// It binds exactly as a checkpoint does (same assignment, assignment epoch,
+// worker and worker epoch; claimed with a running attempt or completed with a
+// settled one), except that no throttle evidence names it: the metadata
+// travelling with the snapshot is checked against it instead, and the
+// snapshot must be under its attempt's own identity and sequence. An upload
+// whose assignment has moved on, or whose metadata does not describe it, is
+// refused for good. Only the snapshot is kept, dated by its capture; an exact
+// replay returns the same immutable artifact.
+func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, response workerproto.ArtifactUploadResponse, opener WorkerUploadOpener, now time.Time) (domain.Artifact, error) {
+	manifest := response.Manifest
+	if manifest.Direction != "upload" || manifest.CoordinatorEpoch < 1 || manifest.CoordinatorEpoch > i.CoordinatorEpoch {
+		return domain.Artifact{}, errors.New("continuation import manifest authority mismatch")
+	}
+	if err := validateWorkerUploadCustody(response, i.CoordinatorID); err != nil {
+		return domain.Artifact{}, err
+	}
+	records, err := i.Store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	assignment, attempt, task, err := checkpointImportBinding(records, manifest, "")
+	if err == nil && attempt.IsSupervisionActivation() {
+		err = errors.New("continuation import names a supervision activation")
+	}
+	if err != nil {
+		if checkpointBindingIsFinal(assignment, attempt, manifest) || attempt.IsSupervisionActivation() {
+			return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
+		}
+		return domain.Artifact{}, err
+	}
+	snapshot, metadata := manifest.Objects[0], manifest.Objects[1]
+	payloads := make([][]byte, len(manifest.Objects))
+	for index, object := range manifest.Objects {
+		if payloads[index], err = i.readCheckpointObject(ctx, opener, object); err != nil {
+			return domain.Artifact{}, err
+		}
+	}
+	var checkpoint domain.ContinuationCheckpoint
+	reason := ""
+	switch {
+	case json.Unmarshal(payloads[1], &checkpoint) != nil:
+		reason = "the metadata is not a checkpoint description"
+	case checkpoint.AttemptID != attempt.ID || checkpoint.Sequence < 1 ||
+		snapshot.ID != domain.ContinuationLiveArtifactID(attempt.ID, checkpoint.Sequence) ||
+		metadata.ID != domain.ContinuationLiveMetadataArtifactID(attempt.ID, checkpoint.Sequence):
+		reason = "the snapshot is not under its attempt's own identity and sequence"
+	case snapshot.Kind != string(domain.ArtifactCheckpoint) || snapshot.MediaType != "text/markdown" || !strings.HasPrefix(snapshot.Path, "checkpoints/") ||
+		metadata.Kind != string(domain.ArtifactCheckpoint) || metadata.MediaType != "application/json" || !strings.HasPrefix(metadata.Path, "checkpoints/"):
+		reason = "the objects are not a snapshot and its metadata"
+	case !strings.EqualFold(checkpoint.SHA256, snapshot.SHA256) || checkpoint.Size != snapshot.Size || checkpoint.Size > domain.ContinuationSnapshotLimit:
+		reason = "the metadata does not describe the snapshot"
+	case checkpoint.CapturedAt.IsZero() || checkpoint.CapturedAt.After(manifest.CreatedAt):
+		reason = "the capture time is missing or later than the upload"
+	}
+	if reason != "" {
+		return domain.Artifact{}, i.reject(ctx, records, manifest, now, errors.New("continuation checkpoint: "+reason))
+	}
+	artifact := domain.Artifact{
+		ID: snapshot.ID, WorkflowRunID: attempt.WorkflowRunID, TaskID: task.ID, AttemptID: attempt.ID,
+		Kind: domain.ArtifactCheckpoint, Name: domain.ContinuationArtifactName, MediaType: snapshot.MediaType,
+		Size: snapshot.Size, SHA256: strings.ToLower(snapshot.SHA256), Producer: "worker:" + manifest.WorkerID,
+		CreatedAt: checkpoint.CapturedAt.UTC(),
+	}
+	return i.Artifacts.Publish(ctx, domain.ArtifactPublication{
+		CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,
+		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+		AttemptRevision: attempt.Revision, Artifact: artifact,
+	}, bytes.NewReader(payloads[0]))
 }
 
 // ErrCheckpointImportRejected marks a checkpoint upload that can never be
@@ -183,7 +281,9 @@ func checkpointBindingIsFinal(assignment domain.Assignment, attempt domain.Attem
 	return assignment.State == domain.AssignmentCompleted
 }
 
-func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest) (domain.Assignment, domain.Attempt, domain.Task, error) {
+// checkpointImportBinding binds an upload to its assignment, attempt and
+// task. A non-empty checkpointID must be the checkpoint the attempt records.
+func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest, checkpointID string) (domain.Assignment, domain.Attempt, domain.Task, error) {
 	var assignment domain.Assignment
 	for _, candidate := range records.Assignments {
 		if candidate.ID == manifest.AssignmentID {
@@ -209,7 +309,7 @@ func checkpointImportBinding(records sqlite.CoordinatorRecords, manifest workerp
 	validProgress := assignment.State == domain.AssignmentClaimed && !attempt.Progress.Terminal() ||
 		assignment.State == domain.AssignmentCompleted && attempt.Progress.Terminal()
 	if attempt.ID == "" || attempt.AssignmentID != assignment.ID || !validProgress ||
-		attempt.CheckpointArtifactID != manifest.Objects[0].ID {
+		(checkpointID != "" && attempt.CheckpointArtifactID != checkpointID) {
 		return assignment, attempt, domain.Task{}, errors.New("checkpoint import attempt binding is stale")
 	}
 	task, _ := domain.TaskForAttempt(attempt, records.WorkflowRuns, records.Tasks)

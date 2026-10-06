@@ -28,13 +28,18 @@ import (
 //
 // A snapshot is idempotent per attempt and turn: the first snapshot taken for
 // a turn stands, and a replay of that turn after a worker or coordinator
-// restart returns the latest snapshot unchanged rather than taking a new one.
-// Unchanged content is not a new snapshot either. The sequence therefore only
-// grows, and the latest snapshot never moves back to an older one.
+// restart returns the latest snapshot unchanged rather than taking a new one,
+// however many turns ago it was. Unchanged content is not a new snapshot
+// either. The sequence therefore only grows, and the latest snapshot never
+// moves back to an older one.
+//
+// A snapshot taken at a turn end or a pause is handed to the coordinator at
+// once when the package declares that the coordinator accepts it, so that it
+// survives an attempt that is superseded before it has a result.
 
-// continuationTurnLimit bounds how many turn keys the store remembers. A
-// replay older than that may take a snapshot of the current file, which is
-// never older than the latest one.
+// continuationTurnLimit bounds how many turn keys the state file lists. A
+// key that leaves the list is kept as a marker file under turns/, written
+// before the state that drops it, so the replay fence never expires.
 const continuationTurnLimit = 256
 
 // continuationLock serializes snapshots on this host: a turn-end observation
@@ -43,8 +48,18 @@ var continuationLock sync.Mutex
 
 type continuationState struct {
 	Latest *domain.ContinuationCheckpoint `json:"latest,omitempty"`
-	// Turns are the turn keys already considered, with or without a file.
+	// Turns are the latest turn keys already considered, with or without a
+	// file; earlier ones are marker files under turns/.
 	Turns []string `json:"turns,omitempty"`
+	// Published is the sequence of the latest snapshot handed to the
+	// coordinator while the attempt runs.
+	Published int64 `json:"published,omitempty"`
+}
+
+// continuationPublisher is a publisher that can hand a running attempt's
+// snapshot to the coordinator; see CustodyStore.PublishContinuation.
+type continuationPublisher interface {
+	PublishContinuation(context.Context, workerproto.ExecutionPackage, ContinuationSnapshot) error
 }
 
 // ContinuationSnapshot is the latest snapshot as a result carries it.
@@ -66,7 +81,7 @@ func (d *LocalDriver) continuationDir(pkg workerproto.ExecutionPackage) string {
 // RecordContinuation snapshots workspace/continuation.md for the given turn
 // and returns the attempt's latest checkpoint, which is nil while the task
 // has never had a continuation.md. A missing file is not an error.
-func (d *LocalDriver) RecordContinuation(_ context.Context, pkg workerproto.ExecutionPackage, workspace string, boundary domain.ContinuationBoundary, turn string) (*domain.ContinuationCheckpoint, error) {
+func (d *LocalDriver) RecordContinuation(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string, boundary domain.ContinuationBoundary, turn string) (*domain.ContinuationCheckpoint, error) {
 	if pkg.IsActivation() || d.Config.RunsRoot == "" {
 		return nil, nil
 	}
@@ -77,7 +92,43 @@ func (d *LocalDriver) RecordContinuation(_ context.Context, pkg workerproto.Exec
 	if d.Now != nil {
 		now = d.Now
 	}
-	return recordContinuation(d.continuationDir(pkg), workspace, pkg.Identity.AttemptID, boundary, turn, now().UTC())
+	checkpoint, err := recordContinuation(d.continuationDir(pkg), workspace, pkg.Identity.AttemptID, boundary, turn, now().UTC())
+	if err != nil || boundary == domain.ContinuationCollection {
+		// The result hands on a collection snapshot.
+		return checkpoint, err
+	}
+	// A replay retries a hand-on that failed; one that succeeded is not
+	// repeated.
+	if err := d.handOnContinuation(ctx, pkg); err != nil {
+		d.logger().Warn("the continuation checkpoint could not be handed to the coordinator yet", "attempt", pkg.Identity.AttemptID, "error", err)
+	}
+	return checkpoint, nil
+}
+
+// handOnContinuation hands the attempt's latest snapshot to the coordinator
+// while the attempt runs, once per snapshot, when the package declares that
+// the coordinator accepts it.
+func (d *LocalDriver) handOnContinuation(ctx context.Context, pkg workerproto.ExecutionPackage) error {
+	publisher, ok := d.Publisher.(continuationPublisher)
+	if !ok || !slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityContinuationCheckpoint) {
+		return nil
+	}
+	continuationLock.Lock()
+	defer continuationLock.Unlock()
+	dir := d.continuationDir(pkg)
+	state, err := loadContinuationState(dir)
+	if err != nil || state.Latest == nil || state.Latest.Sequence <= state.Published {
+		return err
+	}
+	data, err := readContinuationBody(dir, *state.Latest)
+	if err != nil {
+		return err
+	}
+	if err := publisher.PublishContinuation(ctx, pkg, ContinuationSnapshot{Checkpoint: *state.Latest, Data: data}); err != nil {
+		return err
+	}
+	state.Published = state.Latest.Sequence
+	return saveContinuationState(dir, state)
 }
 
 // LatestContinuation returns the attempt's latest checkpoint and its bytes.
@@ -130,7 +181,11 @@ func recordContinuation(dir, workspace, attemptID string, boundary domain.Contin
 	if err != nil {
 		return nil, err
 	}
-	if slices.Contains(state.Turns, turn) {
+	considered, err := continuationTurnConsidered(dir, state, turn)
+	if err != nil {
+		return nil, err
+	}
+	if considered {
 		return cloneCheckpoint(state.Latest), nil
 	}
 	data, originalSize, found, err := readContinuationFile(workspace)
@@ -161,13 +216,52 @@ func recordContinuation(dir, workspace, attemptID string, boundary domain.Contin
 		}
 	}
 	state.Turns = append(state.Turns, turn)
-	if len(state.Turns) > continuationTurnLimit {
-		state.Turns = state.Turns[len(state.Turns)-continuationTurnLimit:]
+	if evicted := len(state.Turns) - continuationTurnLimit; evicted > 0 {
+		if err := markContinuationTurns(dir, state.Turns[:evicted]); err != nil {
+			return nil, err
+		}
+		state.Turns = state.Turns[evicted:]
 	}
 	if err := saveContinuationState(dir, state); err != nil {
 		return nil, err
 	}
 	return cloneCheckpoint(state.Latest), nil
+}
+
+// continuationTurnConsidered reports whether the store has considered turn:
+// it is listed in the state or, once it left the list, marked under turns/.
+func continuationTurnConsidered(dir string, state continuationState, turn string) (bool, error) {
+	if slices.Contains(state.Turns, turn) {
+		return true, nil
+	}
+	_, err := os.Lstat(continuationTurnMarker(dir, turn))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("continuation checkpoint turn: %w", err)
+	}
+	return true, nil
+}
+
+// continuationTurnMarker is the marker file of a turn key that has left the
+// state's list, named by the key's digest so any key is a safe file name.
+func continuationTurnMarker(dir, turn string) string {
+	return filepath.Join(dir, "turns", sha256Hex([]byte(turn)))
+}
+
+// markContinuationTurns durably marks turn keys as considered; privateBytes
+// syncs each marker and its directory.
+func markContinuationTurns(dir string, turns []string) error {
+	if err := os.MkdirAll(filepath.Join(dir, "turns"), 0o700); err != nil {
+		return fmt.Errorf("continuation checkpoint turn: %w", err)
+	}
+	for _, turn := range turns {
+		if err := privateBytes(continuationTurnMarker(dir, turn), nil); err != nil {
+			return fmt.Errorf("continuation checkpoint turn: %w", err)
+		}
+	}
+	return nil
 }
 
 // readContinuationFile reads the head of the task's continuation.md. Only a
@@ -289,26 +383,68 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// PendingContinuation names the continuation.md snapshot a durable pause
+// owes. Turn is the snapshot's turn key; with ObserveTurn the stopped turn's
+// identity is the key when it can be observed, and Turn otherwise.
+type PendingContinuation struct {
+	Boundary    domain.ContinuationBoundary `json:"boundary"`
+	Turn        string                      `json:"turn"`
+	ObserveTurn bool                        `json:"observeTurn,omitempty"`
+}
+
+// settlePendingContinuation takes the pause snapshot the attempt owes, if
+// any, and clears the obligation once it is taken. A snapshot that cannot be
+// taken yet stays owed for the next reconcile pass.
+func (r *Runtime) settlePendingContinuation(ctx context.Context, id string) {
+	record, exists, err := r.currentRecord(id)
+	if err != nil || !exists || record.PendingContinuation == nil {
+		return
+	}
+	pending := *record.PendingContinuation
+	turn := pending.Turn
+	if pending.ObserveTurn {
+		turn = r.pauseTurnKey(ctx, record.Package.Package, pending.Turn)
+	}
+	if !r.recordContinuation(ctx, id, pending.Boundary, turn) {
+		return
+	}
+	if err := r.journal.update(func(state *journalState) error {
+		current, ok := state.Attempts[id]
+		if !ok || current.PendingContinuation == nil || *current.PendingContinuation != pending {
+			return nil
+		}
+		current.PendingContinuation = nil
+		state.Attempts[id] = current
+		return nil
+	}); err != nil {
+		r.log.Warn("the taken pause snapshot could not be journaled; it is taken again", "assignment", id, "error", err)
+	}
+}
+
 // recordContinuation snapshots the attempt's continuation.md at a boundary
 // and keeps the latest checkpoint on the journal record. It never fails the
 // caller: a checkpoint is evidence for a later attempt, and losing one must
-// not change what happens to this one.
-func (r *Runtime) recordContinuation(ctx context.Context, id string, boundary domain.ContinuationBoundary, turn string) {
+// not change what happens to this one. It reports whether the boundary is
+// settled, that is whether the snapshot was taken or there is none to take.
+func (r *Runtime) recordContinuation(ctx context.Context, id string, boundary domain.ContinuationBoundary, turn string) bool {
 	recorder, ok := r.driver.(continuationRecorder)
 	if !ok {
-		return
+		return true
 	}
 	record, exists, err := r.currentRecord(id)
-	if err != nil || !exists || record.WorkspacePath == "" || record.Package.Package.IsActivation() {
-		return
+	if err != nil {
+		return false
+	}
+	if !exists || record.WorkspacePath == "" || record.Package.Package.IsActivation() {
+		return true
 	}
 	checkpoint, err := recorder.RecordContinuation(ctx, record.Package.Package, record.WorkspacePath, boundary, turn)
 	if err != nil {
 		r.log.Warn("continuation.md could not be checkpointed", "assignment", id, "boundary", string(boundary), "error", err)
-		return
+		return false
 	}
 	if checkpoint == nil {
-		return
+		return true
 	}
 	// The worker sequence is left alone: the checkpoint is not part of what
 	// the coordinator observes, and moving it would only make a command built
@@ -323,7 +459,9 @@ func (r *Runtime) recordContinuation(ctx context.Context, id string, boundary do
 		return nil
 	}); err != nil {
 		r.log.Warn("continuation checkpoint could not be journaled", "assignment", id, "error", err)
+		return false
 	}
+	return true
 }
 
 // continuationPromptSentence tells a new attempt, in one sentence, where the
@@ -332,6 +470,13 @@ func (r *Runtime) recordContinuation(ctx context.Context, id string, boundary do
 func continuationPromptSentence(input workerproto.ContinuationInput) string {
 	return fmt.Sprintf("An earlier attempt of this task (%s) left its continuation.md checkpoint, %d bytes captured %s, at `.t3/%s`: read it before you start, and keep your own continuation.md current.",
 		input.AttemptID, input.Size, input.CapturedAt.UTC().Format(time.RFC3339), input.Path)
+}
+
+// throttlePauseContinuation is the snapshot an accepted drain or hard stop
+// owes: of the turn it stopped, or keyed by the command when that turn
+// cannot be observed.
+func throttlePauseContinuation(command domain.ThrottleCommand) *PendingContinuation {
+	return &PendingContinuation{Boundary: domain.ContinuationPause, Turn: "throttle:" + command.ID, ObserveTurn: true}
 }
 
 // pauseTurnKey names the turn a pause stopped, or fallback when the driver

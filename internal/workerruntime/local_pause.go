@@ -183,7 +183,6 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 		}
 	}
 	now := r.now()
-	pauseKey := ""
 	if err := r.journal.update(func(state *journalState) error {
 		current, ok := state.Attempts[id]
 		if !ok {
@@ -193,9 +192,18 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 			return nil
 		}
 		request := *current.LocalThrottle
-		pauseKey = "pause:" + request.RequestedAt.UTC().Format(time.RFC3339Nano)
 		if request.StoppedAt == nil {
 			request.StoppedAt = &now
+			// The paused turn has stopped and owes its continuation.md
+			// snapshot, keyed by the turn when it is known and by the pause
+			// otherwise. The obligation is durable with the stop, so a
+			// snapshot that is not taken below is taken on the next
+			// reconcile pass.
+			pauseKey := "pause:" + request.RequestedAt.UTC().Format(time.RFC3339Nano)
+			if turnID != "" {
+				pauseKey = turnID
+			}
+			current.PendingContinuation = &PendingContinuation{Boundary: domain.ContinuationPause, Turn: pauseKey}
 		}
 		if checkpoint != nil {
 			request.Checkpoint = checkpoint
@@ -215,14 +223,7 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 	}); err != nil {
 		return err
 	}
-	if pauseKey != "" {
-		// The paused turn has stopped: its continuation.md is checkpointed,
-		// keyed by the turn when it is known and by the pause otherwise.
-		if turnID != "" {
-			pauseKey = turnID
-		}
-		r.recordContinuation(ctx, id, domain.ContinuationPause, pauseKey)
-	}
+	r.settlePendingContinuation(ctx, id)
 	return nil
 }
 

@@ -542,6 +542,9 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		err = r.driver.StopThread(ctx, pkg)
 		result = domain.ThrottleResultStopped
 	case domain.ThrottleCommandResume:
+		// A pause snapshot still owed is of the paused turn: it is taken
+		// before a new turn can change the file.
+		r.settlePendingContinuation(ctx, command.AssignmentID)
 		err = r.driver.Resume(ctx, pkg, command)
 		result = domain.ThrottleResultResumed
 	default:
@@ -552,10 +555,10 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		detail = err.Error()
 	}
 	acknowledgement, finishErr := r.finishThrottle(command, err == nil, result, checkpoint, detail)
-	if finishErr == nil && acknowledgement.Accepted &&
-		(command.Kind == domain.ThrottleCommandDrain || command.Kind == domain.ThrottleCommandHardStop) {
-		// An operator or coordinator pause has stopped the turn.
-		r.recordContinuation(ctx, command.AssignmentID, domain.ContinuationPause, r.pauseTurnKey(ctx, pkg, "throttle:"+command.ID))
+	if finishErr == nil {
+		// An accepted operator or coordinator pause has stopped the turn and
+		// owes its snapshot (finishThrottle journals the obligation).
+		r.settlePendingContinuation(ctx, command.AssignmentID)
 	}
 	return acknowledgement, finishErr
 }
@@ -588,6 +591,18 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 				return err
 			}
 			continue
+		}
+		if record.PendingContinuation != nil {
+			// A pause became durable before its snapshot was taken: the
+			// snapshot is taken before the attempt can resume.
+			r.settlePendingContinuation(ctx, id)
+			current, exists, err := r.currentRecord(id)
+			if err != nil {
+				return err
+			}
+			if exists {
+				record = current
+			}
 		}
 		if err := r.reconcileAttempt(ctx, id, record, now); err != nil {
 			return err
@@ -1384,8 +1399,10 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 			switch command.Kind {
 			case domain.ThrottleCommandDrain:
 				record.Phase = PhaseStopped
+				record.PendingContinuation = throttlePauseContinuation(command)
 			case domain.ThrottleCommandHardStop:
 				record.Phase = PhaseStopped
+				record.PendingContinuation = throttlePauseContinuation(command)
 				if command.AttentionStop != nil {
 					record.StopConfirmed = true
 					record.ObservedThreadState = "stopped"

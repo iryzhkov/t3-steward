@@ -2,6 +2,8 @@ package domain
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -10,8 +12,9 @@ import (
 // current step, blockers. Steward treats it as a durable checkpoint. The worker
 // snapshots the file at each turn end, at a quota or operator pause and at
 // collection, keeps the latest snapshot beside the attempt (never in the task's
-// tree), and hands it to the coordinator with the attempt's result. A later
-// attempt of the same task receives the latest snapshot as an input.
+// tree), and hands it to the coordinator as soon as it is taken at a turn end
+// or a pause, and again with the attempt's result. A later attempt of the same
+// task receives the latest snapshot as an input.
 
 // ContinuationFileName is the file a task keeps at its workspace root.
 const ContinuationFileName = "continuation.md"
@@ -36,6 +39,34 @@ func ContinuationArtifactID(attemptID string) string { return "continuation-" + 
 // metadata object.
 func ContinuationMetadataArtifactID(attemptID string) string {
 	return "continuation-meta-" + attemptID
+}
+
+// ContinuationLiveArtifactID is the identity of a snapshot a running attempt
+// hands to the coordinator before it has a result: the attempt's own
+// identity and the snapshot's sequence, so each distinct snapshot is its own
+// immutable artifact and never conflicts with the one the result carries.
+func ContinuationLiveArtifactID(attemptID string, sequence int64) string {
+	return fmt.Sprintf("continuation-%s-%d", attemptID, sequence)
+}
+
+// ContinuationLiveMetadataArtifactID is the identity of a live snapshot's
+// metadata object.
+func ContinuationLiveMetadataArtifactID(attemptID string, sequence int64) string {
+	return fmt.Sprintf("continuation-meta-%s-%d", attemptID, sequence)
+}
+
+// IsContinuationSnapshotID reports whether id is one of attemptID's snapshot
+// identities: the one its result carries or a live one.
+func IsContinuationSnapshotID(id, attemptID string) bool {
+	if id == ContinuationArtifactID(attemptID) {
+		return true
+	}
+	sequence, ok := strings.CutPrefix(id, ContinuationArtifactID(attemptID)+"-")
+	if !ok {
+		return false
+	}
+	parsed, err := strconv.ParseInt(sequence, 10, 64)
+	return err == nil && parsed > 0 && id == ContinuationLiveArtifactID(attemptID, parsed)
 }
 
 // ContinuationBoundary names the moment a snapshot was taken.
