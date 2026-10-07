@@ -212,6 +212,9 @@ func TestCampaignFixDryRunWritesOnly(t *testing.T) {
 	if !strings.Contains(out.String(), "dry-run") {
 		t.Fatal(out.String())
 	}
+	if !strings.Contains(out.String(), "fix1") || !strings.Contains(out.String(), "review2") {
+		t.Fatalf("dry-run omitted generated plan: %s", out.String())
+	}
 	if _, e := campaign.Prepare(dir, cli.limits); e != nil {
 		t.Fatal(e)
 	}

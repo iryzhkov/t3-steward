@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -143,6 +144,23 @@ func TestCampaignFixNoGateReceipt(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "gate: none") || strings.Contains(out.String(), "(gate)") {
 		t.Fatalf("no-gate receipt claims a gate: %s", out.String())
+	}
+}
+
+func TestCampaignFixDryRunJSONPlan(t *testing.T) {
+	cli, out := fixCommandFixture(t)
+	if err := cli.run(context.Background(), []string{"run/review", "--idempotency-key", "key", "--dry-run", "--out", filepath.Join(t.TempDir(), "generated"), "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Plan   json.RawMessage `json:"plan"`
+		DryRun bool            `json:"dryRun"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if !document.DryRun || !bytes.Contains(document.Plan, []byte("fix1")) || !bytes.Contains(document.Plan, []byte("review2")) {
+		t.Fatalf("dry-run omitted JSON plan: %s", out.Bytes())
 	}
 }
 

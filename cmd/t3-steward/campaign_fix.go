@@ -823,20 +823,25 @@ func (c campaignFixCLI) run(ctx context.Context, args []string) error {
 	if e != nil {
 		return e
 	}
-	bundle, e := campaign.Prepare(target, c.limits)
+	bundle, plan, e := c.prepare(target)
 	if e != nil {
 		return e
 	}
 	document := campaignFixDocument{SchemaVersion: 1, SourceRun: a.node.RunID, ReviewTask: resolved.Source.Review.Name, Commit: resolved.Commit, Verdict: resolved.Verdict, Lineage: resolved.Lineage, Gate: resolved.Gate}
 	if a.dryRun {
 		if a.asJSON {
+			rendered, err := campaign.RenderJSON(plan)
+			if err != nil {
+				return err
+			}
 			return encodeCampaignJSON(c.stdout, struct {
 				campaignFixDocument
-				DryRun bool   `json:"dryRun"`
-				Digest string `json:"digest"`
-			}{document, true, bundle.ContentDigest})
+				DryRun bool            `json:"dryRun"`
+				Digest string          `json:"digest"`
+				Plan   json.RawMessage `json:"plan"`
+			}{document, true, bundle.ContentDigest, rendered})
 		}
-		_, e = fmt.Fprintf(c.stdout, "dry-run: %s; rounds %d-%d of round_limit %d; digest=%s; no submission\n", target, document.Lineage.FirstRound, document.Lineage.RoundsUsed+document.Lineage.RoundsDeclared, document.Lineage.RoundLimit, bundle.ContentDigest)
+		_, e = fmt.Fprintf(c.stdout, "dry-run: %s; rounds %d-%d of round_limit %d; digest=%s; no submission\n%s", target, document.Lineage.FirstRound, document.Lineage.RoundsUsed+document.Lineage.RoundsDeclared, document.Lineage.RoundLimit, bundle.ContentDigest, campaign.RenderText(plan))
 		return e
 	}
 	var buffer bytes.Buffer
