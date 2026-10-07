@@ -161,7 +161,11 @@ func loadLease(ctx context.Context, q leaseQuerier, name string) (*domain.Lease,
 }
 
 func heldLeaseMessage(lease domain.Lease) string {
-	return fmt.Sprintf("refused: %s is held by thread %s (plan %s, %q) until %s", lease.Name, lease.OwnerThread, lease.Plan, lease.Reason, lease.ExpiresAt.Format(time.RFC3339Nano))
+	detail := fmt.Sprintf("%q", lease.Reason)
+	if lease.Plan != "" {
+		detail = fmt.Sprintf("plan %s, %s", lease.Plan, detail)
+	}
+	return fmt.Sprintf("refused: %s is held by thread %s (%s) until %s", lease.Name, lease.OwnerThread, detail, lease.ExpiresAt.Format(time.RFC3339Nano))
 }
 func (s *Store) readLease(ctx context.Context, request domain.LeaseRequest) (domain.LeaseResponse, error) {
 	response := domain.LeaseResponse{}
