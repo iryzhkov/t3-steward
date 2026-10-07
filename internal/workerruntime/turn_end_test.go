@@ -27,6 +27,8 @@ type turnEndDriver struct {
 	nudgeTokens []string
 	nudgeTexts  []string
 	snapshots   int
+	// snapshotErr, when set, is the error every snapshot returns.
+	snapshotErr error
 }
 
 func (d *turnEndDriver) ObserveThread(context.Context, workerproto.ExecutionPackage) (backlog.DispatchThreadState, error) {
@@ -49,6 +51,9 @@ func (d *turnEndDriver) NudgeLiveCommands(_ context.Context, _ workerproto.Execu
 
 func (d *turnEndDriver) SnapshotWorkInProgress(context.Context, workerproto.ExecutionPackage, string) (string, error) {
 	d.snapshots++
+	if d.snapshotErr != nil {
+		return "", d.snapshotErr
+	}
 	return "wip.bundle retained (refs/steward/wip/attempt-1)", nil
 }
 

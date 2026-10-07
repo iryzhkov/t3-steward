@@ -171,8 +171,11 @@ func (d *LocalDriver) retainWorkInProgress(ctx context.Context, pkg workerproto.
 	}
 	retained, err := d.SnapshotWorkInProgress(ctx, pkg, workspace)
 	if err != nil {
-		d.logger().Warn("uncommitted work of the failed attempt is not retained", "attempt", pkg.Identity.AttemptID, "error", err)
-		return "wip.bundle not retained: " + err.Error()
+		// Git's standard error names the paths it could not use, which may hold
+		// an execution credential, so only the checked text is logged or kept.
+		checked := d.loggedText(ctx, pkg, err.Error())
+		d.logger().Warn("uncommitted work of the failed attempt is not retained", "attempt", pkg.Identity.AttemptID, "error", checked)
+		return "wip.bundle not retained: " + checked
 	}
 	if !strings.HasPrefix(retained, "wip.bundle") {
 		return ""
