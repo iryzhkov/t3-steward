@@ -7,6 +7,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,9 @@ func TestRerunUseCommitCarriesFailedEvidenceAndReplays(t *testing.T) {
 	}
 	if len(result.Graph.Tasks) != 1 || len(result.Graph.Tasks[0].CarriedInputs) != 2 {
 		t.Fatalf("wrong inputs: %+v", result.Graph.Tasks)
+	}
+	if !slices.Contains(result.Graph.Tasks[0].Placement.Capabilities, "campaign-failed-commit-v1") {
+		t.Fatal("failed candidate can be placed on an old bundle-only worker")
 	}
 	reused := result.Graph.RerunOf.ReusedCommits
 	if reused == nil || len(*reused) != 1 || (*reused)[0].SourceAttemptID != "attempt-implement" || (*reused)[0].VerificationFailures[0] != "verification command failed (1): go test ./..." {

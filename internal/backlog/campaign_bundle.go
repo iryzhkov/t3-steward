@@ -653,6 +653,15 @@ func RequireCommitBundleCapability(task *domain.Task) {
 	}
 }
 
+// RequireFailedCommitCapability excludes workers that can import ordinary
+// bundles but do not implement the quarantined ref and attempt binding.
+func RequireFailedCommitCapability(task *domain.Task) {
+	RequireCommitBundleCapability(task)
+	if !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit) {
+		task.Placement.Capabilities = append(task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit)
+	}
+}
+
 // DeclaresCommit reports whether a task declares name as a commit output.
 func DeclaresCommit(task domain.Task, name string) bool {
 	return slices.ContainsFunc(task.Outputs, func(output domain.ArtifactDeclaration) bool {

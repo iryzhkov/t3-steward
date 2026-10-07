@@ -136,13 +136,15 @@ const (
 	// of each declared commit, and a consuming worker that has it imports one
 	// delivered in CommitBundles into its own campaign ref store.
 	PackageCapabilityCommitBundle = "campaign-commit-bundle-v1"
+	// Failed candidates require attempt-bound quarantine refs and provenance.
+	PackageCapabilityFailedCommit = "campaign-failed-commit-v1"
 )
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityFailedCommit}
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is

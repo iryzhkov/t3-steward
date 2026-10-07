@@ -207,6 +207,9 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		CreatedAt: assignment.CreatedAt,
 	}
+	if slices.Contains(state.task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit) {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit)
+	}
 	if err := b.declarePackageCapabilities(ctx, &pkg); err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
