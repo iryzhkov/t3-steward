@@ -128,7 +128,11 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		case domain.ArtifactVerification:
 			verifications++
 		case domain.ArtifactGitState:
-			workspaceHeads++
+			// Commit and work-in-progress bundles are Git state too; only
+			// the report is the workspace HEAD.
+			if artifact.Name == WorkspaceHeadArtifactName {
+				workspaceHeads++
+			}
 		}
 	}
 	if workspaceHeads > 1 || workspaceHeads == 1 && task.ReviewRequirements == nil {
@@ -284,7 +288,7 @@ func (i CoordinatorResultImporter) reviewCompletionGate(ctx context.Context, tas
 	}
 	for index, artifact := range artifacts {
 		switch {
-		case artifact.Kind == domain.ArtifactGitState:
+		case artifact.Kind == domain.ArtifactGitState && artifact.Name == WorkspaceHeadArtifactName:
 			parsed, parseErr := ParseWorkspaceHead(payloads[index])
 			if parseErr != nil {
 				parsed = domain.WorkspaceHead{Schema: domain.WorkspaceHeadSchema, Error: parseErr.Error()}
