@@ -509,19 +509,12 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 }
 
 // stagedHeld reports whether the store holds the declared commit as staged
-// work: a staging record of exactly this commit, and that attempt's staged ref
-// naming it. A record alone is what a staging or an import that stopped before
-// its ref leaves, and the commit may then be missing from the store.
+// work, as findStaged resolves it. A record alone is what a staging or an
+// import that stopped before its ref leaves, and the commit may then be
+// missing from the store.
 func (s CampaignRefStore) stagedHeld(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) (bool, error) {
-	staged, attemptID, found, err := s.findStaged(provenance)
-	if err != nil || !found {
-		return false, err
-	}
-	head, found, err := s.head(ctx, gitDir, StagedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, attemptID, provenance.Name), log)
-	if err != nil {
-		return false, err
-	}
-	return found && head == staged.Commit, nil
+	_, _, found, err := s.findStaged(ctx, gitDir, provenance, log)
+	return found, err
 }
 
 // heldCommit reports whether the store already holds the declared commit. A

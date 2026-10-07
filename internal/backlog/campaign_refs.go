@@ -373,9 +373,9 @@ func (s CampaignRefStore) promote(ctx context.Context, gitDir string, provenance
 		return err
 	}
 	if found {
-		return s.restorePromotedRecord(provenance, existing)
+		return s.restorePromotedRecord(ctx, gitDir, provenance, existing, log)
 	}
-	staged, _, found, err := s.findStaged(provenance)
+	staged, _, found, err := s.findStaged(ctx, gitDir, provenance, log)
 	if err != nil {
 		return err
 	}
@@ -402,14 +402,14 @@ func (s CampaignRefStore) writePromotedProvenance(staged CommitProvenance) error
 // accepted commit but has none, which is what a promotion that failed between
 // its ref and its record leaves. A ref naming another commit is left to the
 // fetch, which refuses it.
-func (s CampaignRefStore) restorePromotedRecord(provenance CommitProvenance, existing string) error {
+func (s CampaignRefStore) restorePromotedRecord(ctx context.Context, gitDir string, provenance CommitProvenance, existing string, log io.Writer) error {
 	if existing != provenance.Commit {
 		return nil
 	}
 	if _, err := os.Lstat(s.provenancePath(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)); !errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	staged, _, found, err := s.findStaged(provenance)
+	staged, _, found, err := s.findStaged(ctx, gitDir, provenance, log)
 	if err != nil || !found {
 		return err
 	}
@@ -431,7 +431,7 @@ func (s CampaignRefStore) inspectionSource(ctx context.Context, gitDir string, p
 	if existing, found, err := s.head(ctx, gitDir, ref, log); err != nil || (found && existing == provenance.Commit) {
 		return ref, err
 	}
-	_, attemptID, found, err := s.findStaged(provenance)
+	_, attemptID, found, err := s.findStaged(ctx, gitDir, provenance, log)
 	if err != nil {
 		return "", err
 	}
@@ -441,16 +441,36 @@ func (s CampaignRefStore) inspectionSource(ctx context.Context, gitDir string, p
 	return StagedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, attemptID, provenance.Name), nil
 }
 
-// findStaged returns the staging record of the commit a provenance names, and
-// the attempt that staged it.
-func (s CampaignRefStore) findStaged(provenance CommitProvenance) (CommitProvenance, string, bool, error) {
-	stagedRecords, err := filepath.Glob(filepath.Join(s.Root, "staged", provenance.WorkflowRunID, provenance.TaskID, "*", provenance.Name+".json"))
-	if err != nil {
-		return CommitProvenance{}, "", false, fmt.Errorf("find staged campaign commit: %w", err)
+// findStaged returns the usable staging of the commit a provenance names, and
+// the attempt that staged it: a staging record of exactly this commit, and
+// that attempt's staged ref naming it. A record alone is what a staging or an
+// import that stopped before its ref leaves, and it is never taken for the
+// staging.
+//
+// A record that names the attempt that staged it is resolved against that
+// attempt alone. A record without one, from a build before the attempt was
+// recorded, is matched against every attempt's usable staging, so that an
+// orphaned earlier record cannot mask a complete later one.
+func (s CampaignRefStore) findStaged(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) (CommitProvenance, string, bool, error) {
+	var stagedRecords []string
+	if provenance.StagedAttempt != "" {
+		if !safePathComponent(provenance.StagedAttempt) {
+			return CommitProvenance{}, "", false, fmt.Errorf("campaign commit record names staging attempt %q, which is not a safe path component", provenance.StagedAttempt)
+		}
+		stagedRecords = []string{s.stagedPath(provenance.WorkflowRunID, provenance.TaskID, provenance.StagedAttempt, provenance.Name)}
+	} else {
+		var err error
+		stagedRecords, err = filepath.Glob(filepath.Join(s.Root, "staged", provenance.WorkflowRunID, provenance.TaskID, "*", provenance.Name+".json"))
+		if err != nil {
+			return CommitProvenance{}, "", false, fmt.Errorf("find staged campaign commit: %w", err)
+		}
 	}
 	for _, path := range stagedRecords {
 		attemptID := filepath.Base(filepath.Dir(path))
 		if !safePathComponent(attemptID) {
+			continue
+		}
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		staged, readErr := s.readProvenance(path)
@@ -458,6 +478,13 @@ func (s CampaignRefStore) findStaged(provenance CommitProvenance) (CommitProvena
 			return CommitProvenance{}, "", false, readErr
 		}
 		if staged.Commit != provenance.Commit || staged.Base != provenance.Base || staged.Repository != provenance.Repository {
+			continue
+		}
+		head, found, err := s.head(ctx, gitDir, StagedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, attemptID, provenance.Name), log)
+		if err != nil {
+			return CommitProvenance{}, "", false, err
+		}
+		if !found || head != staged.Commit {
 			continue
 		}
 		return staged, attemptID, true, nil
