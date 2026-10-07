@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -203,6 +204,9 @@ func cmdWaitSummary(ctx context.Context, cfg config.Config, args []string, out i
 			return nil, err
 		}
 		store, err := sqlite.Open(statePath)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
 		if err != nil {
 			return nil, err
 		}

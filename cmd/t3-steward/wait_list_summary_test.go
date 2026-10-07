@@ -54,6 +54,50 @@ func TestWaitListJSONCarriesTheRecordedNodeSummary(t *testing.T) {
 	}
 }
 
+func TestWaitListLeavesGitHubTextUnchanged(t *testing.T) {
+	local := wait.Wait{ID: "local", Kind: domain.WaitKindGitHub, Status: wait.StatusMet, Name: "CI", Summary: &wait.WakeSummary{Headline: "github summary"}}
+	sources := waitListSources{local: func(context.Context, string) ([]wait.Wait, error) { return []wait.Wait{local}, nil }}
+	var with, without bytes.Buffer
+	if err := runWaitList(context.Background(), sources, waitListOptions{all: true}, &with); err != nil {
+		t.Fatal(err)
+	}
+	local.Summary = nil
+	if err := runWaitList(context.Background(), sources, waitListOptions{all: true}, &without); err != nil {
+		t.Fatal(err)
+	}
+	if with.String() != without.String() {
+		t.Fatalf("out-of-scope GitHub text changed:\nwith %q\nwithout %q", with.String(), without.String())
+	}
+}
+func TestWaitSummaryLiveWithoutLocalState(t *testing.T) {
+	statePath := filepath.Join(shortTempDir(t), "uninitialized-state.db")
+	node := summaryTestNodeWait()
+	detail := summaryTestDetail()
+	detail.Artifacts = nil
+	for i := range detail.Tasks {
+		detail.Tasks[i].Task.Outputs = nil
+	}
+	serveFakeCoordinator(t, statePath, func(request map[string]any) any {
+		if request["nodeWait"] != nil {
+			return map[string]any{"version": backlogadmin.LocalTransportVersion, "nodeWait": backlogadmin.NodeWaitResponse{Waits: []domain.NodeWait{node}}}
+		}
+		return map[string]any{"version": backlogadmin.LocalTransportVersion, "response": backlogadmin.Response{Version: backlogadmin.CurrentReadVersion, Kind: backlogadmin.QueryWorkflow, Workflow: &detail}}
+	})
+	cfg := config.Default()
+	cfg.StatePath = statePath
+	cfg.BacklogV2.Mode = "coordinator"
+	var out bytes.Buffer
+	if err := cmdWaitSummary(context.Background(), cfg, []string{node.Request.ID, "--json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["source"] != "live" || got["schema"] != wait.WakeSummarySchema || got["headline"] == "" {
+		t.Fatal(out.String())
+	}
+}
 func TestWaitSummaryPrefersTheRecordedSummary(t *testing.T) {
 	node := summaryTestNodeWait()
 	recorded := wait.WakeSummary{Schema: "t3-steward.wake-summary/v1", Kind: "node", Headline: "recorded"}

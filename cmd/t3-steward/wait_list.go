@@ -340,7 +340,7 @@ func renderWaitList(out io.Writer, answer waitListAnswer, options waitListOption
 			line += " thread=" + orDash(row.Thread)
 		}
 		line += fmt.Sprintf(" registered=%s deadline=%s", formatTime(row.Registered), formatTime(row.Deadline))
-		if row.Summary != nil {
+		if row.Source == "coordinator" && strings.HasPrefix(row.ID, "nw-") && row.Summary != nil {
 			line += " summary=" + fmt.Sprintf("%q", row.Summary.Headline)
 		}
 		fmt.Fprintln(out, line)
