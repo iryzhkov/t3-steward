@@ -226,6 +226,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err := b.declarePackageCapabilities(ctx, &pkg, state.task.ReviewRequirements != nil); err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
+	b.offerResourceDemand(ctx, &pkg, state.attempt, assignment)
 	// Declared after negotiation, as the frozen session display is: the
 	// decision was frozen against the worker's inventory, which a replay may
 	// no longer be able to read.

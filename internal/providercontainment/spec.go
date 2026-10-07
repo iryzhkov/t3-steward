@@ -31,6 +31,8 @@ type Spec struct {
 	// Control is separate owned storage exposing only this namespace\'s API socket.
 	Control     *directoryresource.Identity `json:"control,omitempty"`
 	ControlPort int                         `json:"controlPort,omitempty"`
+	// Limits enforces the attempt's accounted reservation; nil is unsized.
+	Limits *Limits `json:"limits,omitempty"`
 }
 
 type Streams struct {

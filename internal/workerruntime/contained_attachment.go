@@ -52,6 +52,9 @@ func (p ContainedT3) observation(ctx context.Context, r ContainedAttachment) err
 	if err != nil {
 		return err
 	}
+	if obs.Failure != "" {
+		return fmt.Errorf("contained supervisor invocation ended: %s", obs.Failure)
+	}
 	if obs.Stopped || obs.State != "active/running" || obs.InvocationID == "" || obs.InvocationID != r.InvocationID {
 		return errors.New("contained supervisor invocation is unavailable or changed")
 	}

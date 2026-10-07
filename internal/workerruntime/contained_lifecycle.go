@@ -151,7 +151,8 @@ func (p ContainedT3) preparation(pkg workerproto.ExecutionPackage) (containedPre
 	}
 	if plan.Identity != pkg.Identity || plan.WorkerID != pkg.WorkerID ||
 		plan.Launch.ExecutionID != pkg.Identity.ThreadID || plan.Launch.Spec.WorkerID != pkg.WorkerID ||
-		!reflect.DeepEqual(plan.Launch.Spec.Directories, pkg.Environment.DirectoryBindings) {
+		!reflect.DeepEqual(plan.Launch.Spec.Directories, pkg.Environment.DirectoryBindings) ||
+		!reflect.DeepEqual(plan.Launch.Spec.Limits, containedLimits(pkg)) {
 		return plan, errors.New("contained preparation does not match package")
 	}
 	return plan, nil
@@ -195,6 +196,7 @@ func (p ContainedT3) PrepareExecution(ctx context.Context, pkg workerproto.Execu
 		spec := providercontainment.Spec{WorkerID: pkg.WorkerID, Directories: directoryresource.CloneBindings(pkg.Environment.DirectoryBindings),
 			RuntimePaths: append([]string(nil), p.Profile.RuntimePaths...), ProviderHosts: append([]string(nil), p.Profile.ProviderHosts...), ControlPort: 18881,
 			TaskEnvironment: pkg.Identity.TaskEnvironment(),
+			Limits:          containedLimits(pkg),
 			Command:         []string{"/steward", "worker", "contained-t3", "--node", p.Profile.Node, "--entry", p.Profile.T3Entry, "--port", "18881", "--opencode-binary", p.Profile.OpenCodeBinary, "--opencode-model", pkg.Route.Model}}
 		for _, name := range []string{"home", "control", "workspace"} {
 			dir := workspace
@@ -247,7 +249,7 @@ func (p ContainedT3) PrepareExecution(ctx context.Context, pkg workerproto.Execu
 	}
 	for {
 		if obs.Stopped || (obs.State != "active/running" && obs.State != "activating/start") {
-			return fmt.Errorf("%w: supervisor is %s", ErrContainedCustody, obs.State)
+			return containedFailure(obs)
 		}
 		client, e := t3api.NewContained(*plan.Launch.Spec.Control, p.Timeout)
 		if e == nil {

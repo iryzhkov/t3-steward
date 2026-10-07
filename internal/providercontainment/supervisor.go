@@ -23,6 +23,7 @@ type Supervisor struct {
 	Root       string
 	Executable string
 	command    func(context.Context, string, ...string) ([]byte, error)
+	warn       func(string, ...any)
 }
 
 type Launch struct {
@@ -37,6 +38,13 @@ type SupervisorObservation struct {
 	InvocationID string `json:"invocationId,omitempty"`
 	// Stopped is authoritative process custody, never provider/task success.
 	Stopped bool `json:"stopped"`
+	// Limits are the limits the launch requested; LimitsStatus says whether
+	// the unit reported them back as enforced. Both are empty when unsized.
+	Limits       *Limits `json:"limits,omitempty"`
+	LimitsStatus string  `json:"limitsStatus,omitempty"`
+	// Failure names why the run ended when the cause is known, such as the
+	// memory limit killing it. It outlives the unit's own state.
+	Failure string `json:"failure,omitempty"`
 }
 
 type launchIntent struct {
@@ -57,6 +65,9 @@ func (s Supervisor) invoke(ctx context.Context, command string, args ...string) 
 func (s Supervisor) identity(launch Launch) (unit, dir, digest string, payload []byte, err error) {
 	if strings.TrimSpace(launch.ExecutionID) == "" || len(launch.ExecutionID) > 512 || launch.Spec.WorkerID == "" {
 		err = errors.New("supervisor requires bounded execution and worker identities")
+		return
+	}
+	if err = launch.Spec.Limits.Validate(); err != nil {
 		return
 	}
 	if !filepath.IsAbs(s.Root) || filepath.Clean(s.Root) != s.Root || s.Root == "/" || !filepath.IsAbs(s.Executable) {
@@ -223,11 +234,15 @@ func (s Supervisor) Start(ctx context.Context, launch Launch) (SupervisorObserva
 	if err = syncDirectory(dir); err != nil {
 		return SupervisorObservation{}, err
 	}
-	_, err = s.invoke(ctx, "systemd-run", "--user", "--quiet", "--unit="+unit,
-		"--description=t3-containment:"+digest, "--service-type=exec", "--expand-environment=no",
+	args := []string{"--user", "--quiet", "--unit=" + unit,
+		"--description=t3-containment:" + digest, "--service-type=exec", "--expand-environment=no",
 		"--property=Restart=no", "--property=RemainAfterExit=yes",
-		"--property=KillMode=control-group", "--property=TimeoutStopSec=30s",
-		"--", s.Executable, "worker", "contained-exec", "--spec", filepath.Join(dir, "spec.json"))
+		"--property=KillMode=control-group", "--property=TimeoutStopSec=30s"}
+	for _, property := range launch.Spec.Limits.Properties() {
+		args = append(args, "--property="+property)
+	}
+	args = append(args, "--", s.Executable, "worker", "contained-exec", "--spec", filepath.Join(dir, "spec.json"))
+	_, err = s.invoke(ctx, "systemd-run", args...)
 	if err != nil {
 		return SupervisorObservation{Unit: unit, Digest: digest, State: "recovery-required"}, fmt.Errorf("supervisor start response uncertain; observe only: %w", err)
 	}
@@ -260,7 +275,10 @@ func (s Supervisor) Observe(ctx context.Context, launch Launch) (SupervisorObser
 	if err != nil {
 		return SupervisorObservation{}, err
 	}
-	observation := SupervisorObservation{Unit: unit, Digest: digest, State: "recovery-required"}
+	observation := SupervisorObservation{Unit: unit, Digest: digest, State: "recovery-required", Limits: launch.Spec.Limits}
+	if observation.Failure, err = recordedFailure(dir); err != nil {
+		return observation, err
+	}
 	if receipt, err := os.ReadFile(filepath.Join(dir, "stopped")); err == nil {
 		if string(receipt) != digest {
 			return observation, errors.New("invalid supervisor stop receipt")
@@ -271,7 +289,7 @@ func (s Supervisor) Observe(ctx context.Context, launch Launch) (SupervisorObser
 		return observation, err
 	}
 	data, err := s.invoke(ctx, "systemctl", "--user", "show", unit,
-		"--property=LoadState,Description,ActiveState,SubState,InvocationID")
+		"--property=LoadState,Description,ActiveState,SubState,InvocationID,Result,CPUQuotaPerSecUSec,MemoryMax")
 	if err != nil {
 		return observation, fmt.Errorf("supervisor observation unavailable: %w", err)
 	}
@@ -292,6 +310,21 @@ func (s Supervisor) Observe(ctx context.Context, launch Launch) (SupervisorObser
 	switch props["ActiveState"] {
 	case "active", "activating", "deactivating", "failed", "inactive":
 		observation.State = props["ActiveState"] + "/" + props["SubState"]
+	}
+	if launch.Spec.Limits != nil {
+		observation.LimitsStatus = LimitsApplied
+		if !launch.Spec.Limits.appliedBy(props) {
+			observation.LimitsStatus = LimitsNotApplied
+			s.noteOnce(dir, "limits-not-applied", "contained run limits not applied; the user manager may lack cgroup delegation",
+				"unit", unit, "cpu_quota", props["CPUQuotaPerSecUSec"], "memory_max", props["MemoryMax"])
+		}
+	}
+	if props["Result"] == "oom-kill" && observation.Failure == "" {
+		observation.Failure = launch.Spec.Limits.oomFailure()
+		// Keep the cause once the unit is stopped and its result is gone.
+		if err := writeExclusive(filepath.Join(dir, "failure"), []byte(observation.Failure)); err != nil && !errors.Is(err, os.ErrExist) {
+			s.logWarning("contained run failure could not be recorded", "unit", unit, "error", err)
+		}
 	}
 	// Even active/exited does not by itself prove all descendants stopped.
 	return observation, nil
