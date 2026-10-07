@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	modernsqlite "modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // runCollectionKeyPrefix is the kv namespace of run collections. A record
@@ -50,49 +48,22 @@ func (s *Store) CollectRun(ctx context.Context, threadID, runID, actor string, n
 	if now.IsZero() {
 		return none, false, errors.New("a run collection needs the time it was recorded")
 	}
-	// The transaction reads before it writes. When another connection to the
-	// database commits in between, SQLite refuses the upgrade to a write at
-	// once (SQLITE_BUSY, or SQLITE_BUSY_SNAPSHOT under WAL) and no busy
-	// timeout applies, so the whole transaction is retried a bounded number
-	// of times: nothing was written by the refused attempt.
-	for attempt := 1; ; attempt++ {
-		collection, changed, err := s.collectRunOnce(ctx, threadID, runID, actor, now)
-		if err == nil || !sqliteBusy(err) || attempt == collectRunAttempts {
-			return collection, changed, err
-		}
-		select {
-		case <-ctx.Done():
-			return none, false, err
-		case <-time.After(time.Duration(attempt) * 10 * time.Millisecond):
-		}
-	}
-}
-
-// collectRunAttempts bounds CollectRun's retries of a transaction another
-// connection's commit invalidated.
-const collectRunAttempts = 8
-
-// sqliteBusy reports whether err is SQLite's busy or locked refusal, under any
-// extended code.
-func sqliteBusy(err error) bool {
-	var sqliteErr *modernsqlite.Error
-	if !errors.As(err, &sqliteErr) {
-		return false
-	}
-	switch sqliteErr.Code() & 0xff {
-	case sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED:
-		return true
-	}
-	return false
-}
-
-func (s *Store) collectRunOnce(ctx context.Context, threadID, runID, actor string, now time.Time) (domain.RunCollection, bool, error) {
-	var none domain.RunCollection
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return none, false, err
 	}
 	defer tx.Rollback()
+	// Take SQLite's write reservation before the first read, as the lease and
+	// review-authority writes do. A transaction that reads first and then
+	// writes is refused at once with "database is locked" when another
+	// connection holds or has just committed a write, because SQLite does not
+	// apply the busy timeout to that upgrade. Reserving first makes a
+	// contending connection wait under the busy timeout instead. The statement
+	// changes nothing, whether or not the key exists.
+	key := runCollectionThreadPrefix(threadID) + runID
+	if _, err := tx.ExecContext(ctx, `UPDATE kv SET value = value WHERE key = ?`, key); err != nil {
+		return none, false, err
+	}
 
 	var raw []byte
 	err = tx.QueryRowContext(ctx, `SELECT record FROM coordinator_workflow_runs WHERE id = ?`, runID).Scan(&raw)
@@ -121,7 +92,6 @@ func (s *Store) collectRunOnce(ctx context.Context, threadID, runID, actor strin
 			domain.ErrRunCollectionRefused, runID, threadID)
 	}
 
-	key := runCollectionThreadPrefix(threadID) + runID
 	var stored string
 	err = tx.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, key).Scan(&stored)
 	switch {

@@ -227,8 +227,9 @@ func TestRunCollectionListIsPerThread(t *testing.T) {
 // Self-review regression: CollectRun reads before it writes, so when another
 // connection (another process on the coordinator host) commits in between,
 // SQLite refuses the upgrade to a write with "database is locked" and no busy
-// timeout applies. The collection is retried rather than reported as a
-// failure the caller can do nothing about.
+// timeout applies. The collection now reserves the write first and waits
+// under the busy timeout rather than reporting a failure the caller can do
+// nothing about.
 func TestRunCollectionSurvivesAConcurrentWriter(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")
@@ -280,6 +281,66 @@ func TestRunCollectionSurvivesAConcurrentWriter(t *testing.T) {
 	}
 	if len(counts) != 0 {
 		t.Fatalf("collections failed under a concurrent writer: %v", counts)
+	}
+}
+
+// Review regression: CollectRun read the run before it wrote, so a
+// connection holding SQLite's write lock made the upgrade fail at once with
+// "database is locked", without the busy timeout, and a bounded retry gave up
+// whenever the other writer held the lock longer than the retries lasted. The
+// collection takes the write reservation before its first read, as the lease
+// and review-authority writes do, so it waits under the busy timeout instead.
+func TestRunCollectionWaitsForAWriterHoldingTheLock(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	first, err := openMigratedFixture(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	now := time.Date(2026, 10, 7, 15, 0, 0, 0, time.UTC)
+	finished := now.Add(-time.Hour)
+	if err := first.SaveCoordinatorRecords(ctx, CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{
+		{ID: "run-x", WorkflowID: "w", Progress: domain.ProgressSucceeded, Revision: 1, CreatedAt: finished, UpdatedAt: finished, CompletedAt: &finished},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	saveTestNodeWait(t, first, domain.NodeWait{
+		Request:   domain.NodeWaitRequest{ID: "nw-1", ThreadID: "thread", Target: domain.NodeRef{RunID: "run-x", TaskID: domain.SinkTaskName}, Timeout: time.Hour},
+		CreatedAt: finished, Delivery: "pending",
+	})
+
+	conn, err := second.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.ExecContext(ctx, `UPDATE kv SET value = value WHERE key = 'unrelated'`); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan error, 1)
+	go func() {
+		time.Sleep(time.Second)
+		_, err := conn.ExecContext(ctx, `COMMIT`)
+		released <- err
+	}()
+	collection, changed, err := first.CollectRun(ctx, "thread", "run-x", "operator", now)
+	if rerr := <-released; rerr != nil {
+		t.Fatal(rerr)
+	}
+	if err != nil {
+		t.Fatalf("collect while another connection held the write lock: %v", err)
+	}
+	if !changed || collection.RunID != "run-x" {
+		t.Fatalf("collection = %+v changed=%v", collection, changed)
 	}
 }
 
