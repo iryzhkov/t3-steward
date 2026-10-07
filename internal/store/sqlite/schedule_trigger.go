@@ -118,8 +118,29 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 		return domain.ScheduleTriggerResult{}, ErrScheduleFailureHeld
 	}
 
+	var tasks []domain.Task
+	roleError := request.RoleResolutionError
+	if reason == "" {
+		tasks, err = loadWorkflowTasksTx(ctx, tx, template.WorkflowID)
+		if err != nil {
+			return domain.ScheduleTriggerResult{}, err
+		}
+		for _, task := range tasks {
+			if task.Role == "" {
+				continue
+			}
+			selection, ok := request.RouteSelections[task.ID]
+			if roleError == "" && (!ok || selection.Role != task.Role || !selection.Valid()) {
+				roleError = fmt.Sprintf("missing or invalid role selection for task %s (role %s)", task.ID, task.Role)
+			}
+		}
+	}
+	if reason == "" && roleError != "" {
+		reason = "role-unresolved"
+	}
 	trigger := domain.Trigger{
-		ID: request.TriggerID, ScheduleID: schedule.ID, ScheduleVersion: template.Version,
+		RoleResolutionError: roleError,
+		ID:                  request.TriggerID, ScheduleID: schedule.ID, ScheduleVersion: template.Version,
 		NominalAt: request.NominalAt.UTC(), OccurrenceKey: occurrenceKey,
 		State: domain.TriggerSuppressed, Reason: reason, ObservedAt: request.ObservedAt.UTC(),
 	}
@@ -129,13 +150,11 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 		trigger.State, trigger.WorkflowRunID = domain.TriggerAccepted, request.WorkflowRunID
 		run := domain.WorkflowRun{
 			ID: request.WorkflowRunID, WorkflowID: template.WorkflowID, ScheduleID: schedule.ID,
-			TriggerID: trigger.ID, Progress: domain.ProgressQueued, Revision: 1,
+			RouteSelections: request.RouteSelections,
+			TriggerID:       trigger.ID, Progress: domain.ProgressQueued, Revision: 1,
 			CreatedAt: request.ObservedAt.UTC(), UpdatedAt: request.ObservedAt.UTC(),
 		}
-		tasks, err := loadWorkflowTasksTx(ctx, tx, run.WorkflowID)
-		if err != nil {
-			return domain.ScheduleTriggerResult{}, err
-		}
+		tasks = domain.TasksForRun(run, tasks)
 		run, err = domain.BindRunSink(run, tasks)
 		if err != nil {
 			return domain.ScheduleTriggerResult{}, err

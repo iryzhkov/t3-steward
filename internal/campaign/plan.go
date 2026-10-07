@@ -77,6 +77,8 @@ type Options struct {
 // decided after submission against a capacity snapshot that does not exist yet.
 // The authoritative dynamic answer is the post-submission explanation.
 type Plan struct {
+	Role          string      `json:"role,omitempty"`
+	RoleEffort    string      `json:"roleEffort,omitempty"`
 	SchemaVersion int         `json:"schemaVersion"`
 	Name          string      `json:"name"`
 	Source        string      `json:"source,omitempty"`
@@ -220,11 +222,16 @@ type Commit struct {
 
 // Task is one projected node of the graph.
 type Task struct {
-	Name       string `json:"name"`
-	Wave       int    `json:"wave"`
-	PromptFile string `json:"promptFile,omitempty"`
-	Class      string `json:"class"`
-	ClassFrom  Origin `json:"classFrom"`
+	ReviewType            bool     `json:"reviewType,omitempty"`
+	LocalPolicyCandidates []string `json:"localPolicyCandidates,omitempty"`
+	Role                  string   `json:"role,omitempty"`
+	RoleEffort            string   `json:"roleEffort,omitempty"`
+	RoleFrom              Origin   `json:"roleFrom,omitempty"`
+	Name                  string   `json:"name"`
+	Wave                  int      `json:"wave"`
+	PromptFile            string   `json:"promptFile,omitempty"`
+	Class                 string   `json:"class"`
+	ClassFrom             Origin   `json:"classFrom"`
 	// Needs are the dependencies inside this workflow, sorted by name.
 	Needs []string `json:"needs,omitempty"`
 	// ExternalNeeds are dependencies on nodes of another run, written
@@ -371,6 +378,8 @@ func Project(manifest backlog.Manifest, opts Options) (Plan, error) {
 	}
 
 	plan := Plan{
+		Role:          manifest.Role,
+		RoleEffort:    manifest.Options["effort"],
 		SchemaVersion: PlanSchemaVersion,
 		Name:          manifest.Name,
 		Source:        opts.Source,
@@ -402,6 +411,7 @@ func Project(manifest backlog.Manifest, opts Options) (Plan, error) {
 	for _, name := range names {
 		source := manifest.Tasks[name]
 		task := Task{
+			ReviewType:    source.ReviewOutput != nil,
 			Name:          name,
 			Wave:          depth[name],
 			PromptFile:    source.PromptFile,
@@ -432,6 +442,14 @@ func Project(manifest backlog.Manifest, opts Options) (Plan, error) {
 			},
 			Root: len(needs[name]) == 0 && len(external[name]) == 0,
 			Leaf: len(dependents[name]) == 0,
+		}
+		if source.Role != "" {
+			task.Role = source.Role
+			task.RoleEffort = source.Options["effort"]
+			task.RoleFrom = OriginTask
+			if source.RoleInherited {
+				task.RoleFrom = OriginInherited
+			}
 		}
 		task.PlacementFrom = originOf(
 			reflect.DeepEqual(task.Placement, workflowPlacement),

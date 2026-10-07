@@ -961,7 +961,11 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	service.SetWorkerAuthorization(coordinatorWorkerAuthorization(cfg))
 	service.SetCommitBundleOpener(coordinatorCommitBundleOpener(store,
 		newCoordinatorRepositoryObserver(cfg.BacklogV2, workerruntime.ProtocolResolver{}, epoch, nil)))
+	roleResolver := coordinatorRoleResolver{}
+	roleSchedules := coordinatorRoleScheduleStore{Store: store, admin: service}
+	service.SetScheduleTriggerResolver(roleSchedules.ResolveScheduleTrigger)
 	service.SetViability(backlogadmin.ViabilitySettings{
+		ResolveRoles:      roleResolver.Resolve,
 		ResourcePolicy:    cfg.BacklogV2.Coordinator.ResourcePlacement.Policy(),
 		ReviewRoutes:      cfg.BacklogV2.ReviewRoutes,
 		Projects:          fleetProjects,
@@ -1020,6 +1024,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		// Every gate command is bounded by command_timeout at dispatch, so a
 		// longer gate is refused here instead of being withheld forever.
 		MaxGateTimeout: cfg.BacklogV2.Verification.CommandTimeout.D(),
+		Roles:          coordinatorManifestRoleResolver{admin: service},
 		Audit: func(_ context.Context, audit backlog.SubmissionAudit) {
 			if !audit.Unverified {
 				return
@@ -1102,7 +1107,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			LongWindowCap:           cfg.Backlog.LongWindowCap,
 			SurplusHorizon:          24 * time.Hour,
 		}},
-		schedules: backlog.ScheduleTimer{Store: store, CatchUpMax: cfg.BacklogV2.Scheduling.CatchUpMax},
+		schedules: backlog.ScheduleTimer{Store: roleSchedules, CatchUpMax: cfg.BacklogV2.Scheduling.CatchUpMax},
 		planning: coordinatorPlanner{
 			planningSnapshot: planningSnapshot,
 			settings:         &cfg.BacklogV2,

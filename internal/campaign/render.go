@@ -30,6 +30,12 @@ func RenderText(plan Plan) string {
 		header(&out, width, "digest", plan.Digest)
 	}
 	header(&out, width, "class", plan.Class)
+	if plan.Role != "" {
+		header(&out, width, "role", plan.Role+" (workflow)")
+		if plan.RoleEffort != "" {
+			header(&out, width, "options", "effort override: "+plan.RoleEffort)
+		}
+	}
 	header(&out, width, "environment", describeEnvironment(plan.Environment))
 	header(&out, width, "graph", describeTotals(plan.Totals))
 	header(&out, width, "sink", fmt.Sprintf(
@@ -113,6 +119,15 @@ func writeTask(out *strings.Builder, task Task) {
 		field(out, width, "prompt", task.PromptFile)
 	}
 	field(out, width, "class", fmt.Sprintf("%s (%s)", task.Class, task.ClassFrom))
+	if task.Role != "" {
+		field(out, width, "role", fmt.Sprintf("%s (%s)", task.Role, task.RoleFrom))
+		if len(task.LocalPolicyCandidates) > 0 {
+			field(out, width, "candidates", "local policy, not live: "+strings.Join(task.LocalPolicyCandidates, ", "))
+		}
+		if task.RoleEffort != "" {
+			field(out, width, "options", "effort override: "+task.RoleEffort)
+		}
+	}
 	if len(task.Needs) > 0 {
 		field(out, width, "needs", strings.Join(task.Needs, ", "))
 	}

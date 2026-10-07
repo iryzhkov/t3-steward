@@ -36,6 +36,8 @@ var manifestNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$
 // Manifest is the version 2 workflow.yaml submission format. ParseManifest
 // applies defaults so callers receive a complete, validated definition.
 type Manifest struct {
+	Role         string                  `yaml:"role,omitempty"`
+	Options      map[string]string       `yaml:"options,omitempty"`
 	Review       *review.Round           `yaml:"review,omitempty"`
 	Version      int                     `yaml:"version"`
 	Name         string                  `yaml:"name"`
@@ -87,6 +89,9 @@ type ManifestRoute struct {
 
 // ManifestTask is one node in a workflow manifest.
 type ManifestTask struct {
+	Role               string                      `yaml:"role,omitempty"`
+	Options            map[string]string           `yaml:"options,omitempty"`
+	RoleInherited      bool                        `yaml:"-" json:"-"`
 	ReviewOutput       *domain.ReviewOutput        `yaml:"review_output"`
 	ReviewRequirements *ManifestReviewRequirements `yaml:"review_requirements"`
 	Directories        []directoryresource.Request `yaml:"directories"`
@@ -278,6 +283,9 @@ func ParseManifest(raw []byte) (Manifest, error) {
 		return manifest, err
 	}
 
+	if err := validateAuthoredRoles(manifest); err != nil {
+		return manifest, err
+	}
 	applyManifestDefaults(&manifest)
 	if err := validateManifest(manifest); err != nil {
 		return manifest, err
@@ -353,8 +361,14 @@ func applyManifestDefaults(manifest *Manifest) {
 		if task.MaxTurns == 0 {
 			task.MaxTurns = 3
 		}
-		if len(task.Routes) == 0 {
-			task.Routes = cloneRoutes(manifest.Routes)
+		if task.Role == "" && len(task.Routes) == 0 {
+			if manifest.Role != "" {
+				task.Role = manifest.Role
+				task.Options = cloneRoleOptions(manifest.Options)
+				task.RoleInherited = true
+			} else {
+				task.Routes = cloneRoutes(manifest.Routes)
+			}
 		}
 		task.placementImpossible = len(manifest.Placement.Hosts) != 0 && len(task.Placement.Hosts) != 0 &&
 			len(intersectConstraints(manifest.Placement.Hosts, task.Placement.Hosts)) == 0
@@ -396,6 +410,69 @@ func ValidateGateTimeouts(manifest Manifest, maximum time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// validateAuthoredRoles runs before defaults so task options cannot attach to
+// an inherited role. Validation after defaults also guards programmatic callers.
+func validateAuthoredRoles(manifest Manifest) error {
+	if err := validateRole("workflow", manifest.Role, manifest.Options, manifest.Routes); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(manifest.Tasks))
+	for name := range manifest.Tasks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		task := manifest.Tasks[name]
+		if err := validateRole("task "+name, task.Role, task.Options, task.Routes); err != nil {
+			return err
+		}
+		if manifest.Review != nil && task.Role != "" {
+			return fmt.Errorf("role on task %s is not supported in a manifest review: round; use explicit routes", name)
+		}
+	}
+	return nil
+}
+func validateRole(label, role string, options map[string]string, routes []ManifestRoute) error {
+	if role != "" && len(routes) > 0 {
+		return fmt.Errorf("role and routes are mutually exclusive on %s; use one", label)
+	}
+	if role != "" && !review.IDPattern.MatchString(role) {
+		return fmt.Errorf("invalid role %q on %s; use a route policy role name", role, label)
+	}
+	if role == "" && options != nil {
+		return fmt.Errorf("options without role on %s; declare role or put options on routes", label)
+	}
+	keys := make([]string, 0, len(options))
+	for key := range options {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if key != "effort" {
+			return fmt.Errorf("unknown role option %q on %s; only effort is supported", key, label)
+		}
+		if !ValidPolicyEffort(options[key]) {
+			return fmt.Errorf("invalid role effort %q on %s; use low, medium, or high", options[key], label)
+		}
+	}
+	return nil
+}
+
+// ValidPolicyEffort is shared with the coordinator's route-policy parser.
+func ValidPolicyEffort(effort string) bool {
+	return effort == "low" || effort == "medium" || effort == "high"
+}
+func cloneRoleOptions(options map[string]string) map[string]string {
+	if options == nil {
+		return nil
+	}
+	result := make(map[string]string, len(options))
+	for key, value := range options {
+		result[key] = value
+	}
+	return result
 }
 
 func cloneRoutes(routes []ManifestRoute) []ManifestRoute {
@@ -460,6 +537,9 @@ func uniqueSorted(values []string) []string {
 }
 
 func validateManifest(manifest Manifest) error {
+	if err := validateAuthoredRoles(manifest); err != nil {
+		return err
+	}
 	if err := ValidateReviewManifest(manifest); err != nil {
 		return err
 	}

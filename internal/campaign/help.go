@@ -53,6 +53,36 @@ declared task with a native subagent: t3-steward campaign help authoring.
 // agent's context, and this is read once, while authoring.
 var AuthoringHelp = `How many tasks a campaign should have, and what a task may not delegate.
 
+Roles for campaigns and schedules
+  role: execute
+  options: {effort: low}
+
+A workflow role is inherited by tasks that declare neither role nor routes.
+A task's own role replaces workflow routes and a task's own routes replaces
+the workflow role. role and routes are mutually exclusive on the same object.
+options without role is refused, even when the task inherits a workflow role.
+Role options accept only effort: low, medium or high; max and higher are refused.
+An override may lower the selected candidate's policy effort, never raise it.
+Unknown option keys and malformed role names are refused offline; an unknown
+coordinator role or unavailable policy is refused before submission. Manifest
+review: round members must use explicit routes.
+
+The coordinator reads its route policy at resolution and chooses one eligible
+concrete route per role task. validate and plan remain offline; a local policy
+is advisory, while check reports the coordinator's selection and provenance.
+Submission freezes that selection, and rerun reuses it. A registered schedule
+resolves roles afresh for each occurrence; replay keeps the original selection.
+Manifests without role keep their existing explicit-route behavior.
+
+Review-type role tasks (review or critical-review, or tasks with review_output:)
+prefer the first eligible candidate outside every known local producer family.
+Producers come from inputs_from, or local needs when inputs_from is empty.
+If none qualifies, the first eligible candidate is used with a diversity
+fallback reason. Unknown producer families do not apply the preference.
+Explicit routes always stay as written. This preference is also applied to
+schedule occurrences and never grants eligibility or review authority.
+
+
 Multi-task work is authored as a static version 2 DAG. Every task declared in
 workflow.yaml becomes a task the Steward schedules: it is admitted against quota
 on its own, placed on a worker on its own, and run in its own T3 session with
@@ -628,9 +658,40 @@ const RoutesHelp = `Provider routes: which instance and model run a task.
       options: {effort: medium}    # optional; passed to T3's model selection
 
 routes may be declared for the whole workflow or per task; a task's own list
-replaces the inherited one. The coordinator never invents a route: a task with
-none is refused (no-route). "t3-steward models" lists every instance/model the
-fleet offers, with its pool and quota state.
+replaces the inherited one. A task with neither routes nor an effective role
+is refused (no-route). "t3-steward models" lists every instance/model the fleet
+offers, with its pool and quota state.
+
+Roles for campaigns and schedules
+  role: execute
+  options: {effort: low}
+
+A workflow role is inherited by tasks that declare neither role nor routes.
+A task's own role replaces workflow routes and a task's own routes replaces
+the workflow role. role and routes are mutually exclusive on the same object.
+options without role is refused, even when the task inherits a workflow role.
+Role options accept only effort: low, medium or high; max and higher are refused.
+An override may lower the selected candidate's policy effort, never raise it.
+Unknown option keys and malformed role names are refused offline; an unknown
+coordinator role or unavailable policy is refused before submission. Manifest
+review: round members must use explicit routes.
+
+The coordinator reads its route policy at resolution and chooses one eligible
+concrete route per role task. validate and plan remain offline; a local policy
+is advisory, while check reports the coordinator's selection and provenance.
+Submission freezes that selection, and rerun reuses it. A registered schedule
+resolves roles afresh for each occurrence; replay keeps the original selection.
+Manifests without role keep their existing explicit-route behavior.
+
+Review-type role tasks (review or critical-review, or tasks with review_output:)
+prefer the first eligible candidate outside every known local producer family.
+Producers come from inputs_from, or local needs when inputs_from is empty.
+If none qualifies, the first eligible candidate is used with a diversity
+fallback reason. Unknown producer families do not apply the preference.
+Explicit routes always stay as written. This preference is also applied to
+schedule occurrences and never grants eligibility or review authority.
+
+
 
 quota_pool may be left out: it is the pool the fleet catalog binds the instance
 to. Naming a different pool is refused by check (unknown-quota-pool).
