@@ -238,6 +238,7 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			// advertises them, so an older worker never meets the field.
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityResourceTelemetry) {
 				request.ReportResourceTelemetry = true
+				request.ZramSwapWanted = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityZramSwapTelemetry)
 			}
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaObservations) {
 				request.QuotaObservationsWanted = true
@@ -408,11 +409,7 @@ func (c FleetCoordinator) ReconcileWorker(
 		}
 		// Older workers decode assignment placement strictly. Project only the
 		// wire copy; the durable assignment keeps its complete decision trace.
-		if offer.Assignment.Placement != nil && !slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityResourceTelemetry) {
-			placement := *offer.Assignment.Placement
-			placement.ResourceEvaluations = nil
-			offer.Assignment.Placement = &placement
-		}
+		offer.Assignment.Placement = offerPlacement(offer.Assignment.Placement, snapshot.Inventory.Capabilities)
 		offers = append(offers, offer)
 		report.Offered = append(report.Offered, assignment)
 	}

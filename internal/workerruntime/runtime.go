@@ -211,6 +211,9 @@ func AdvertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilityResourceTelemetry) {
 		merged = append(merged, workerproto.CapabilityResourceTelemetry)
 	}
+	if !slices.Contains(merged, workerproto.CapabilityZramSwapTelemetry) {
+		merged = append(merged, workerproto.CapabilityZramSwapTelemetry)
+	}
 	for _, capability := range workerproto.SupportedPackageCapabilities() {
 		if !slices.Contains(merged, capability) {
 			merged = append(merged, capability)
@@ -917,7 +920,7 @@ func (r *Runtime) prepare(ctx context.Context, id string) error {
 	if err := r.setPrepareAttempts(id, attempts); err != nil {
 		return err
 	}
-	workspace, err := r.driver.Prepare(ctx, record.Package.Package)
+	workspace, err := r.driver.Prepare(withAttemptProcessLimits(ctx, record), record.Package.Package)
 	if err != nil {
 		if errors.Is(err, ErrContainedCustody) {
 			// An uncertain contained preparation must never spend budget: its
@@ -1048,7 +1051,7 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 	case backlog.DispatchThreadStopped:
 		return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, pkg.Identity.ThreadID)
 	case backlog.DispatchThreadMissing:
-		if err := r.driver.CreateThread(ctx, pkg, record.WorkspacePath); err != nil {
+		if err := r.driver.CreateThread(withAttemptProcessLimits(ctx, record), pkg, record.WorkspacePath); err != nil {
 			observed, observeErr := r.driver.ObserveThread(ctx, pkg)
 			switch {
 			case observeErr == nil && observed == backlog.DispatchThreadActive:

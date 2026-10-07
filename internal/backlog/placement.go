@@ -95,6 +95,10 @@ type WorkerEvaluation struct {
 	WorkerID   string                     `json:"workerId"`
 	Eligible   bool                       `json:"eligible"`
 	Exclusions []WorkerExclusion          `json:"exclusions,omitempty"`
+	// Notes explain how a worker was evaluated without excluding it, such as
+	// a sized demand counted as one slot on a worker that declares no cpu or
+	// memory capacity.
+	Notes []string `json:"notes,omitempty"`
 }
 
 // WorkerPlacement is a deterministic capability-matching result. Provider
@@ -211,8 +215,12 @@ func evaluateWorker(request WorkerPlacementRequest, worker domain.WorkerInventor
 		}
 		return exclusions[i].Code < exclusions[j].Code
 	})
+	var notes []string
+	if domain.CountsSizedDemandAsSlot(request.Task.ResourceDemand, worker.Allocatable) {
+		notes = append(notes, fmt.Sprintf("worker %q declares no cpu/memory capacity; sized demand counted as one slot", worker.ID))
+	}
 	return WorkerEvaluation{
-		WorkerID: worker.ID, Eligible: len(exclusions) == 0, Exclusions: exclusions, Resource: &resource,
+		WorkerID: worker.ID, Eligible: len(exclusions) == 0, Exclusions: exclusions, Resource: &resource, Notes: notes,
 	}
 }
 
@@ -236,9 +244,14 @@ func epochExclusions(request WorkerPlacementRequest, worker domain.WorkerInvento
 // is never excluded for capacity it was not asked to provide.
 //
 // These constraints concern configured capacity. Live memory, swap and disk
-// safety floors are applied separately by liveResourceEvaluation; CPU load
-// remains a ranking observation and does not redefine configured capacity.
+// safety floors and the build load ceiling are applied separately by
+// liveResourceEvaluation; CPU load does not redefine configured capacity.
+//
+// Sizes are checked only on the dimensions the worker declares (see
+// domain.GoverningDemand): a worker that declares no cpu or memory capacity
+// counts a sized demand against its slots alone, as it counts unsized work.
 func capacityExclusions(demand domain.ResourceDemand, worker domain.WorkerInventory) []WorkerExclusion {
+	demand = domain.GoverningDemand(demand, worker.Allocatable)
 	if demand.IsZero() {
 		return nil
 	}
@@ -262,12 +275,6 @@ func capacityExclusions(demand domain.ResourceDemand, worker domain.WorkerInvent
 
 	snapshot := worker.CapacitySnapshot()
 	sized := demand.CPUUnits > 0 || demand.MemoryMB > 0 || demand.ScratchMB > 0
-	if sized && snapshot.Allocatable.IsZero() {
-		return append(exclusions, WorkerExclusion{
-			Code:   ExclusionCapacityExhausted,
-			Detail: fmt.Sprintf("worker %q declares no allocatable capacity for a sized task", worker.ID),
-		})
-	}
 	if sized && snapshot.FreeSlots() < 1 {
 		exclusions = append(exclusions, WorkerExclusion{
 			Code: ExclusionCapacityExhausted,

@@ -307,6 +307,7 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		processID := fmt.Sprintf("setup-%s-%s-%s-%d", request.WorkflowRunID, request.Task.ID, request.Attempt.ID, index)
 		_, err := p.processRunner().Run(setupCtx, ProcessRequest{
 			ID: processID, Dir: workspaceDir, Program: "/bin/sh", Args: []string{"-c", command}, Log: logFile,
+			Limits: ProcessLimitsFromContext(ctx),
 		})
 		if err != nil {
 			if setupCtx.Err() != nil {

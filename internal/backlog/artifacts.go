@@ -582,7 +582,8 @@ func (f AttemptFinalizer) runVerification(ctx context.Context, processID, worksp
 		// Set the umask only in the verification child, matching an agent's
 		// conventional shell without changing the worker's private writes.
 		// Pass the command as an argument so the wrapper never interpolates it.
-		Args: []string{"-c", `umask 022 && exec "$0" "$@"`, "/bin/sh", "-c", command},
+		Args:   []string{"-c", `umask 022 && exec "$0" "$@"`, "/bin/sh", "-c", command},
+		Limits: ProcessLimitsFromContext(ctx),
 	})
 	completed := f.now()
 	report := VerificationReport{

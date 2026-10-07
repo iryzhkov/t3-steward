@@ -656,6 +656,7 @@ func newCoordinatorWorkerSession(
 		}
 		accepted, err := catalogClient.Catalog(ctx, workerruntime.CatalogRequest{Projection: projection, ExpectedRevision: expectedRevision})
 		if err != nil {
+			slog.Warn("worker did not accept the catalog", "worker", workerID, "revision", projection.Revision, "expected", expectedRevision, "error", err)
 			return coordinatorWorkerSession{}, err
 		}
 		if accepted["revision"] != binding.CatalogRevision || accepted["workerId"] != workerID {

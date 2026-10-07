@@ -174,6 +174,14 @@ const CapabilityTurnEndCommands = "turn-end-commands-v1"
 // CapabilityResourceTelemetry gates optional fields for peers with strict JSON decoding.
 const CapabilityResourceTelemetry = "resource-telemetry-v1"
 
+// CapabilityZramSwapTelemetry advertises that this worker build reports how
+// much of its swap is on zram, in WorkerTelemetry.ZramSwapUsedMB, when asked
+// with ZramSwapWanted. It is gated separately from CapabilityResourceTelemetry
+// because a coordinator and a worker that already exchange telemetry decode
+// it strictly, and so does a worker reading another worker's telemetry in a
+// placement trace.
+const CapabilityZramSwapTelemetry = "resource-telemetry-zram-v1"
+
 // CapabilityQuotaRunway advertises that this worker build can add the dispatch
 // runway (burn rate, drain threshold, projected drain crossing and drain
 // deadline) to its quota observations when asked. It is gated separately from
@@ -183,6 +191,9 @@ const CapabilityQuotaRunway = "quota-runway-v1"
 
 type SnapshotRequest struct {
 	ReportResourceTelemetry bool `json:"reportResourceTelemetry,omitempty"`
+	// ZramSwapWanted asks for the zram part of the swap figure; see
+	// CapabilityZramSwapTelemetry.
+	ZramSwapWanted bool `json:"zramSwapWanted,omitempty"`
 	// ObservedWorkerEpoch and ObservedSequence acknowledge a durable snapshot
 	// read before the coordinator builds this parked-assignment statement.
 	ObservedWorkerEpoch string             `json:"observedWorkerEpoch,omitempty"`

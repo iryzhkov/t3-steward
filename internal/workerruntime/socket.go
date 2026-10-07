@@ -4,14 +4,23 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
+// FrameHandler serves one frame. A handler that refuses a request it could
+// still answer returns both the signed reply and the reason: the reply is sent
+// and the stream stays open, and the reason is logged.
 type FrameHandler func(context.Context, []byte) ([]byte, error)
+
+// listenerLog is where the listener reports a request it could not serve.
+// Nothing a peer sends ends its stream without a logged reason.
+var listenerLog = slog.Default
 
 // ServeWorkerListener bounds peers and frame size and serializes runtime effects.
 // FrameHandler must authenticate every request; socket access grants no authority.
@@ -54,6 +63,9 @@ func ServeWorkerListener(ctx context.Context, listener net.Listener, limit int64
 				}
 				raw, err := codec.Read(conn)
 				if err != nil {
+					if !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrDeadlineExceeded) && ctx.Err() == nil {
+						listenerLog().Warn("worker stream request refused", "error", err)
+					}
 					return
 				}
 				requestCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -65,11 +77,15 @@ func ServeWorkerListener(ctx context.Context, listener net.Listener, limit int64
 				}
 				reply, err := handle(requestCtx, raw)
 				<-serial
-				if err == nil {
-					err = codec.Write(conn, reply)
-				}
 				cancel()
 				if err != nil {
+					listenerLog().Warn("worker stream request failed", "error", err, "answered", len(reply) != 0)
+					if len(reply) == 0 {
+						return
+					}
+				}
+				if err := codec.Write(conn, reply); err != nil {
+					listenerLog().Warn("worker stream reply not sent", "error", err)
 					return
 				}
 			}

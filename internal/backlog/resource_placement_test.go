@@ -188,11 +188,11 @@ func TestResourcePresetSizes(t *testing.T) {
 		preset       string
 		cpu          float64
 		memory, disk int
-	}{{"build", 2, 4096, 8192}, {"light", .25, 256, 512}, {"", 1, 1024, 0}} {
+	}{{"build", 4, 6000, 8192}, {"light", .5, 1000, 512}, {"", 1, 1024, 0}} {
 		r := ManifestResources{Preset: tc.preset}
 		expandResourcePreset(&r)
-		if r.CPUUnits != nil || r.MemoryMB != nil || r.ScratchMB != nil {
-			t.Fatalf("preset %q sized configured capacity: %+v", tc.preset, r)
+		if (r.CPUUnits != nil) != (tc.preset != "") {
+			t.Fatalf("preset %q expanded sizes %+v", tc.preset, r)
 		}
 		needs := expectedResourceNeeds(domain.Task{ResourceDemand: resourceDemandFor(r), ResourcePreset: r.Preset}, policy)
 		if needs.CPUUnits != tc.cpu || needs.MemoryMB != tc.memory || needs.ScratchMB != tc.disk {
