@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -99,12 +100,12 @@ func (s *coordinatorSummarySource) OpenSummaryArtifact(ctx context.Context, id s
 }
 
 // summaryRunOf is the workflow detail as the summary builder reads it: tasks
-// in the detail's order, each with its latest attempt and that attempt's
-// retained outputs. A coordinator too old to list artifacts yields tasks with
-// none, which the builder shows as unreadable rather than absent.
+// in manifest order, each with its latest attempt and that attempt's retained
+// outputs. A coordinator too old to list artifacts yields tasks with none,
+// which the builder shows as unreadable where an output is declared.
 func summaryRunOf(detail backlogadmin.WorkflowDetail) wait.SummaryRun {
 	run := wait.SummaryRun{ID: detail.Summary.Run.ID, Workflow: detail.Summary.Workflow.Name, Progress: detail.Summary.Run.Progress}
-	for _, task := range detail.Tasks {
+	for _, task := range manifestOrder(detail) {
 		row := wait.SummaryTask{ID: task.Task.ID, Name: task.Task.Name, Outputs: task.Task.Outputs}
 		if task.Sink != nil {
 			row.ID, row.Name, row.Sink, row.Progress = task.Sink.ID, domain.SinkTaskName, true, task.Sink.Progress
@@ -130,6 +131,30 @@ func summaryRunOf(detail backlogadmin.WorkflowDetail) wait.SummaryRun {
 		run.Tasks = append(run.Tasks, row)
 	}
 	return run
+}
+
+// manifestOrder is the detail's tasks in the workflow's declared task order.
+// The detail lists them sorted by name, and the headline's "last review" and
+// "last head" mean last in the manifest. Tasks the manifest does not list,
+// such as the sink, keep their relative order after the listed ones.
+func manifestOrder(detail backlogadmin.WorkflowDetail) []backlogadmin.TaskDetail {
+	position := map[string]int{}
+	for i, id := range detail.Summary.Workflow.TaskIDs {
+		if _, seen := position[id]; !seen {
+			position[id] = i
+		}
+	}
+	rank := func(task backlogadmin.TaskDetail) int {
+		if task.Sink == nil {
+			if i, ok := position[task.Task.ID]; ok {
+				return i
+			}
+		}
+		return len(position)
+	}
+	tasks := append([]backlogadmin.TaskDetail(nil), detail.Tasks...)
+	sort.SliceStable(tasks, func(i, j int) bool { return rank(tasks[i]) < rank(tasks[j]) })
+	return tasks
 }
 
 // waitSummarySources are where "wait summary" finds a wait and its summary.

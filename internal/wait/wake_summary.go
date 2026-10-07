@@ -727,6 +727,9 @@ func (s WakeSummary) lastKnown(cell func(WakeSummaryTask) string) (WakeSummaryTa
 func (s WakeSummary) nodeHeadline() (string, string, string) {
 	var segments []string
 	verdict, head := "", ""
+	// The segment each trailer pair is shown in, so a pair never outlives its
+	// segment when the headline is shortened.
+	verdictAt, headAt := -1, -1
 	if s.sink {
 		status := s.Progress
 		switch domain.ProgressState(s.Progress) {
@@ -748,6 +751,7 @@ func (s WakeSummary) nodeHeadline() (string, string, string) {
 		}
 		segments = append(segments, status)
 		if review, ok := s.lastKnown(func(t WakeSummaryTask) string { return t.Verdict }); ok && review.Task != cellUnreadable {
+			verdictAt = len(segments)
 			segments = append(segments, review.Task+" "+review.Verdict)
 			verdict = review.Verdict
 		}
@@ -762,6 +766,7 @@ func (s WakeSummary) nodeHeadline() (string, string, string) {
 		}
 		segments = append(segments, name+": "+task.Progress)
 		if task.Verdict != "" && task.Verdict != cellUnreadable {
+			verdictAt = len(segments)
 			segments = append(segments, task.Verdict)
 			verdict = task.Verdict
 		}
@@ -770,12 +775,19 @@ func (s WakeSummary) nodeHeadline() (string, string, string) {
 		}
 	}
 	if head != "" {
+		headAt = len(segments)
 		segments = append(segments, "head "+head[:7])
 	}
 	headline := strings.Join(segments, " | ")
 	for len(headline) > summaryHeadlineMax && len(segments) > 1 {
 		segments = segments[:len(segments)-1]
 		headline = strings.Join(segments, " | ")
+	}
+	if verdictAt >= len(segments) {
+		verdict = ""
+	}
+	if headAt >= len(segments) {
+		head = ""
 	}
 	if verdict != "" {
 		verdict = strings.ToLower(strings.ReplaceAll(verdict, "_", "-"))
@@ -840,6 +852,9 @@ func (s WakeSummary) nodeProse(rows *int) string {
 		b.WriteString(": " + annotationQuote(failure, summaryFailureClip))
 	}
 	b.WriteString(".\n")
+	if *rows < 0 {
+		*rows = 0
+	}
 	shown := len(s.Tasks)
 	if shown > summaryTableRows {
 		shown = summaryTableRows
@@ -920,7 +935,7 @@ func (s WakeSummary) Text() string {
 		}
 	case string(domain.WaitKindGitHub):
 		for _, group := range s.Groups {
-			fmt.Fprintf(&b, "%s x%d %s:%d-%d %s %s\n", group.Level, group.Count, annotationQuote(group.Path, 120), group.Start, group.End,
+			fmt.Fprintf(&b, "%s x%d %s:%d-%d %s %s\n", annotationLevel(group.Level), group.Count, annotationQuote(group.Path, 120), group.Start, group.End,
 				annotationQuote(group.Title, 80), annotationQuote(group.Message, 240))
 		}
 		for _, noise := range s.Noise {

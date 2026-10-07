@@ -252,21 +252,36 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			}
 			continue
 		}
-		// The summary is built here, once, before the payload is frozen below:
-		// a wake already sending or awaiting recovery was handled above with
-		// its frozen bytes and never reaches this point.
-		wake := []domain.NodeWait{w}
-		if grouped {
-			wake = members
-		}
-		summaries := buildNodeSummaries(ctx, r.NodeSummary, wake)
-		text := nodeWakeMessage(w, summaries[0])
+		var text string
 		memberIDs := []string{w.Request.ID}
 		if grouped {
-			text = nodeGroupMessageWith(members, summaries)
 			memberIDs = memberIDs[:0]
 			for _, member := range members {
 				memberIDs = append(memberIDs, member.Request.ID)
+			}
+		}
+		if w.DeliveryPayload != "" {
+			// An earlier attempt froze this wake and is known to have had no
+			// effect (offline, busy). The retry sends the same bytes: the
+			// summary reads live coordinator state, so rebuilding it could
+			// differ, and the store refuses a claim that differs from the
+			// frozen payload, which would leave the wake unsendable.
+			text = w.DeliveryPayload
+			if len(w.DeliveryGroupMembers) != 0 {
+				memberIDs = append([]string(nil), w.DeliveryGroupMembers...)
+			}
+		} else {
+			// The summary is built here, once, before the payload is frozen
+			// below: a wake already sending or awaiting recovery was handled
+			// above with its frozen bytes and never reaches this point.
+			wake := []domain.NodeWait{w}
+			if grouped {
+				wake = members
+			}
+			summaries := buildNodeSummaries(ctx, r.NodeSummary, wake)
+			text = nodeWakeMessage(w, summaries[0])
+			if grouped {
+				text = nodeGroupMessageWith(members, summaries)
 			}
 		}
 		var claimed bool

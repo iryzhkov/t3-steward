@@ -514,6 +514,23 @@ func TestNodeWakeSummaryHeadlineStaysWithinBound(t *testing.T) {
 	}
 }
 
+// A trailer pair never outlives the headline segment that shows it
+// (self-review lens 4).
+func TestNodeHeadlinePairsFollowTheTrimmedSegments(t *testing.T) {
+	long := func(c string) string { return strings.Repeat(c, 64) }
+	s := WakeSummary{sink: true, Workflow: long("w"), Progress: "failed", Tasks: []WakeSummaryTask{
+		{Task: long("f"), Progress: "failed", Gate: "RESULT EXIT -2147483648"},
+		{Task: long("r"), Progress: "succeeded", Verdict: "CHANGES_REQUESTED", Head: strings.Repeat("b", 40)},
+	}}
+	headline, verdict, head := s.nodeHeadline()
+	if len(headline) > summaryHeadlineMax {
+		t.Fatalf("%d bytes", len(headline))
+	}
+	if (verdict != "") != strings.Contains(headline, "CHANGES_REQUESTED") || (head != "") != strings.Contains(headline, "head bbbbbbb") {
+		t.Fatalf("pairs %q %q do not match headline %q", verdict, head, headline)
+	}
+}
+
 func TestNodeGroupWakeSummariesShareTheRowCap(t *testing.T) {
 	now := time.Now()
 	var members []domain.NodeWait

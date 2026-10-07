@@ -654,10 +654,7 @@ func (g *annotationGroup) add(f annotationFound) {
 // line renders one group: level, count, the first three checks, location,
 // title and message, every remote field quoted.
 func (g *annotationGroup) line(messageClip int) string {
-	level := g.record.Level
-	if level != "failure" && level != "warning" && level != "notice" {
-		level = annotationQuote(level, 30)
-	}
+	level := annotationLevel(g.record.Level)
 	names := make([]string, 0, 3)
 	for i, name := range g.checks {
 		if i == 3 {
@@ -671,6 +668,14 @@ func (g *annotationGroup) line(messageClip int) string {
 	}
 	return fmt.Sprintf("> %s x%d %s | %s:%d-%d | %s %s", level, g.count, checks,
 		annotationQuote(g.record.Path, 120), g.record.Start, g.record.End, annotationQuote(g.record.Title, 80), annotationQuote(g.record.Message, messageClip))
+}
+
+// annotationLevel prints a level: a known one as is, anything else quoted.
+func annotationLevel(level string) string {
+	if level != "failure" && level != "warning" && level != "notice" {
+		return annotationQuote(level, 30)
+	}
+	return level
 }
 
 // annotationNoiseTally is one known-noise class at one level.
@@ -738,11 +743,27 @@ func noiseLines(noise []*annotationNoiseTally) []string {
 // checksLine is the per-check links collapsed into one line, keeping the run
 // or pull request URL.
 func (c *annotationCollection) checksLine(targetURL string) string {
-	parts := make([]string, 0, len(c.checkNames))
+	// Bounded by quoted length, which escaping can make several times the
+	// name's, so the line always fits and always ends with the URL.
+	const limit = 1200
+	links := " (links: " + annotationQuote(targetURL, 512) + ")"
+	line := "Checks: "
+	shown := 0
 	for _, check := range c.checkNames {
-		parts = append(parts, fmt.Sprintf("%s %d", annotationQuote(check.name, 40), check.id))
+		part := fmt.Sprintf("%s %d", annotationQuote(check.name, 40), check.id)
+		if shown > 0 {
+			part = ", " + part
+		}
+		if len(line)+len(part) > limit {
+			break
+		}
+		line += part
+		shown++
 	}
-	return "Checks: " + strings.Join(parts, ", ") + " (links: " + annotationQuote(targetURL, 512) + ")"
+	if more := len(c.checkNames) - shown; more > 0 {
+		line += fmt.Sprintf(" +%d more", more)
+	}
+	return line + links
 }
 
 // detail is the header followed by the links and the aggregated detail
@@ -751,7 +772,10 @@ func (c *annotationCollection) checksLine(targetURL string) string {
 // before any warning, so a warning never displaces one; known noise is one
 // line; other groups are capped, with a count of the rest.
 func (c *annotationCollection) detail(header, targetURL string) string {
-	budget := gitHubAnnotationOutput - 150
+	// The closing lines (the count of groups not shown and the count of lines
+	// omitted) are written into the margin above the budget, so they always fit
+	// under the output ceiling.
+	budget := gitHubAnnotationOutput - 300
 	// Room kept for the closing count of groups not shown.
 	const reserve = 120
 	failures, others, noise := c.grouped()
@@ -833,8 +857,12 @@ func (c *annotationCollection) summary(t GitHubTarget, fields map[string]string,
 		for _, name := range group.checks {
 			checks = append(checks, summaryText(name, 100))
 		}
+		level := group.record.Level
+		if level != "failure" && level != "warning" && level != "notice" {
+			level = "unknown"
+		}
 		s.Groups = append(s.Groups, WakeSummaryGroup{
-			Level: summaryText(group.record.Level, 30), Count: group.count, Path: summaryText(group.record.Path, 120),
+			Level: level, Count: group.count, Path: summaryText(group.record.Path, 120),
 			Start: group.record.Start, End: group.record.End, Title: summaryText(group.record.Title, 80),
 			Message: summaryText(group.record.Message, gitHubFailureMessage), Checks: checks,
 		})

@@ -200,6 +200,41 @@ func TestSummaryRunOfKeepsTheLatestAttemptAndOlderCoordinators(t *testing.T) {
 	}
 }
 
+// The workflow detail lists tasks by name; the summary's rows and its "last
+// review" follow the manifest instead (self-review lens 3).
+func TestSummaryRunOfFollowsTheManifestOrder(t *testing.T) {
+	detail := summaryTestDetail()
+	detail.Tasks = append(detail.Tasks, backlogadmin.TaskDetail{
+		Task:    domain.Task{ID: "task-early-review", Name: "areview", Outputs: []domain.ArtifactDeclaration{{Name: "review.md"}}},
+		Attempt: &domain.Attempt{ID: "attempt-early", Progress: domain.ProgressSucceeded},
+	})
+	detail.Artifacts = append(detail.Artifacts, backlogadmin.Artifact{Metadata: backlogadmin.ArtifactMetadata{ID: "artifact-early",
+		TaskID: "task-early-review", AttemptID: "attempt-early", Kind: domain.ArtifactOutput, Name: "review.md", Size: 16}})
+	// Manifest: areview, gate, review2. By name the detail already reads
+	// areview, gate, review2, so the manifest is reversed to tell them apart.
+	detail.Summary.Workflow.TaskIDs = []string{"task-review", "task-gate", "task-early-review"}
+	run := summaryRunOf(detail)
+	var names []string
+	for _, task := range run.Tasks {
+		names = append(names, task.Name)
+	}
+	if strings.Join(names, ",") != "review2,gate,areview,"+domain.SinkTaskName {
+		t.Fatalf("order = %v", names)
+	}
+	source := summaryTestSource(t, detail, nil)
+	bodies := source.open
+	source.open = func(ctx context.Context, id string) (backlogadmin.ArtifactContent, error) {
+		if id == "artifact-early" {
+			return backlogadmin.ArtifactContent{Content: io.NopCloser(strings.NewReader("VERDICT: ACCEPT\n"))}, nil
+		}
+		return bodies(ctx, id)
+	}
+	s := wait.BuildNodeSummary(context.Background(), source, summaryTestNodeWait())
+	if s.Verdict != "accept" || !strings.HasSuffix(s.Headline, "| areview ACCEPT") {
+		t.Fatalf("the last review in manifest order is areview: %q %q", s.Headline, s.Verdict)
+	}
+}
+
 func TestWaitListJSONCarriesTheGitHubSummary(t *testing.T) {
 	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
 	stored := &wait.WakeSummary{Schema: wait.WakeSummarySchema, Kind: "github", Headline: "run 1 success | failures 0 | warnings 0 (0 known noise) | annotations complete", State: "complete"}
