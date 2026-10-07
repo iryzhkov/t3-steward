@@ -28,6 +28,26 @@ func TestCatalogActivationKeepsTheWorkerResultSecretScan(t *testing.T) {
 	}
 	assertServedScan(host, "published catalog")
 
+	// A republished catalog builds the runtime again.
+	settings, err := projection.Settings(host.Bootstrap, host.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, project := range settings.Projects {
+		project.T3Project = ""
+		settings.Projects[name] = project
+		break
+	}
+	changed, err := BuildCatalogProjection(settings, projection.WorkerID)
+	if err != nil || changed.Revision == projection.Revision {
+		t.Fatalf("catalog did not change: %v", err)
+	}
+	publishCatalog(t, host, "second", CatalogRequest{Projection: changed, ExpectedRevision: projection.Revision})
+	if host.retained.Projection.Revision != changed.Revision {
+		t.Fatal("republished catalog not applied")
+	}
+	assertServedScan(host, "republished catalog")
+
 	restarted := &CatalogHost{Home: host.Home, Bootstrap: host.Bootstrap, Options: host.Options}
 	restarted.Options.Settings = config.BacklogV2{ResultSecretScan: local}
 	if err := restarted.Load(context.Background()); err != nil {
