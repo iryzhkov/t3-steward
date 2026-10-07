@@ -85,17 +85,10 @@ func prepareReviewCandidate(a reviewArgs, project backlogadmin.Project, round *r
 			return candidate, cleanup, err
 		}
 		defer os.RemoveAll(dir)
-		if _, err = reviewCandidateGit(ctx, "init", "--bare", "--quiet", dir); err != nil {
+		if err = reviewFetchProject(ctx, dir, project.Repository); err != nil {
 			return candidate, cleanup, err
 		}
-		// Fetch into an isolated store: stale origin tracking refs cannot authorize
-		// a candidate and checking reachability never changes the caller's refs.
-		if _, err = reviewCandidateGit(ctx, "-C", dir, "fetch", "--quiet", "--no-tags", "--", project.Repository,
-			"+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"); err != nil {
-			return candidate, cleanup, fmt.Errorf("check candidate on project remote: %w", err)
-		}
-		refs, err := reviewCandidateGit(ctx, "-C", dir, "for-each-ref", "--contains="+head, "--format=%(refname)", "refs/heads", "refs/tags")
-		if err != nil || refs == "" {
+		if !reviewRemoteContains(ctx, dir, head) {
 			return candidate, cleanup, errors.New("candidate is not reachable on the project remote; push the commit or use --bundle")
 		}
 		round.HeadCommit = head
@@ -172,38 +165,46 @@ func prepareReviewCandidate(a reviewArgs, project backlogadmin.Project, round *r
 	if environmentRef == "" {
 		return fail(errors.New("bundle without prerequisites requires project default_ref"))
 	}
-	// Even a self-contained bundle must belong to this project. Import into a
-	// disposable repository to check common ancestry without touching checkout.
-	anchorRef := project.DefaultRef
-	if anchorRef == "" {
-		anchorRef = "HEAD"
-	}
-	anchor, err := reviewResolveCommit(anchorRef)
-	if err != nil {
-		return fail(fmt.Errorf("resolve project default_ref for bundle ancestry: %w", err))
-	}
-	checkout, err := os.Getwd()
-	if err != nil {
-		return fail(err)
-	}
+	// Check the same remote a worker will clone, rather than trusting refs or
+	// objects present only in the caller's checkout. This also supplies every
+	// prerequisite for the probe, including divergent merge parents.
 	probe, err := os.MkdirTemp(dir, "probe-")
 	if err != nil {
 		return fail(err)
 	}
-	if _, err = reviewCandidateGit(ctx, "init", "--bare", "--quiet", probe); err != nil {
+	if err = reviewFetchProject(ctx, probe, project.Repository); err != nil {
 		return fail(err)
 	}
-	if _, err = reviewCandidateGit(ctx, "-C", probe, "fetch", "--quiet", "--no-tags", "--", checkout, anchor); err != nil {
-		return fail(err)
-	}
-	// Import prerequisite objects from the project checkout before the bundle.
 	for _, prerequisite := range prerequisites {
-		if _, err = reviewCandidateGit(ctx, "-C", probe, "fetch", "--quiet", "--no-tags", "--", checkout, prerequisite); err != nil {
-			return fail(err)
+		if !reviewRemoteContains(ctx, probe, prerequisite) {
+			return fail(fmt.Errorf("bundle prerequisite %s is not reachable on the project remote; push the prerequisite or use a self-contained --bundle", prerequisite))
 		}
+	}
+	anchorRef := project.DefaultRef
+	if anchorRef == "" {
+		anchorRef = base
+	}
+	if anchorRef == "HEAD" {
+		raw, remoteErr := reviewCandidateGit(ctx, "ls-remote", "--", project.Repository, "HEAD")
+		if remoteErr != nil {
+			return fail(remoteErr)
+		}
+		fields := strings.Fields(raw)
+		if len(fields) != 2 {
+			return fail(errors.New("project remote has no default HEAD for bundle ancestry"))
+		}
+		anchorRef = fields[0]
+	}
+	anchor, err := reviewCandidateGit(ctx, "-C", probe, "rev-parse", "--verify", "--end-of-options", anchorRef+"^{commit}")
+	if err != nil || !reviewRemoteContains(ctx, probe, anchor) {
+		return fail(errors.New("project default_ref for bundle ancestry is not reachable on the project remote"))
 	}
 	if _, err = reviewCandidateGit(ctx, "-C", probe, "fetch", "--quiet", "--no-tags", "--", path, head); err != nil {
 		return fail(err)
+	}
+	objectType, err := reviewCandidateGit(ctx, "-C", probe, "cat-file", "-t", head)
+	if err != nil || objectType != "commit" {
+		return fail(errors.New("review bundle head must name a commit"))
 	}
 	if _, err = reviewCandidateGit(ctx, "-C", probe, "merge-base", anchor, head); err != nil {
 		return fail(errors.New("review bundle is unrelated to the project default_ref"))

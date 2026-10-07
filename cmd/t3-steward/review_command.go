@@ -142,13 +142,21 @@ func parseReviewArgs(args []string) (reviewArgs, error) {
 		return a, errors.New("--risk must be routine or risky")
 	}
 	candidateModes := 0
-	for _, value := range []string{a.commit, a.bundle, a.diff, a.diffFile} {
-		if value != "" {
+	provided := map[string]bool{}
+	f.Visit(func(flag *flag.Flag) {
+		provided[flag.Name] = true
+		switch flag.Name {
+		case "commit", "bundle", "diff", "diff-file":
 			candidateModes++
 		}
-	}
+	})
 	if candidateModes > 1 {
 		return a, errors.New("--commit, --bundle, --diff and --diff-file are mutually exclusive")
+	}
+	for _, input := range []struct{ name, value string }{{"commit", a.commit}, {"bundle", a.bundle}, {"base", a.base}, {"diff", a.diff}, {"diff-file", a.diffFile}} {
+		if provided[input.name] && input.value == "" {
+			return a, fmt.Errorf("--%s requires a nonempty value", input.name)
+		}
 	}
 	if a.base != "" && a.commit == "" {
 		return a, errors.New("--base requires --commit")

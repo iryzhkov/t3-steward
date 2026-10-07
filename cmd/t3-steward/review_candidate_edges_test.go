@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ func TestReviewCandidateBundleMultiplePrerequisites(t *testing.T) {
 	right := candidateGit(t, "rev-parse", "HEAD")
 	candidateGit(t, "checkout", "--detach", f.head)
 	candidateGit(t, "merge", "--no-ff", "-qm", "merge", right)
+	candidateGit(t, "push", "-q", "origin", f.head+":refs/heads/left", right+":refs/heads/right")
 	path := filepath.Join(f.root, "merge.bundle")
 	candidateGit(t, "bundle", "create", path, "HEAD", "^"+f.head, "^"+right)
 	dir, err := candidateBuild(t, f, "--bundle", path)
@@ -29,6 +31,40 @@ func TestReviewCandidateBundleMultiplePrerequisites(t *testing.T) {
 	}
 	if err := backlog.ValidateReviewManifest(b.Manifest); err != nil {
 		t.Fatal(err)
+	}
+	other := reviewInputTempDir(t)
+	candidateGit(t, "clone", "-q", f.remote, other)
+	candidateGit(t, "-C", other, "checkout", "--detach", b.Manifest.Environment.Ref)
+	mounted := filepath.Join(other, ".t3", "inputs")
+	if err := os.MkdirAll(mounted, 0700); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "merge.bundle"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mounted, "merge.bundle"), raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range b.Manifest.Tasks {
+		prompt, err := os.ReadFile(filepath.Join(dir, task.PromptFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		commands := []string{"set -e"}
+		for _, line := range strings.Split(string(prompt), "\n") {
+			if strings.HasPrefix(line, "git fetch ") || strings.HasPrefix(line, "git checkout ") {
+				commands = append(commands, line)
+			}
+		}
+		cmd := exec.Command("sh", "-c", strings.Join(commands, "\n"))
+		cmd.Dir = other
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("exact prompt failed: %v %s", err, output)
+		}
+		if got := candidateGit(t, "-C", other, "rev-parse", "HEAD"); got != b.Manifest.Review.HeadCommit {
+			t.Fatal("wrong checkout", got)
+		}
 	}
 }
 func TestReviewCandidateBundlePrerequisiteWithoutDefault(t *testing.T) {

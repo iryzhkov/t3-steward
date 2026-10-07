@@ -77,9 +77,13 @@ excluded. `--diff-file` accepts a previously generated diff.
 on the catalog project remote. Add `--base REF` to snapshot its bounded diff;
 without it no diff is generated. An unpushed candidate is refused with
 "push the commit or use --bundle".
-`--bundle FILE` verifies and snapshots a single-head Git bundle, including bundles
+`--bundle FILE` verifies and snapshots a single-head Git bundle whose head is a
+commit object (annotated tag objects are refused), including bundles
 from `campaign commit export`. Its prerequisites must resolve in the current
-checkout; unrelated bundles are refused. Reviewers start from its prerequisite
+checkout and be reachable on the catalog project remote, so every worker can
+prepare them; unpublished prerequisites are refused with a push or self-contained
+bundle remedy. Ancestry is checked against the project's remote default ref;
+unrelated bundles are refused. Reviewers start from its prerequisite
 base (or the project default ref for a self-contained bundle), then receive exact
 fetch and detached-checkout commands for the pinned candidate. Bundle bytes keep
 the same 1 MiB per-file limit as other inputs. These candidate modes require a
