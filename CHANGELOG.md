@@ -6,6 +6,148 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+Database migrations V39 and V42 (schema 37 to 42). Every new worker
+behaviour below is gated by a capability the peer advertises, so rc.115 and
+rc.116 workers keep running ordinary tasks against this coordinator; tasks
+that need a new behaviour (a `review:` gate, a worker-owned `gate:`,
+continuation hand-on, cross-worker commit bundles) are offered only to
+upgraded workers.
+
+### Changed
+
+- Migration runner: the coordinator now applies every missing registered
+  schema migration in ascending order, including versions below the highest
+  one already applied, so a database that took V42 before V39 (or V39
+  before a later version) is completed on upgrade. Versions at or below 37
+  keep the old contiguous rule. A database carrying an applied version this
+  binary does not register above 37 is refused as newer than supported, and
+  a backup snapshot with pending migrations is refused. This release
+  registers V39 and V42 and reports schema 42; V35, V36, V40 and V41 are
+  unused and V38 is reserved.
+- Watchdog quota-drain parking: the worker's own quota pause no longer
+  blocks while a drained thread stops. The drain notice is sent on one
+  reconcile pass and the stop is observed, and `.t3/checkpoint.md` read, on a
+  later one; a notice that cannot be delivered for a stopped bucket is
+  retried and then escalated to a hard stop after the escalation window. A
+  turn that ends on its own while a host quota drain is in force is parked as
+  the worker's quota pause rather than collected, and completion is checked
+  against that exact turn before any resume. Each quota episode gets its own
+  notice and escalation window; an episode ends when its bucket recovers or
+  its window resets. Drain records written by rc.116 are read as already sent.
+  Workers advertise `quota-runway-v1`, and a coordinator that sees it asks
+  for the dispatch runway (burn rate, drain threshold, projected drain
+  crossing and drain deadline) in quota observations; planning and admission
+  use the earlier of the reported and the projected crossing. Worker
+  liveness is now written after each reconcile pass, at most once a minute,
+  and bridges an expired lease for at most an hour.
+- M17-2 quota-aware route ranking: automatic route selection for
+  `task run --role ...` and review roles ranks eligible candidates with
+  `route-ranking/v1`: band (reset-soon, healthy, unknown, gated), then policy
+  order, then lower maximum used percentage, then route. Missing or stale
+  telemetry never outranks known headroom, and a failed quota query falls
+  back to policy order. Explicit model and reviewer pins are not ranked.
+  Ranking never refuses admission. Text, JSON and `--dry-run` receipts show
+  the ranking version, the chosen route and each candidate's band, pool and
+  reason; `route-selection.json` records the ranking version and chosen route,
+  so run keys change once with this release.
+- Wake legibility: the text of wait and wake output changes. A terminal node
+  wake's trailer gains `summary=` after `wait=`, and `verdict=` and `head=`
+  when known (other pairs are unchanged); its prose is a one-line headline
+  and a task table (state, review verdict, gate result, head), built from the
+  coordinator within fixed time and read bounds, or a single
+  `Summary unavailable (<category>)` line. The coordinator's structured review
+  verdict line is kept beside the summary. GitHub wait annotations are
+  grouped and counted, every distinct failure is printed first, known noise
+  (Node.js 20 deprecation, cache restore) is summarised in one line, other
+  groups are capped at 8, and per-check links collapse into one Checks line.
+  The long "First inspect current instructions" paragraph of interactive
+  wakes is replaced by one shared guidance line; task-bound wakes are
+  unchanged. The summary is also available as JSON
+  (`t3-steward.wake-summary/v1`). Scripts and skills that parse wake prose
+  must be updated; the trailer pairs they already read are unchanged.
+- G5 CI runners: GitHub workflows pin every action to the commit of a Node 24
+  release and run Linux jobs on `ubuntu-26.04`; no job, step or trigger
+  changes.
+
+### Added
+
+- M16-3 physical-HEAD review gate: a task that declares `review:` completes
+  only with the head its latest review round accepted. The worker reports the
+  workspace's physical HEAD and tracked changes after verification (package
+  capability `workspace-head-v1`; only such workers are offered these tasks),
+  and the coordinator fails the attempt with one of
+  `review-required`, `review-not-accepted`, `head-changed-after-review`,
+  `dirty-tree-after-review` or `workspace-head-unknown` and a detail naming
+  both heads; `accepted-head` passes. A review-declared task's declared
+  commits are staged per attempt and become its campaign output only when an
+  accepted dependent consumes them (package capability
+  `accepted-dependencies-v1`); a rejected staging is never published. The
+  decision is recorded with the attempt: `task result` prints a
+  `review gate:` line and `backlog explain` a detail, and their JSON gains a
+  `reviewGate` object (explain only for extended-read clients). A staged
+  commit has no cross-worker bundle: its provenance records
+  `bundleOmitted: bundle-omitted:staged`, and a consumer on another worker is
+  refused with that reason. See docs/m16-review-completion-gate.md.
+- M16-6 continuation checkpoints (migration V39): the worker snapshots the
+  task's `continuation.md` (at most 64 KiB) at each turn end, pause and
+  collection, hands each new snapshot to the coordinator while the attempt
+  runs, and includes the latest with the result, failed results included.
+  The next attempt of the task receives the latest imported snapshot as an
+  input. Only packages that declare `continuation-checkpoint-v1` carry
+  snapshots, so older workers and coordinators never see them. Output
+  changes: `backlog explain` and `task result` print a `checkpoint:` line
+  (`continuation.md N bytes captured TIME by ATTEMPT` or `no checkpoint`) and
+  their JSON gains a `checkpoint` object. V39 adds
+  `coordinator_assignment_continuations`, which binds each dispatch to the
+  worker that may publish its snapshots. See docs/continuation-checkpoints.md.
+- C1 ownership leases (migration V42): `t3-steward lease
+  acquire|renew|release|check|show|list` holds named, expiring, fenced leases
+  on `repo:<project>/<branch>` and `release:<name>`, so two coordinating
+  threads cannot integrate or release the same repository at once. Acquire
+  needs `--reason`; TTL defaults to 2h (5m to 12h); a fresh acquire returns a
+  new fencing token. Exit 0 means held by the caller, 10 a conflict, wrong
+  token or authority refusal, 11 free or expired; transport failures keep
+  exits 3 to 8. `--json` prints one response; mutations replay by
+  `--request-id`. An older coordinator answers that leases are unsupported.
+  V42 adds `coordinator_leases` and `coordinator_lease_receipts`. See
+  docs/leases.md.
+- H2 worker-owned final gate: a task may declare
+  `gate: {commands: [...], timeout: 30m}`. After verification passes, the
+  producing worker runs the commands on the final workspace HEAD outside the
+  agent turn, each in its own transient scope, and fails the task if any
+  fails; the workspace must be clean apart from declared outputs and `.t3`.
+  Evidence is uploaded as the reserved artifacts `gate` (stored as
+  `gate/report.json`) and `gate/log.txt`, which dependents may request
+  through `inputs_from`. Declared commits are pinned to the gated commit, and
+  a declared output rewritten after the gate fails the attempt. Submission
+  refuses a gate timeout above `backlog_v2.verification.command_timeout`.
+  Gate tasks need worker capability `worker-owned-gate-v1`. Output changes:
+  `task result` prints a `gate:` line and its JSON gains `gate`; `backlog
+  explain` gains a worker gate evidence detail and `gateArtifactId`/`gate`
+  fields. A task that declares a gate and keeps an undeclared
+  `continuation.md` fails the clean-workspace check; declare it as an output.
+  See docs/worker-owned-gate.md.
+- M17-4a atomic quota admission: submission admits a campaign's dispatchable
+  root tasks against shared quota truth in the same transaction that creates
+  the run, with the demand already admitted. A refusal reads `quota admission
+  refused: ...; no run was created`, and an admitted run records a
+  `quotaAdmission` receipt (pools, windows, roots, costs and decisions).
+  Committed admissions are recovered before a pending submission is
+  replayed. No migration.
+- C1 campaign compile: `t3-steward campaign compile PLAN --out DIR [--unit
+  ID]... [--force] [--check] [--json]` turns a compile/v1 plan (Markdown with
+  YAML front matter) into one version 2 campaign directory per unit, an
+  implement task declaring the commit `implementation` and a review task,
+  validates and plans each unit, and never submits. `campaign list --thread
+  current|ID` (and `backlog list --thread`) keeps the runs with a coordinator
+  node wait for that thread; it is filtered on the client and works against
+  any coordinator.
+- B1 planning explanations: `backlog explain` and `campaign diagnose` explain
+  a ready or blocked task with the last successful coordinator planning pass
+  (its verdict, blocker codes and age), and say so when no pass has run yet;
+  blocker lines name the worker and quota pool when known (`[worker W, pool
+  P]`). `campaign diagnose` no longer prints explanations for terminal tasks.
+
 ## [0.11.0-rc.116] - 2026-10-06
 
 No database migration (schema 37). Workers on rc.114 or rc.115 keep working
