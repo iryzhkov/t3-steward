@@ -92,6 +92,18 @@ func deriveQuotaPlanningWindows(
 		if state.DrainsAt != nil && (window.DrainAt.IsZero() || state.DrainsAt.Before(window.DrainAt)) {
 			window.DrainAt = state.DrainsAt.UTC()
 		}
+		// Every admission path uses this budget. A supplied projection may be
+		// earlier, but cannot extend the crossing implied by the same reading.
+		if state.AppliedThresholds != nil && state.RatePerMinute > 0 &&
+			state.UsedPercent < state.AppliedThresholds.DrainPercent {
+			nanos := (state.AppliedThresholds.DrainPercent - state.UsedPercent) / state.RatePerMinute * float64(time.Minute)
+			if finiteQuotaPlanningNumber(nanos) && nanos >= 0 && nanos < float64(math.MaxInt64) {
+				crossing := state.ObservedAt.Add(time.Duration(nanos)).UTC()
+				if window.DrainAt.IsZero() || crossing.Before(window.DrainAt) {
+					window.DrainAt = crossing
+				}
+			}
+		}
 		if state.ExhaustsIn != nil {
 			exhaustion := now.Add(*state.ExhaustsIn)
 			if window.DrainAt.IsZero() || exhaustion.Before(window.DrainAt) {
