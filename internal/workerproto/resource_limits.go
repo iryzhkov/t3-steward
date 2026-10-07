@@ -8,7 +8,8 @@ import (
 
 // PackageCapabilityContainedLimits says the package carries the resource
 // demand the coordinator accounted for the attempt, in ResourceDemand, and that
-// the worker enforces it as the CPU and memory limits of a contained run. The
+// the worker enforces it as the CPU and memory limits of a contained run. An
+// uncontained run of the same package is not limited by this capability. The
 // coordinator offers it only to a worker that advertises it, so an older worker
 // keeps receiving exactly the package it received before.
 const PackageCapabilityContainedLimits = "contained-resource-limits-v1"

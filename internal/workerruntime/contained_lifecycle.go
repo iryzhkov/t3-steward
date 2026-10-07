@@ -308,7 +308,11 @@ func (p ContainedT3) Quiesce(ctx context.Context, pkg workerproto.ExecutionPacka
 	if _, err = p.captured(pkg); errors.Is(err, os.ErrNotExist) {
 		capture := containedCapture{Identity: pkg.Identity, WorkerID: pkg.WorkerID, Archive: []byte("{}")}
 		record, e := p.load(pkg)
-		if e == nil {
+		if ended := p.endedRun(ctx, record, e, force); ended != nil {
+			// The provider is gone with its unit, so there is no outcome to
+			// capture; keep why it ended, then stop the unit below.
+			capture.Message = ended.Failure
+		} else if e == nil {
 			client, e := p.client(ctx, record)
 			if e != nil {
 				return e

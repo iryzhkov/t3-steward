@@ -45,10 +45,10 @@ func TestContainedObservationNamesTheMemoryReservation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), failure) {
 		t.Fatalf("observation error %v does not name the reservation", err)
 	}
-	if got := containedFailure(providercontainment.SupervisorObservation{State: "failed/failed", Failure: failure}); !errors.Is(got, ErrContainedCustody) || !strings.Contains(got.Error(), failure) {
+	if got := containedFailure(providercontainment.SupervisorObservation{State: "failed/failed", Failure: failure}); got == nil || errors.Is(got, ErrContainedCustody) || !strings.Contains(got.Error(), failure) {
 		t.Fatalf("custody error %v", got)
 	}
-	if got := containedFailure(providercontainment.SupervisorObservation{State: "inactive/dead"}); got == nil || got.Error() != ErrContainedCustody.Error()+": supervisor is inactive/dead" {
+	if got := containedFailure(providercontainment.SupervisorObservation{State: "inactive/dead"}); !errors.Is(got, ErrContainedCustody) || got.Error() != ErrContainedCustody.Error()+": supervisor is inactive/dead" {
 		t.Fatalf("plain custody error changed: %v", got)
 	}
 }

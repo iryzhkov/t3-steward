@@ -154,6 +154,29 @@ func recordedFailure(dir string) (string, error) {
 	return string(data), nil
 }
 
+// recordFailure publishes the failure record whole: a crash leaves either no
+// record or the complete one, never an empty file that would hide the cause.
+// Concurrent observers of one launch derive the same text, so replacing an
+// existing record is harmless.
+func recordFailure(dir, failure string) error {
+	tmp, err := os.CreateTemp(dir, ".failure-")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	_, writeErr := tmp.WriteString(failure)
+	syncErr := tmp.Sync()
+	closeErr := tmp.Close()
+	if err = errors.Join(writeErr, syncErr, closeErr); err != nil {
+		return err
+	}
+	if err = os.Rename(name, filepath.Join(dir, "failure")); err != nil {
+		return err
+	}
+	return syncDirectory(dir)
+}
+
 // noteOnce logs a warning the first time any supervisor, in this or a later
 // worker process, observes the condition for this launch. The marker in the
 // supervisor journal is what makes it once; losing it only repeats the log.

@@ -332,6 +332,35 @@ func TestContainedOOMFailureNamesTheReservation(t *testing.T) {
 	if got, err := other.Observe(context.Background(), otherLaunch); err != nil || got.Failure != "" {
 		t.Fatalf("exit-code failure named the reservation: %+v %v", got, err)
 	}
+	// A failure record a crash left empty, or one that cannot be read, never
+	// hides the cause or blocks observation and stop.
+	torn, tornLaunch, tornFake := limitedFixture(t, LimitsFor(domain.ResourceDemand{CPUUnits: 4, MemoryMB: 6000}))
+	started, err := torn.Start(context.Background(), tornLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(torn.Root, started.Unit, "failure"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	tornFake.active, tornFake.result = "failed/failed", "oom-kill"
+	if got, err := torn.Observe(context.Background(), tornLaunch); err != nil || got.Failure != want {
+		t.Fatalf("torn record observation %+v %v", got, err)
+	}
+	if got, err := torn.Stop(context.Background(), tornLaunch); err != nil || !got.Stopped || got.Failure != want {
+		t.Fatalf("cause lost after stop with a torn record: %+v %v", got, err)
+	}
+	broken, brokenLaunch, _ := limitedFixture(t, LimitsFor(domain.ResourceDemand{MemoryMB: 100}))
+	started, err = broken.Start(context.Background(), brokenLaunch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(broken.Root, started.Unit, "failure"), []byte(strings.Repeat("x", 4096)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	broken.warn = func(string, ...any) {}
+	if got, err := broken.Stop(context.Background(), brokenLaunch); err != nil || !got.Stopped {
+		t.Fatalf("oversized failure record blocked stop: %+v %v", got, err)
+	}
 	// An unsized run killed by the kernel still says why.
 	unsized, unsizedLaunch, unsizedFake := limitedFixture(t, nil)
 	if _, err := unsized.Start(context.Background(), unsizedLaunch); err != nil {

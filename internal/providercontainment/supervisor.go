@@ -276,8 +276,10 @@ func (s Supervisor) Observe(ctx context.Context, launch Launch) (SupervisorObser
 		return SupervisorObservation{}, err
 	}
 	observation := SupervisorObservation{Unit: unit, Digest: digest, State: "recovery-required", Limits: launch.Spec.Limits}
+	// The record only explains a failure. An unreadable one must never block
+	// observing or stopping the unit, so it is reported and otherwise ignored.
 	if observation.Failure, err = recordedFailure(dir); err != nil {
-		return observation, err
+		s.logWarning("contained run failure record unreadable", "unit", unit, "error", err)
 	}
 	if receipt, err := os.ReadFile(filepath.Join(dir, "stopped")); err == nil {
 		if string(receipt) != digest {
@@ -322,7 +324,7 @@ func (s Supervisor) Observe(ctx context.Context, launch Launch) (SupervisorObser
 	if props["Result"] == "oom-kill" && observation.Failure == "" {
 		observation.Failure = launch.Spec.Limits.oomFailure()
 		// Keep the cause once the unit is stopped and its result is gone.
-		if err := writeExclusive(filepath.Join(dir, "failure"), []byte(observation.Failure)); err != nil && !errors.Is(err, os.ErrExist) {
+		if err := recordFailure(dir, observation.Failure); err != nil {
 			s.logWarning("contained run failure could not be recorded", "unit", unit, "error", err)
 		}
 	}

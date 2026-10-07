@@ -3,6 +3,7 @@ package backlog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"slices"
 	"strings"
@@ -12,6 +13,47 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
+
+type flakyLimitsInventory struct {
+	packageRecordStore
+	fail *bool
+}
+
+func (s flakyLimitsInventory) LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error) {
+	if *s.fail {
+		return nil, errors.New("database is locked")
+	}
+	return []domain.WorkerSnapshot{{WorkerID: "normandy", Inventory: domain.WorkerInventory{Capabilities: []string{workerproto.PackageCapabilityContainedLimits}}}}, nil
+}
+
+// An unreadable inventory withholds a sized offer instead of building a
+// package without the demand, which a later replay would then contradict.
+func TestUnreadableInventoryWithholdsASizedOfferInsteadOfDroppingItsLimits(t *testing.T) {
+	now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	records, assignment := packageBuilderFixture(now)
+	sized := domain.ResourceDemand{CPUUnits: 4, MemoryMB: 6000}
+	assignment.ExecutorDemand = &sized
+	for index := range records.Assignments {
+		if records.Assignments[index].ID == assignment.ID {
+			records.Assignments[index] = assignment
+		}
+	}
+	builder := packageBuilder(t, records)
+	fail := true
+	builder.Store = flakyLimitsInventory{packageRecordStore: builder.Store.(packageRecordStore), fail: &fail}
+	if offer, err := builder.BuildAssignmentOffer(context.Background(), assignment, now.Add(time.Minute)); err == nil {
+		t.Fatalf("offer built without reading the inventory: demand %+v", offer.Package.Package.ResourceDemand)
+	}
+	fail = false
+	first, err := builder.BuildAssignmentOffer(context.Background(), assignment, now.Add(time.Minute))
+	if err != nil || first.Package.Package.ResourceDemand == nil {
+		t.Fatalf("recovered offer: %+v %v", first.Package.Package.ResourceDemand, err)
+	}
+	replay, err := builder.BuildAssignmentOffer(context.Background(), assignment, now.Add(2*time.Minute))
+	if err != nil || !reflect.DeepEqual(first.Package, replay.Package) {
+		t.Fatalf("replay changed the package: %v", err)
+	}
+}
 
 func TestOfferCarriesTheAccountedDemandToAWorkerThatEnforcesIt(t *testing.T) {
 	now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
