@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"strings"
 )
 
 type LeaseStore interface {
@@ -92,16 +91,25 @@ func leaseCompatibilityError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Match the coordinator's own answer exactly rather than anywhere in the
+	// text: a refusal that echoes client input (an unknown lease action) must
+	// not be rewritten into upgrade guidance.
+	var transport *TransportError
 	message := err.Error()
+	if errors.As(err, &transport) && transport.Err != nil {
+		message = transport.Err.Error()
+	}
+	switch {
 	// Older local coordinators strictly decode the envelope before dispatch:
 	// the missing Lease field therefore fails before the unknown-operation path.
-	unsupportedLocalField := strings.Contains(message, `decode local admin frame: json: unknown field "lease"`)
-	if !unsupportedLocalField && !strings.Contains(message, "unknown local admin operation") && !strings.Contains(message, "unknown admin frame operation") && !strings.Contains(message, "unknown operation \"lease\"") {
+	case message == `decode local admin frame: json: unknown field "lease"`:
+	case message == "unknown local admin operation", message == "unknown admin frame operation":
+	case message == `coordinator-exchange: unknown operation "lease"`:
+	default:
 		return err
 	}
 	upgrade := errors.New("the coordinator does not support leases; upgrade it")
-	var transport *TransportError
-	if errors.As(err, &transport) {
+	if transport != nil {
 		copy := *transport
 		copy.Err = upgrade
 		return &copy

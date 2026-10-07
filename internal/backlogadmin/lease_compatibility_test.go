@@ -29,6 +29,18 @@ func TestLeaseCompatibilityStrictDecodeIsSpecific(t *testing.T) {
 			t.Fatalf("rewrote unrelated error %q: %v", message, got)
 		}
 	}
+	// Self-review: a refusal that echoes client input containing one of the
+	// old-coordinator phrases must not be rewritten into upgrade guidance.
+	for _, message := range []string{
+		`unknown lease action "x unknown local admin operation"`,
+		`unknown lease action "x unknown admin frame operation"`,
+		`lease service: unknown operation "lease" in plan`,
+	} {
+		original := &TransportError{Class: ClassRejected, Operation: "lease", Coordinator: "new", Err: errors.New(message)}
+		if got := leaseCompatibilityError(original); got != original {
+			t.Fatalf("rewrote echoed refusal %q: %v", message, got)
+		}
+	}
 	if leaseCompatibilityError(nil) != nil {
 		t.Fatal("rewrote success")
 	}
