@@ -174,6 +174,7 @@ func TestCompilePlanRefusals(t *testing.T) {
 		{"route without a model", strings.Replace(head, "instance: codex, model: m,", "instance: codex,", 1) + "units:\n  - {id: a, section: A}\n" + body, []string{"plan.md:7:", "model"}},
 		{"key after a document end", head + "units:\n  - {id: a, section: A}\n...\ncolour: red\n" + body, []string{"plan.md:", "continues after its YAML document ends"}},
 		{"document start with content", head + "units:\n  - {id: a, section: A}\n--- red\n" + body, []string{"plan.md:10:", "continues after its YAML document ends"}},
+		{"empty document start", head + "units:\n  - {id: a, section: A}\n--- # c\n\n" + body, []string{"plan.md:10:", "continues after its YAML document ends"}},
 		{"malformed YAML after a document end", head + "units:\n  - {id: a, section: A}\n...\nunits: [\n" + body, []string{"plan.md:", "continues after its YAML document ends"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {

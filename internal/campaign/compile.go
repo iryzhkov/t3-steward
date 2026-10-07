@@ -189,8 +189,10 @@ func ParseCompilePlan(source string, raw []byte) (CompilePlan, error) {
 		}
 		return CompilePlan{}, compileDecodeError(source, err)
 	default:
+		// The document node starts at its --- line; an empty document's
+		// content node sits wherever the parser read next.
 		line := trailing.Line
-		if len(trailing.Content) > 0 {
+		if line == 0 && len(trailing.Content) > 0 {
 			line = trailing.Content[0].Line
 		}
 		return CompilePlan{}, refuse(line, "%s", secondDocument)
