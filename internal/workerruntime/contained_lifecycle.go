@@ -400,12 +400,21 @@ func (p ContainedT3) stoppedControl(ctx context.Context, pkg workerproto.Executi
 	if err != nil {
 		return nil, err
 	}
-	return retainedT3{capture: capture}, nil
+	retained := retainedT3{capture: capture}
+	if capture.Thread == nil {
+		// No provider outcome was captured before the unit stopped; a cause
+		// recorded with the unit is then why the run ended.
+		retained.ended = endedWithCause(obs)
+	}
+	return retained, nil
 }
 
 type retainedT3 struct {
 	T3Control
 	capture containedCapture
+	// ended is the ContainedRunEndedError of a run that systemd ended with a
+	// known cause before any provider outcome was captured, or nil.
+	ended error
 }
 
 func (r retainedT3) GetThread(_ context.Context, id string) (*domain.Thread, error) {

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
@@ -60,6 +61,105 @@ func (d *containedRunDriver) ObserveThread(ctx context.Context, _ workerproto.Ex
 
 func (d *containedRunDriver) StopPreparation(ctx context.Context, _ workerproto.ExecutionPackage) error {
 	return d.local.StopPreparation(ctx, d.pkg)
+}
+
+func (d *containedRunDriver) StopThread(ctx context.Context, _ workerproto.ExecutionPackage) error {
+	d.stopCalls++
+	return d.local.StopThread(ctx, d.pkg)
+}
+
+func (d *containedRunDriver) Collect(ctx context.Context, _ workerproto.ExecutionPackage, workspace string) error {
+	d.collectCalls++
+	return d.local.Collect(ctx, d.pkg, workspace)
+}
+
+func containedRunRuntime(t *testing.T, phase Phase) (*Runtime, *containedRunDriver, ContainedT3, workerproto.ExecutionPackage) {
+	t.Helper()
+	manager, pkg, _, _ := oomKilledContainedRun(t)
+	root := t.TempDir()
+	driver := &containedRunDriver{fakeDriver: fakeDriver{workspace: filepath.Join(root, "workspace"), workspaceReady: true},
+		local: &LocalDriver{ScopedT3: manager}, pkg: pkg}
+	runtime := newClaimedRuntime(t, root, &driver.fakeDriver)
+	runtime.driver = driver
+	if err := runtime.markPhase("assignment-1", phase, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	return runtime, driver, manager, pkg
+}
+
+func requireReservationFailure(t *testing.T, runtime *Runtime) {
+	t.Helper()
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record := state.Attempts["assignment-1"]; record.Phase != PhaseFailed || record.Failure != "contained run exceeded its 6000 MB memory reservation" {
+		t.Fatalf("attempt is %s with failure %q", record.Phase, record.Failure)
+	}
+}
+
+// The forced quiesce stops the unit before the failure is durable. A worker
+// that dies in between finds a stopped unit with no provider outcome; the
+// cause recorded with the unit still decides the failure, instead of the run
+// reading as a thread that never started.
+func TestStoppedContainedRunStillFailsWithTheReservation(t *testing.T) {
+	runtime, driver, manager, pkg := containedRunRuntime(t, PhaseRunning)
+	if err := manager.Quiesce(context.Background(), pkg, true); err != nil {
+		t.Fatal(err)
+	}
+	runtime = reopenTestRuntime(t, filepath.Dir(driver.workspace), &driver.fakeDriver)
+	runtime.driver = driver
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	requireReservationFailure(t, runtime)
+}
+
+// A task timeout that stops a run the memory limit already killed still
+// reports the memory limit, which is why the run ended.
+func TestTimeoutAfterTheMemoryLimitKeepsTheReservationFailure(t *testing.T) {
+	runtime, driver, _, _ := containedRunRuntime(t, PhaseRunning)
+	if err := runtime.journal.update(func(state *journalState) error {
+		record := state.Attempts["assignment-1"]
+		record.Package.Package.Timeout = time.Second
+		record.Package.Package.CreatedAt = runtimeTestNow.Add(-time.Hour)
+		state.Attempts["assignment-1"] = record
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if driver.stopCalls == 0 {
+		t.Fatal("the task timeout did not stop the run")
+	}
+	requireReservationFailure(t, runtime)
+}
+
+// A collection that finds the run killed by the memory limit can never
+// capture an outcome. It fails the attempt with that cause instead of
+// deferring the collection on every pass.
+func TestCollectionOfAContainedRunTheMemoryLimitKilledFails(t *testing.T) {
+	runtime, driver, _, _ := containedRunRuntime(t, PhaseCollecting)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err := runtime.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		state, err := runtime.journal.snapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.Attempts["assignment-1"].Phase != PhaseCollecting || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if driver.collectCalls == 0 {
+		t.Fatal("no collection ran")
+	}
+	requireReservationFailure(t, runtime)
 }
 
 // A running attempt whose contained run the memory limit killed ends as a

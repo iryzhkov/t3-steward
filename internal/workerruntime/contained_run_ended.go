@@ -28,7 +28,9 @@ func (r *Runtime) observeThread(ctx context.Context, id string, pkg workerproto.
 	if !errors.As(err, &ended) {
 		return state, err
 	}
-	if failErr := r.markFailed(ctx, id, ended.Failure); failErr != nil {
+	if failErr := r.markFailed(ctx, id, ended.Failure); isJournalError(failErr) {
+		return "", failErr
+	} else if failErr != nil {
 		return "", fmt.Errorf("%w; failing the attempt deferred: %v", err, failErr)
 	}
 	return "", fmt.Errorf("%w: %w", errAttemptFailed, err)
