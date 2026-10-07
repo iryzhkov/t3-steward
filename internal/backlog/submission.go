@@ -184,6 +184,15 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 	if record.State == domain.SubmissionAccepted {
 		return SubmissionResult{Record: record, StorageDir: finalDir, Replay: true}, nil
 	}
+	if replay {
+		recovered, err := s.completeDurableRoleSubmission(ctx, &record, finalDir, contentDigest)
+		if err != nil {
+			return SubmissionResult{}, err
+		}
+		if recovered {
+			return SubmissionResult{Record: record, StorageDir: finalDir, Replay: true}, nil
+		}
+	}
 	if validationErr != nil {
 		return SubmissionResult{}, validationErr
 	}

@@ -6,8 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
-	"time"
+		"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -131,8 +130,7 @@ func commitScheduleTriggerTx(ctx context.Context, tx *sql.Tx, request domain.Sch
 				continue
 			}
 			selection, ok := request.RouteSelections[task.ID]
-			instance, model, concrete := strings.Cut(selection.Route, "/")
-			if roleError == "" && (!ok || selection.Role != task.Role || !concrete || instance == "" || model == "" || selection.Effort == "") {
+			if roleError == "" && (!ok || selection.Role != task.Role || !selection.Valid()) {
 				roleError = fmt.Sprintf("missing or invalid role selection for task %s (role %s)", task.ID, task.Role)
 			}
 		}

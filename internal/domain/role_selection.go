@@ -29,6 +29,11 @@ type RoleDiversity struct {
 	Reason           string   `json:"reason"`
 }
 
+// Valid checks the concrete route and bounded effort before a receipt becomes executable.
+func (selection RoleSelection) Valid() bool {
+	instance, model, concrete := strings.Cut(selection.Route, "/")
+	return len(selection.Route) <= 256 && concrete && instance != "" && model != "" && !strings.ContainsAny(selection.Route, " \t\r\n") && (selection.Effort == "low" || selection.Effort == "medium" || selection.Effort == "high")
+}
 func CloneRoleSelection(selection RoleSelection) RoleSelection {
 	selection.Candidates = append([]RoleCandidateVerdict(nil), selection.Candidates...)
 	selection.Diversity.ProducerFamilies = append([]string(nil), selection.Diversity.ProducerFamilies...)

@@ -32,7 +32,7 @@ func resolveManifestRoles(ctx context.Context, resolver ManifestRoleResolver, m 
 	for name, task := range m.Tasks {
 		if task.Role != "" {
 			s, ok := selections[name]
-			if !ok || s.Role != task.Role || s.ProviderRoute().ProviderInstanceID == "" || s.ProviderRoute().Model == "" {
+			if !ok || s.Role != task.Role || !s.Valid() {
 				return nil, fmt.Errorf("role %s task %s has no valid coordinator selection", task.Role, name)
 			}
 		}
