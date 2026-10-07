@@ -136,6 +136,8 @@ type BucketState struct {
 	// DrainDeadline is set when the bucket enters the draining phase. When it
 	// passes without a stop, the engine stops affected threads anyway.
 	DrainDeadline *time.Time `json:"drainDeadline"`
+	// DrainsAt is the host projection of crossing its drain threshold.
+	DrainsAt *time.Time `json:"drainsAt,omitempty"`
 	// RearmObservations counts consecutive observations below the rearm
 	// threshold, used when the provider reports no reset time.
 	RearmObservations int `json:"rearmObservations"`

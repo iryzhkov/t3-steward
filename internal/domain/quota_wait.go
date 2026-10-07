@@ -290,6 +290,11 @@ func MergeQuotaObservations(local []BucketState, workers []WorkerSnapshot) []Buc
 				LimitName: observed.LimitName, ModelSelector: observed.ModelSelector,
 				UsedPercent: observed.UsedPercent, ResetsAt: observed.ResetsAt,
 				ObservedAt: observed.ObservedAt, Healthy: observed.Healthy, UpdatedAt: observed.ObservedAt,
+				RatePerMinute: observed.RatePerMinute, DrainsAt: observed.DrainsAt,
+				DrainDeadline: observed.DrainDeadline,
+			}
+			if observed.DrainPercent > 0 {
+				state.AppliedThresholds = &ThresholdSet{DrainPercent: observed.DrainPercent}
 			}
 			if state.Epoch == "" {
 				state.Epoch = EpochFor(observed.ResetsAt)

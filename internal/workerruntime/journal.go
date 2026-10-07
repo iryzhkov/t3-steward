@@ -58,6 +58,8 @@ type LocalThrottleRequest struct {
 	// "claudeAgent/claude/seven_day at 97%".
 	Reason      string    `json:"reason"`
 	RequestedAt time.Time `json:"requestedAt"`
+	// DrainNoticeSent records that the non-blocking drain request reached T3.
+	DrainNoticeSent bool `json:"drain_notice_sent,omitempty"`
 	// StoppedAt is when the thread was observed stopped after the request.
 	StoppedAt     *time.Time                 `json:"stoppedAt,omitempty"`
 	StoppedTurnID string                     `json:"stoppedTurnId,omitempty"`
@@ -115,6 +117,9 @@ type journalState struct {
 	CoordinatorEpoch int64                    `json:"coordinatorEpoch"`
 	Sequence         int64                    `json:"sequence"`
 	Attempts         map[string]AttemptRecord `json:"attempts"`
+	// WorkerLastSeenAt is refreshed at the start of each reconcile pass, even
+	// when no attempt changes. It protects ownership during brief lease lapses.
+	WorkerLastSeenAt time.Time `json:"workerLastSeenAt,omitempty"`
 
 	// Parked is the coordinator's last complete statement of which assignments
 	// are parked on a task-bound wait, keyed by assignment ID. It is durable
@@ -208,19 +213,25 @@ func JournalCoordinatorEpoch(root string) (int64, error) {
 // JournalAttempts reports the durable attempt records without adopting an
 // identity or epoch. A missing journal reports none.
 func JournalAttempts(root string) (map[string]AttemptRecord, error) {
+	state, err := journalStateAtRoot(root)
+	return state.Attempts, err
+}
+
+func journalStateAtRoot(root string) (journalState, error) {
 	absolute, err := filepath.Abs(root)
 	if err != nil {
-		return nil, fmt.Errorf("worker journal: resolve root: %w", err)
+		return journalState{}, fmt.Errorf("worker journal: resolve root: %w", err)
 	}
 	journal := &Journal{root: absolute, path: filepath.Join(absolute, "journal.json"), lockPath: filepath.Join(absolute, "journal.lock")}
-	if _, err := os.Stat(journal.path); errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	state, err := journal.read()
-	if err != nil {
-		return nil, err
-	}
-	return cloneState(state).Attempts, nil
+	return cloneState(state), err
+}
+
+func (j *Journal) recordLiveness(now time.Time) error {
+	return j.update(func(state *journalState) error {
+		state.WorkerLastSeenAt = now
+		return nil
+	})
 }
 
 func (j *Journal) snapshot() (journalState, error) {

@@ -35,6 +35,9 @@ type Driver interface {
 	Cleanup(context.Context, workerproto.ExecutionPackage, string) error
 	Warn(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error
 	Checkpoint(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) (*domain.CheckpointMetadata, error)
+	// Local quota pauses send without waiting; evidence is read after an observed stop.
+	RequestQuotaDrain(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error
+	ReadQuotaCheckpoint(context.Context, workerproto.ExecutionPackage) (*domain.CheckpointMetadata, error)
 	Resume(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error
 }
 
@@ -558,6 +561,9 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 // A failure on one attempt is recorded on that attempt and never prevents
 // the others from progressing; only journal I/O errors are returned.
 func (r *Runtime) Reconcile(ctx context.Context) error {
+	if err := r.journal.recordLiveness(r.now()); err != nil {
+		return err
+	}
 	if observer, ok := r.driver.(interface{ BeginObservationPass() }); ok {
 		observer.BeginObservationPass()
 	}
@@ -594,11 +600,8 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 	var err error
 	switch record.Phase {
 	case PhaseRunning:
-		// Observe before deciding on a pause: a thread that has already ended
-		// its turn is finished work, and collecting it spends no provider
-		// quota. Pausing it would settle a finished thread and later resume
-		// it with a filler turn. Only a thread that is still working is
-		// paused; a stopped one takes the collection path.
+		// Observe before deciding on a pause. A stopped turn during a host
+		// drain may be a checkpoint rather than task completion.
 		threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
 		if observeErr != nil {
 			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", observeErr)
@@ -616,6 +619,11 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			// attempt finishing, so nothing is collected.
 			err = r.markLocalPauseStopped(ctx, id, nil)
 		case threadState == backlog.DispatchThreadStopped:
+			var parked bool
+			parked, err = r.parkStoppedForQuota(ctx, id, record)
+			if err != nil || parked {
+				break
+			}
 			if err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID); err == nil {
 				err = r.collectUnlessWaiting(ctx, id, record)
 			}

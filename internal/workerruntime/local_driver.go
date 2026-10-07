@@ -1273,12 +1273,7 @@ func (d *LocalDriver) Checkpoint(ctx context.Context, pkg workerproto.ExecutionP
 		data := []byte("no-external-effects checkpoint\n")
 		return d.Publisher.PublishCheckpoint(ctx, pkg, ".t3/checkpoint.md", data)
 	}
-	thread, err := d.requiredThread(ctx, pkg.Identity.ThreadID)
-	if err != nil {
-		return nil, err
-	}
-	text := command.Reason + "\nThis is a runtime-owned quota pause, an exception to ordinary end-of-turn task completion. Write .t3/checkpoint.md and leave the workspace consistent. The continue marker is checkpoint evidence under runtime control, not a request for extra turns; the runtime checks completion before considering an authorized resume. If the task is fully complete and all declared outputs are ready, end your final message with the exact line 'backlog status: done'. Otherwise end it with 'backlog status: continue'. End this turn."
-	if err := d.T3.WarnThread(ctx, thread, domain.Warning{Kind: domain.ActionDrain, Text: text}); err != nil {
+	if err := d.RequestQuotaDrain(ctx, pkg, command); err != nil {
 		return nil, err
 	}
 	_, stopped, err := d.T3.WaitStopped(ctx, pkg.Identity.ThreadID, d.Config.StopTimeout)

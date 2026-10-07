@@ -83,6 +83,9 @@ func deriveQuotaPlanningWindows(
 		if state.DrainDeadline != nil {
 			window.DrainAt = state.DrainDeadline.UTC()
 		}
+		if state.DrainsAt != nil && (window.DrainAt.IsZero() || state.DrainsAt.Before(window.DrainAt)) {
+			window.DrainAt = state.DrainsAt.UTC()
+		}
 		if state.ExhaustsIn != nil {
 			exhaustion := now.Add(*state.ExhaustsIn)
 			if window.DrainAt.IsZero() || exhaustion.Before(window.DrainAt) {

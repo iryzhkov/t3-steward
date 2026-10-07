@@ -21,6 +21,10 @@ func TestQuotaMessageContractResumePermission(t *testing.T) {
 			if err := runtime.Reconcile(context.Background()); err != nil {
 				t.Fatal(err)
 			}
+			// Observe the stop after sending the non-blocking drain notice.
+			if err := runtime.Reconcile(context.Background()); err != nil {
+				t.Fatal(err)
+			}
 			guard.pauseNeeded = false
 			guard.resumeOK = true
 			guard.resumeWhy = why

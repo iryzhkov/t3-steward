@@ -106,6 +106,13 @@ func (d *fakeDriver) Warn(context.Context, workerproto.ExecutionPackage, domain.
 }
 func (d *fakeDriver) Checkpoint(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) (*domain.CheckpointMetadata, error) {
 	d.checkpointCalls++
+	return d.ReadQuotaCheckpoint(context.Background(), workerproto.ExecutionPackage{})
+}
+func (d *fakeDriver) RequestQuotaDrain(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error {
+	d.checkpointCalls++
+	return nil
+}
+func (d *fakeDriver) ReadQuotaCheckpoint(context.Context, workerproto.ExecutionPackage) (*domain.CheckpointMetadata, error) {
 	if d.checkpointErr != nil {
 		return nil, d.checkpointErr
 	}

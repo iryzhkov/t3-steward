@@ -11,9 +11,9 @@ import (
 // same host: a thread the worker created for an attempt is owned by that
 // attempt from dispatch until the attempt is terminal on the worker or its
 // assignment is released, and only while the journal is fresh: an attempt
-// whose assignment lease has expired no longer owns its thread, because only
-// a live worker renews leases, so a crashed worker's threads return to the
-// watchdog once its leases lapse.
+// whose assignment lease has expired still owns its thread while recent
+// worker liveness proves ownership. A crashed worker's threads return to the
+// watchdog after its lease and the worker liveness grace have expired.
 //
 // The watchdog consults it on every tick and leaves owned threads alone. It
 // never warns, drains, stops or resumes them, and it cancels any resume intent
