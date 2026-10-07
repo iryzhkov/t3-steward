@@ -43,7 +43,7 @@ func selectPolicyRouteDetailed(p *routePolicy, role, model, effort, worker strin
 		_, err := selectPolicyRouteCandidate(&one, role, "", effort, worker, project, accept)
 		v := domain.RoleCandidateVerdict{Route: candidate.Route, Eligible: err == nil}
 		if err != nil {
-			v.Reason = err.Error()
+			v.Reason = campaignPolicyCandidateReason(candidate, *rr, project, worker, accept, err)
 		}
 		verdicts = append(verdicts, v)
 	}

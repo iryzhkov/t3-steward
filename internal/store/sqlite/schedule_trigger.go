@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-		"time"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
