@@ -167,6 +167,18 @@ func TestAffectedPackagesMapsOtherFilesToTheirEnclosingPackage(t *testing.T) {
 			gitIn(t, dir, env, "rm", "-q", "tmpl/testdata/golden/a.md")
 			gitIn(t, dir, env, "commit", "-q", "-m", "delete")
 		}, []string{"example.com/m/tmpl"}},
+		// Git quotes such names in its listings unless told not to.
+		{"non-ASCII name", func(t *testing.T, dir string, env []string) {
+			writeFile(t, filepath.Join(dir, "tmpl", "testdata", "café.md"), "untracked\n")
+		}, []string{"example.com/m/tmpl"}},
+		{"name with a tab and a quote", func(t *testing.T, dir string, env []string) {
+			commitChange(t, dir, env, map[string]string{"tmpl/testdata/a\tb\"c.md": "committed\n"})
+		}, []string{"example.com/m/tmpl"}},
+		// A golden moved out of its package changes the package it left.
+		{"renamed out of a package", func(t *testing.T, dir string, env []string) {
+			gitIn(t, dir, env, "mv", "tmpl/testdata/golden/a.md", "docs/a.md")
+			gitIn(t, dir, env, "commit", "-q", "-m", "move")
+		}, []string{"example.com/m/tmpl"}},
 		{"docs", func(t *testing.T, dir string, env []string) {
 			commitChange(t, dir, env, map[string]string{"docs/readme.md": "changed\n", "README.md": "changed\n", "Makefile": "all:\n"})
 		}, nil},
@@ -193,11 +205,32 @@ func TestAffectedPackagesNothingChanged(t *testing.T) {
 
 func TestAffectedPackagesRefusesAMissingOrUnknownBase(t *testing.T) {
 	dir, _, env := affectedRepository(t)
-	for _, args := range [][]string{{"nosuchref"}, {}, {""}, {"--changed", "nosuchref"}} {
+	for _, args := range [][]string{{"nosuchref"}, {}, {""}, {"--changed", "nosuchref"}, {"-x"}} {
 		out, errOut, status := runAffected(t, dir, env, args...)
 		if status != 2 || out != "" || errOut == "" {
 			t.Fatalf("%q: exit %d, stdout %q, stderr %q; want exit 2 with a reason", args, status, out, errOut)
 		}
+		// The refusal is the script's own: FAST_BASE belongs to check-fast.
+		if strings.Contains(errOut, "FAST_BASE") {
+			t.Fatalf("%q: the refusal names FAST_BASE: %s", args, errOut)
+		}
+	}
+}
+
+// Git lists paths from the top of the repository and go from the module root,
+// so a module below the top would match no change and select nothing. The
+// script refuses to run there rather than report that nothing changed.
+func TestAffectedPackagesRefusesAModuleBelowTheRepositoryTop(t *testing.T) {
+	dir, base, env := affectedRepository(t)
+	sub := filepath.Join(dir, "sub")
+	for path, content := range affectedModule {
+		writeFile(t, filepath.Join(sub, filepath.FromSlash(path)), content)
+	}
+	copyFile(t, filepath.Join(dir, "scripts", "affected-go-packages.sh"), filepath.Join(sub, "scripts", "affected-go-packages.sh"))
+	copyFile(t, filepath.Join(dir, "scripts", "changed-go-packages.sh"), filepath.Join(sub, "scripts", "changed-go-packages.sh"))
+	out, errOut, status := runAffected(t, sub, env, base)
+	if status == 0 || status == 2 || out != "" || !strings.Contains(errOut, "top of the repository") {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want a refusal naming the repository top", status, out, errOut)
 	}
 }
 
@@ -293,7 +326,8 @@ func TestTestAffectedListsWithoutRunning(t *testing.T) {
 		t.Fatalf("passed=%v, go test %q:\n%s", ok, tests, out)
 	}
 	want := "test-affected: 1 packages changed against " + base + ", 5 selected with their importers:\n" +
-		strings.ReplaceAll(testAffectedSelection, " ", "\n") + "\n"
+		strings.ReplaceAll(testAffectedSelection, " ", "\n") + "\n" +
+		"test-affected: TEST_AFFECTED_LIST is set; listed only, no test was run\n"
 	if out != want {
 		t.Fatalf("output:\n%s\nwant:\n%s", out, want)
 	}

@@ -8,7 +8,7 @@
 #
 # Changes are listed as changed-go-packages.sh lists them: commits since the
 # merge base with BASE, uncommitted changes to tracked files, and untracked
-# files that are not ignored; that script also checks BASE. Every changed
+# files that are not ignored, with both sides of a rename. Every changed
 # file, Go or not, changes the nearest module package directory that encloses
 # it, so an embedded template or a testdata golden changes its package, and a
 # file under no package (docs/, the Makefile) changes none. A change to go.mod
@@ -17,7 +17,8 @@
 #
 # Exit status: 0 with no output when nothing is selected; 2 when BASE is
 # missing or does not name a commit; any other non-zero status when git or go
-# fails, including a module that does not load.
+# fails, including a module that does not load, or when run below the top of
+# the repository.
 set -eu
 
 mode=affected
@@ -31,12 +32,27 @@ if [ -z "$base" ]; then
 	exit 2
 fi
 
-# changed-go-packages.sh refuses an unknown BASE with status 2, passed on.
+if ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+	echo "affected-go-packages: $base does not name a commit; fetch it or pass another BASE" >&2
+	exit 2
+fi
+# Git names changed files from the top of the repository and go list names
+# directories from the module root; anywhere else no change would match a
+# package, and the selection would be wrongly empty.
+if [ -n "$(git rev-parse --show-prefix)" ]; then
+	echo "affected-go-packages: run it from the top of the repository, which must be the module root" >&2
+	exit 1
+fi
+
+# changed-go-packages.sh would also refuse an unknown BASE with status 2.
 go_dirs=$(sh "$(dirname "$0")/changed-go-packages.sh" "$base") || exit $?
 # Each listing is its own assignment so that set -e stops on a git failure.
-committed=$(git diff --name-only "$base"...HEAD)
-uncommitted=$(git diff --name-only HEAD)
-untracked=$(git ls-files --others --exclude-standard)
+# Both sides of a rename count, so that a file moved out of a package changes
+# it. Git still quotes a name holding a tab, a quote, a backslash or a newline;
+# awk unquotes those.
+committed=$(git -c core.quotePath=false diff --no-renames --name-only "$base"...HEAD)
+uncommitted=$(git -c core.quotePath=false diff --no-renames --name-only HEAD)
+untracked=$(git -c core.quotePath=false ls-files --others --exclude-standard)
 if [ -z "$go_dirs$committed$uncommitted$untracked" ]; then
 	exit 0
 fi
@@ -72,6 +88,32 @@ tab=$(printf '\t')
 			else sub(/\/[^\/]*$/, "", d)
 		}
 	}
+	# A name as git lists it, without the C-style quoting git applies to a
+	# name holding a tab, a quote, a backslash or a control character.
+	function unquoted(name,   out, i, c, n) {
+		if (name !~ /^".*"$/) return name
+		name = substr(name, 2, length(name) - 2)
+		out = ""
+		for (i = 1; i <= length(name); i++) {
+			c = substr(name, i, 1)
+			if (c == "\\" && i < length(name)) {
+				c = substr(name, ++i, 1)
+				if (c == "t") c = "\t"
+				else if (c == "n") c = "\n"
+				else if (c ~ /[0-7]/) {
+					n = substr(name, i, 3)
+					c = sprintf("%c", substr(n, 1, 1) * 64 + substr(n, 2, 1) * 8 + substr(n, 3, 1))
+					i += 2
+				} else if (c == "a") c = "\a"
+				else if (c == "b") c = "\b"
+				else if (c == "f") c = "\f"
+				else if (c == "r") c = "\r"
+				else if (c == "v") c = "\v"
+			}
+			out = out c
+		}
+		return out
+	}
 	function directory(file) {
 		if (file !~ /\//) return "."
 		sub(/\/[^\/]*$/, "", file)
@@ -99,10 +141,12 @@ tab=$(printf '\t')
 	# Every changed file, Go or not, also changes its enclosing package, so
 	# that a Go file under testdata or in a removed directory counts too.
 	$1 == "file" {
-		if ($2 == "go.mod" || $2 == "go.sum") {
+		# The whole rest of the line, since a name may hold a tab.
+		file = unquoted(substr($0, length("file") + 2))
+		if (file == "go.mod" || file == "go.sum") {
 			for (p in module) changed[p] = 1
 		} else {
-			p = enclosing(directory($2))
+			p = enclosing(directory(file))
 			if (p != "") changed[p] = 1
 		}
 		next

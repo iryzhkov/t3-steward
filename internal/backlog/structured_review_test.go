@@ -71,6 +71,8 @@ func TestStructuredReviewVerdictLabel(t *testing.T) {
 		"VERDICT ACCEPT", "VERDICT:", "VERDICT: ", "VERDICT: ACCEPT later", "VERDICT: VERDICT: ACCEPT",
 		"**VERDICT: ACCEPT**", "VERDICT: maybe", "\nVERDICT: ACCEPT", "VERDICT: **ACCEPT**", "VERDICT - ACCEPT",
 		"VERDICT:: ACCEPT", "\xef\xbb\xbfVERDICT: ACCEPT", "# VERDICT: ACCEPT", "VERDICT: CHANGES  REQUESTED",
+		// Only spaces and tabs may follow the label.
+		"VERDICT:\xc2\xa0ACCEPT", "VERDICT:\xe2\x80\x83ACCEPT", "VERDICT:\vACCEPT", "VERDICT:\fACCEPT", "VERDICT: \rACCEPT",
 	} {
 		if got, err := ParseReviewVerdict(line, []byte(raw)); err == nil {
 			t.Fatalf("accepted %q as %+v", raw, got)

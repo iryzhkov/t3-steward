@@ -40,7 +40,9 @@ NO_SQLITE_CHECKPTR_GCFLAGS := -gcflags=modernc.org/...=-d=checkptr=0
 check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr: RACE_GCFLAGS = $(NO_SQLITE_CHECKPTR_GCFLAGS)
 # The commit test-affected compares against, and its list-only switch. Like
 # RACE_GCFLAGS they are assigned with = so that only the make command line sets
-# them: a BASE left in the environment must not choose what gets tested.
+# them: a BASE left in the environment must not choose what gets tested. (GNU
+# make also takes command-line variables from MAKEFLAGS, and lets the
+# environment win under make -e; list-only runs therefore say so.)
 BASE =
 TEST_AFFECTED_LIST =
 
@@ -116,7 +118,10 @@ test-affected:
 	fi; \
 	echo "test-affected: $$(echo "$$changed" | wc -l | tr -d ' ') packages changed against $(BASE), $$(echo "$$pkgs" | wc -l | tr -d ' ') selected with their importers:"; \
 	echo "$$pkgs"; \
-	if [ -n '$(TEST_AFFECTED_LIST)' ]; then exit 0; fi; \
+	if [ -n '$(TEST_AFFECTED_LIST)' ]; then \
+		echo 'test-affected: TEST_AFFECTED_LIST is set; listed only, no test was run'; \
+		exit 0; \
+	fi; \
 	echo "go test -race -count=1 -timeout $(RACE_TIMEOUT)" $$pkgs; \
 	go test -race -count=1 -timeout $(RACE_TIMEOUT) $$pkgs
 

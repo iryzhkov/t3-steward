@@ -9,6 +9,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -51,9 +52,13 @@ func ParseReviewVerdict(declaration domain.ReviewOutput, raw []byte) (*domain.Re
 		line, _, _ := strings.Cut(string(raw), "\n")
 		out.Verdict = strings.TrimSpace(line)
 		// One leading label, in any case, then optional spaces or tabs; the
-		// rest obeys the same word rule as a bare verdict.
+		// rest obeys the same word rule as a bare verdict. Other whitespace
+		// after the label is refused rather than trimmed.
 		if len(out.Verdict) >= len(reviewVerdictLabel) && strings.EqualFold(out.Verdict[:len(reviewVerdictLabel)], reviewVerdictLabel) {
 			out.Verdict = strings.TrimLeft(out.Verdict[len(reviewVerdictLabel):], " \t")
+			if strings.TrimLeftFunc(out.Verdict, unicode.IsSpace) != out.Verdict {
+				out.Verdict = ""
+			}
 		}
 	}
 	normalized := strings.ToUpper(strings.TrimSpace(out.Verdict))
