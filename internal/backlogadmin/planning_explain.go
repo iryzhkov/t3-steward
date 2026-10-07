@@ -122,7 +122,7 @@ func (v view) addPlanningExplanation(e *Explanation, attempt *domain.Attempt) {
 				at = &copyAt
 			}
 			converted := Blocker{Code: b.Code, Detail: b.Detail, WorkerID: worker, QuotaPoolID: b.QuotaPoolID, EarliestAt: at, DependsOn: b.DependsOn, Resource: b.Resource, OwnerID: b.OwnerID, GateID: b.GateID, HoldID: b.HoldID, SupervisionCode: b.SupervisionCode}
-			if prev, ok := mapped[key]; !ok || converted.Detail < prev.Detail {
+			if prev, ok := mapped[key]; !ok || planningBlockerLess(converted, prev) {
 				mapped[key] = converted
 			}
 		}
@@ -174,6 +174,24 @@ func (v view) addPlanningExplanation(e *Explanation, attempt *domain.Attempt) {
 		return a.Code+"\x00"+a.WorkerID+"\x00"+a.QuotaPoolID+"\x00"+a.Detail < b.Code+"\x00"+b.WorkerID+"\x00"+b.QuotaPoolID+"\x00"+b.Detail
 	})
 }
+
+// Choose one stable representative when routes repeat the same worker/code/pool.
+// Prefer the earliest known retry time when their verdict text is identical.
+func planningBlockerLess(a, b Blocker) bool {
+	if a.Detail != b.Detail {
+		return a.Detail < b.Detail
+	}
+	if a.EarliestAt == nil || b.EarliestAt == nil {
+		if a.EarliestAt != b.EarliestAt {
+			return a.EarliestAt != nil
+		}
+	} else if !a.EarliestAt.Equal(*b.EarliestAt) {
+		return a.EarliestAt.Before(*b.EarliestAt)
+	}
+	return strings.Join([]string{a.DependsOn, a.Resource, a.OwnerID, a.GateID, a.HoldID, string(a.SupervisionCode)}, "\x00") <
+		strings.Join([]string{b.DependsOn, b.Resource, b.OwnerID, b.GateID, b.HoldID, string(b.SupervisionCode)}, "\x00")
+}
+
 func (v view) planningQueueDetail(attemptID string) string {
 	position, total := 0, 0
 	counts := map[domain.TaskClass]int{}
