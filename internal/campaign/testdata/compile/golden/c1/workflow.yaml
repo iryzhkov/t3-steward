@@ -1,0 +1,116 @@
+version: 2
+name: c1
+class: required
+placement:
+    hosts: []
+    requires: []
+resources:
+    preset: ""
+    min_cpu_class: ""
+    preferred_cpu_class: ""
+    cpu_units: null
+    memory_mb: null
+    scratch_mb: null
+preflight:
+    steps: []
+environment:
+    project: t3-steward-github
+    type: git
+    scope: task
+    ref: d2e827681336e76413fdab34392f029a3e131cf4
+inputs:
+    - inputs/plan.md
+    - inputs/unit.md
+routes: []
+tasks:
+    implement:
+        review_requirements: null
+        directories: []
+        class: ""
+        prompt_file: prompts/implement.md
+        needs: []
+        inputs_from: {}
+        context: null
+        outputs:
+            - continuation.md
+            - handoff.md
+        commits:
+            - name: implementation
+              revision: HEAD
+        verify:
+            - go test ./...
+            - git diff --check
+        placement:
+            hosts: []
+            requires: []
+        resources:
+            preset: ""
+            min_cpu_class: ""
+            preferred_cpu_class: ""
+            cpu_units: null
+            memory_mb: null
+            scratch_mb: null
+        preflight:
+            steps: []
+        routes:
+            - host: ""
+              instance: claudeAgent
+              model: claude-opus-5-5
+              options:
+                effort: medium
+              quota_pool: claude-main
+        resource_locks: []
+        importance: 0
+        difficulty: 0
+        estimated_cost: null
+        max_turns: 0
+        not_before: null
+        deadline: null
+        expires_at: null
+    review:
+        review_requirements: null
+        directories: []
+        class: ""
+        prompt_file: prompts/review.md
+        needs:
+            - implement
+        inputs_from:
+            implement:
+                - implementation
+                - handoff.md
+        context: null
+        outputs:
+            - continuation.md
+            - review.md
+        commits: []
+        verify: []
+        placement:
+            hosts: []
+            requires: []
+        resources:
+            preset: ""
+            min_cpu_class: ""
+            preferred_cpu_class: ""
+            cpu_units: null
+            memory_mb: null
+            scratch_mb: null
+        preflight:
+            steps: []
+        routes:
+            - host: ""
+              instance: codex
+              model: gpt-6.1-sol
+              options:
+                effort: high
+              quota_pool: codex-main
+        resource_locks: []
+        importance: 0
+        difficulty: 0
+        estimated_cost: null
+        max_turns: 0
+        not_before: null
+        deadline: null
+        expires_at: null
+supervision: null
+gates: {}
+ledger: null

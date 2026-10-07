@@ -30,9 +30,13 @@ backlog workflow and run records; there is no separate campaign record.
 Offline (no configuration or coordinator):
   validate <directory|workflow.yaml> [--json]
   plan     <directory|workflow.yaml> [--json|--dot]
+  compile PLAN --out DIR [--unit ID] [--force] [--json]
+    Writes one campaign directory per plan unit; never submits.
+    --check adds the live readiness check of every unit (coordinator).
 Read-only (coordinator):
   check <directory|workflow.yaml> [--json] [--task NAME]
   list [--state open|terminal] [--project P] [--class C] [--json]
+    [--thread current|ID] lists the runs that notify that thread.
     --limit N and --since DURATION select the list window; --limit 0 lists all.
   progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]
   show <run> [--json]
@@ -355,6 +359,8 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		return c.runValidate(args[1:])
 	case "plan":
 		return c.runPlan(args[1:])
+	case "compile":
+		return c.runCompile(ctx, args[1:])
 	case "check":
 		return c.runCheck(ctx, args[1:])
 	case "submit":
@@ -451,7 +457,7 @@ func (c campaignCLI) explainNamesATask(ctx context.Context, args []string) error
 
 // campaignCommands are the subcommands run dispatches, in the order a
 // did-you-mean suggestion prefers them.
-var campaignCommands = []string{"validate", "plan", "check", "submit", "list", "progress", "show", "status", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "commit", "help"}
+var campaignCommands = []string{"validate", "plan", "compile", "check", "submit", "list", "progress", "show", "status", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "commit", "help"}
 
 // nearestCampaignCommand returns the campaign subcommand within two edits of
 // name, or "" when none is that close.

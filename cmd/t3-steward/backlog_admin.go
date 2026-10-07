@@ -185,6 +185,11 @@ type backlogAdminCLI struct {
 	principal           backlogadmin.Principal
 	stdout              io.Writer
 	newCommandID        func() (string, error)
+	// nodeWaits and resolveThread serve "list --thread" alone: the coordinator's
+	// node waits name the thread each run notifies, and "current" resolves the
+	// way --notify-thread current does. See listThreadRuns.
+	nodeWaits     func(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error)
+	resolveThread func(string) (string, error)
 }
 
 func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
@@ -229,6 +234,11 @@ func (c backlogAdminCLI) runBacklog(ctx context.Context, args []string) error {
 	query, display, err := parseBacklogAdminQuery(args)
 	if err != nil {
 		return err
+	}
+	if display.List.Thread != "" {
+		if display.List.Runs, err = c.listThreadRuns(ctx, display.List.Thread); err != nil {
+			return err
+		}
 	}
 	return c.queryAndRender(ctx, query, display, "")
 }
@@ -412,6 +422,10 @@ type listWindow struct {
 	// Since keeps only runs created within this long of the answer's
 	// generation time; zero keeps every run.
 	Since time.Duration
+	// Thread is what --thread named, "current" or a T3 thread id, and Runs
+	// is the set of runs it resolved to; a nil Runs keeps every run.
+	Thread string
+	Runs   map[string]bool
 }
 
 // defaultListLimit is how many runs the text form of "backlog list" prints
@@ -454,6 +468,12 @@ func takeListWindowFlags(args []string) ([]string, listWindow, error) {
 				return nil, window, fmt.Errorf("--since %q is not a positive duration such as 24h or 7d", args[i])
 			}
 			window.Since, sinceSet = since, true
+		case "--thread":
+			if window.Thread != "" || i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "-") {
+				return nil, window, errors.New("--thread needs one value, current or a T3 thread id; next: t3-steward campaign list --thread current")
+			}
+			i++
+			window.Thread = args[i]
 		default:
 			clean = append(clean, args[i])
 		}
@@ -488,6 +508,15 @@ func (w listWindow) apply(response backlogadmin.Response, asJSON bool) (backloga
 		return response, 0
 	}
 	runs := response.Workflows
+	if w.Runs != nil {
+		kept := make([]backlogadmin.WorkflowSummary, 0, len(runs))
+		for _, run := range runs {
+			if w.Runs[run.Run.ID] {
+				kept = append(kept, run)
+			}
+		}
+		runs = kept
+	}
 	if w.Since > 0 {
 		now := response.GeneratedAt
 		if now.IsZero() {
