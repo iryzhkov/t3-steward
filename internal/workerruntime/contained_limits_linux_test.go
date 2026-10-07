@@ -103,11 +103,11 @@ func requireReservationFailure(t *testing.T, runtime *Runtime) {
 // cause recorded with the unit still decides the failure, instead of the run
 // reading as a thread that never started.
 func TestStoppedContainedRunStillFailsWithTheReservation(t *testing.T) {
-	runtime, driver, manager, pkg := containedRunRuntime(t, PhaseRunning)
+	_, driver, manager, pkg := containedRunRuntime(t, PhaseRunning)
 	if err := manager.Quiesce(context.Background(), pkg, true); err != nil {
 		t.Fatal(err)
 	}
-	runtime = reopenTestRuntime(t, filepath.Dir(driver.workspace), &driver.fakeDriver)
+	runtime := reopenTestRuntime(t, filepath.Dir(driver.workspace), &driver.fakeDriver)
 	runtime.driver = driver
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
