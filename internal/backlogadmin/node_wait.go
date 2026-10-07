@@ -97,6 +97,9 @@ type NodeWaitResponse struct {
 	// CheckpointWait answers ReviewCheckpointWaitAction with a park or a
 	// structured refusal.
 	CheckpointWait *domain.ReviewCheckpointWaitResult `json:"checkpointWait,omitempty"`
+	// Collections answers RunCollectAction with the record it holds and
+	// RunCollectionListAction with every record of the thread.
+	Collections []domain.RunCollection `json:"collections,omitempty"`
 }
 
 // MarshalJSON keeps node-wait responses readable by older worker carriers,
@@ -200,6 +203,9 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 		op.Action == NativeInputAction {
 		return s.taskWait(ctx, principal, op)
 	}
+	if op.Action == RunCollectAction || op.Action == RunCollectionListAction {
+		return s.runCollection(ctx, principal, op)
+	}
 	store, ok := s.reader.(nodeWaitStore)
 	if !ok {
 		return result, errors.New("native waits unavailable")
@@ -274,7 +280,7 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 		}
 		return result, nil
 	default:
-		return result, errors.New("unknown native wait action")
+		return result, errors.New(olderCoordinatorNodeWaitAnswer)
 	}
 }
 

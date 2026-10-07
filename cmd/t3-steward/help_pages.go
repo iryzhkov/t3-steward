@@ -18,6 +18,7 @@ func init() {
 		familyHelpPages(),
 		backlogHelpPages(),
 		campaignHelpPages(),
+		campaignCollectHelpPages(),
 		fleetHelpPages(),
 	} {
 		for _, page := range list {

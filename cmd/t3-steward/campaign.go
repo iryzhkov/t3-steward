@@ -355,6 +355,8 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		return c.runCommit(ctx, args[1:])
 	case "progress":
 		return c.runProgress(ctx, args[1:])
+	case "collect", "uncollected":
+		return c.runCollection(ctx, args)
 	case "validate":
 		return c.runValidate(args[1:])
 	case "plan":
