@@ -48,9 +48,11 @@ type coordinatorWorkerSession struct {
 // checkpointScanSkips holds the uploads of one worker whose fetch failed in
 // the artifact transport, which leaves the session that tried it unusable.
 // Every scan of that worker's custody steps over them, so one body the worker
-// cannot send costs one session and never hides what lies behind it. A scan
-// that ends without such a failure has reached everything it could, and
-// clears the list so the next scan tries them again. Nothing waits on it.
+// cannot send costs one session and never hides what lies behind it. An
+// ordinary pass that ends without such a failure has handled what it could
+// past them, and clears the list so the next scan tries them again; the
+// hand-on never clears it, since it steps over every other upload and has not
+// reached what the ordinary pass is after. Nothing waits on it.
 type checkpointScanSkips struct {
 	mu  sync.Mutex
 	ids []string
@@ -400,8 +402,13 @@ func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWo
 		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
 	}
 	excluded := session.CheckpointSkips.excluded()
+	finished := func() {
+		if !continuationsOnly {
+			session.CheckpointSkips.reset()
+		}
+	}
 	seen := map[string]struct{}{}
-	for round := len(excluded); round < continuationHandOnRounds; round++ {
+	for round := 0; round < continuationHandOnRounds; round++ {
 		if !session.ArtifactClient.Usable() {
 			return report, errors.New("coordinator worker checkpoint import: the artifact session is unusable after an earlier transport failure")
 		}
@@ -410,14 +417,14 @@ func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWo
 			return report, err
 		}
 		if upload == nil {
-			session.CheckpointSkips.reset()
+			finished()
 			return report, nil
 		}
 		id := upload.Manifest.ID
 		if _, again := seen[id]; again {
 			// The worker announced an upload it was told to skip or had
 			// acknowledged; going on would never end.
-			session.CheckpointSkips.reset()
+			finished()
 			return report, nil
 		}
 		seen[id] = struct{}{}
@@ -454,11 +461,11 @@ func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWo
 			return report, err
 		}
 		if !continuationsOnly && imported.Name != domain.ContinuationArtifactName {
-			session.CheckpointSkips.reset()
+			finished()
 			return report, nil
 		}
 	}
-	session.CheckpointSkips.reset()
+	finished()
 	return report, nil
 }
 

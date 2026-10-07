@@ -411,45 +411,14 @@ func TestATransportFailureReplacesTheSessionAndIsSteppedOver(t *testing.T) {
 			continuation, snapshotID := w.snapshot(t, 2)
 			control := &queuedUploadControl{uploads: []*pendingUpload{first, second, continuation}}
 			broken := map[string]bool{first.upload.Manifest.ID: true, second.upload.Manifest.ID: true}
-			skips := &checkpointScanSkips{}
-			opened := 0
-			open := func() coordinatorWorkerSession {
-				opened++
-				session := w.session(t, control)
-				session.ArtifactClient = coordinatorResultClient(t, w.now, fmt.Sprintf("exchange-artifact-%d", opened), brokenStreamArtifacts{queuedUploadArtifacts: queuedUploadArtifacts{control: control}, broken: broken})
-				session.CheckpointSkips = skips
-				return session
-			}
-			// As in production: one cached session, replaced after any error.
-			session := open()
-			failures := 0
-			sessions := &coordinatorWorkerSessions{
-				workerIDs: []string{"normandy"},
-				handOn: func(ctx context.Context, _ string) (backlog.WorkerExchangeReport, error) {
-					report, err := handOnCoordinatorWorkerContinuations(ctx, session, backlog.WorkerExchangeReport{}, 1024)
-					if err != nil {
-						session = open()
-					}
-					return report, err
-				},
-				exchange: func(ctx context.Context, _ string, _ backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error) {
-					report, err := exchangeCoordinatorWorker(ctx, session, 1024, func(context.Context) (backlog.WorkerExchangeReport, error) {
-						return backlog.WorkerExchangeReport{}, nil
-					})
-					if err != nil {
-						failures++
-						session = open()
-					}
-					return report, err
-				},
-			}
+			sessions, failures := brokenTransportSessions(t, w, control, broken)
 			for pass := 1; pass <= 3; pass++ {
 				sessions.Tick(ctx, backlog.QuotaBridgeReport{})
 				if pass == 1 && !permanent {
 					clear(broken)
 				}
 			}
-			if failures == 0 {
+			if *failures == 0 {
 				t.Fatal("a transport failure was never reported by the exchange, so its session was never replaced")
 			}
 			if latest := w.latest(t); latest == nil || latest.ID != snapshotID || !continuation.acked {
@@ -463,6 +432,65 @@ func TestATransportFailureReplacesTheSessionAndIsSteppedOver(t *testing.T) {
 			}
 		})
 	}
+	// Self-review of the fix above: the hand-on steps over every other
+	// upload, so it must not clear the list the ordinary pass needs to get past
+	// a broken head; a throttle checkpoint behind one is imported.
+	for _, snapshotHead := range []bool{false, true} {
+		t.Run(map[bool]string{false: "checkpoint behind a broken checkpoint", true: "checkpoint behind a broken snapshot"}[snapshotHead], func(t *testing.T) {
+			w := newHandOnWorker(t)
+			head := w.blocker(t, 9)
+			if snapshotHead {
+				head, _ = w.snapshot(t, 1)
+			}
+			behind := w.blocker(t, 0)
+			control := &queuedUploadControl{uploads: []*pendingUpload{head, behind}}
+			sessions, failures := brokenTransportSessions(t, w, control, map[string]bool{head.upload.Manifest.ID: true})
+			for pass := 1; pass <= 3; pass++ {
+				sessions.Tick(ctx, backlog.QuotaBridgeReport{})
+			}
+			if !behind.acked || head.acked {
+				t.Fatalf("checkpoint behind the broken head acknowledged %t after 3 passes, %d failed exchanges", behind.acked, *failures)
+			}
+		})
+	}
+}
+
+// brokenTransportSessions runs one worker as production does: one cached
+// session, replaced after any hand-on or exchange error, whose artifact
+// transport fails for the named uploads. It counts the failed exchanges.
+func brokenTransportSessions(t *testing.T, w handOnWorker, control *queuedUploadControl, broken map[string]bool) (*coordinatorWorkerSessions, *int) {
+	t.Helper()
+	skips := &checkpointScanSkips{}
+	opened := 0
+	open := func() coordinatorWorkerSession {
+		opened++
+		session := w.session(t, control)
+		session.ArtifactClient = coordinatorResultClient(t, w.now, fmt.Sprintf("exchange-artifact-%d", opened), brokenStreamArtifacts{queuedUploadArtifacts: queuedUploadArtifacts{control: control}, broken: broken})
+		session.CheckpointSkips = skips
+		return session
+	}
+	session := open()
+	failures := 0
+	return &coordinatorWorkerSessions{
+		workerIDs: []string{"normandy"},
+		handOn: func(ctx context.Context, _ string) (backlog.WorkerExchangeReport, error) {
+			report, err := handOnCoordinatorWorkerContinuations(ctx, session, backlog.WorkerExchangeReport{}, 1024)
+			if err != nil {
+				session = open()
+			}
+			return report, err
+		},
+		exchange: func(ctx context.Context, _ string, _ backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error) {
+			report, err := exchangeCoordinatorWorker(ctx, session, 1024, func(context.Context) (backlog.WorkerExchangeReport, error) {
+				return backlog.WorkerExchangeReport{}, nil
+			})
+			if err != nil {
+				failures++
+				session = open()
+			}
+			return report, err
+		},
+	}, &failures
 }
 
 // Review of the simplification, R2: only a worker removed from the
