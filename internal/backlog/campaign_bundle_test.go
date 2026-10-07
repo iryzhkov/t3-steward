@@ -60,6 +60,9 @@ type produceOptions struct {
 	noChange bool
 	// oldBuild finalizes as a build without the commit bundle capability.
 	oldBuild bool
+	// reviewGated finalizes as a review-declared task, which stages its
+	// commit instead of publishing it.
+	reviewGated bool
 	// edit, when set, changes the producer's workspace before its commit, so a
 	// test can make the commit modify files that already exist in the base.
 	edit func(t *testing.T, workspace string)
@@ -94,7 +97,7 @@ func produceCommit(t *testing.T, producer commitWorker, repository, storage stri
 	finalized, err := finalizer.Finalize(ctx, AttemptFinalization{
 		Task: task, Attempt: request.Attempt, WorkspaceDir: prepared.WorkspaceDir,
 		ExplicitSuccess: true, Repository: repository, BaseCommit: prepared.Commit,
-		CommitBundles: !options.oldBuild,
+		CommitBundles: !options.oldBuild, ReviewGated: options.reviewGated,
 	})
 	if err != nil {
 		t.Fatalf("finalize producer: %v", err)
@@ -113,6 +116,7 @@ func produceCommit(t *testing.T, producer commitWorker, repository, storage stri
 			produced.record = artifact
 		case artifact.Kind == domain.ArtifactGitState && artifact.Name == CommitBundleArtifactName("repair"):
 			produced.bundle = &finalized.Artifacts[index]
+		case options.reviewGated && artifact.Kind == domain.ArtifactGitState && artifact.Name == WorkspaceHeadArtifactName:
 		default:
 			t.Fatalf("unexpected producer artifact %+v", artifact)
 		}

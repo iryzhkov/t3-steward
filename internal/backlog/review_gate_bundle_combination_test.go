@@ -8,9 +8,9 @@ import (
 
 // rc.117 combination of M16-0's commit bundles and M16-3's staged commits: a
 // consumer on the worker that staged a review-gated commit finds it in its
-// own store. Obtain must not ask for a bundle, which the producer never
-// retains for a staged commit, and must not publish the staging itself; the
-// accepted fetch does that.
+// own store. Obtain must not ask for a bundle, which the consumer's package
+// does not deliver to the producer's worker, and must not publish the staging
+// itself; the accepted fetch does that.
 func TestObtainFindsACommitStagedOnThisWorker(t *testing.T) {
 	ctx := context.Background()
 	repository := newGitFixture(t)

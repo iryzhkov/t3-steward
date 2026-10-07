@@ -184,6 +184,21 @@ campaign ref is left as it is. A promotion that created the campaign ref but
 not its record is completed by the next accepted fetch. Producers without
 `review:` publish directly, and their consumers' packages are unchanged.
 
+The staged provenance record names the attempt that staged it
+(`stagedAttempt`). A producer offered the `campaign-commit-bundle-v1` capability retains
+a bundle of its staging, which names the staged ref rather than the campaign
+ref. A consumer on another worker imports that bundle as staged work of the
+same attempt, into its own store's staging, so the same rule applies there: an
+accepted consumer's fetch publishes it on that worker, and any other consumer
+reads it from the staging. When a staging is promoted, its published record no
+longer names the attempt.
+
+`campaign commit export` of a review-declared task's commit exports the staged
+work of the task's latest attempt only once the coordinator accepted that
+attempt. It uses the retained bundle, or otherwise asks the producing worker,
+which exports from that attempt's staging without publishing it. A leaf task,
+whose commit no consumer ever promotes, is exported that way too.
+
 Until an accepted consumer fetches it, `Resolve` finds nothing for the task,
 and a commit the gate rejected never becomes the task's output. Releasing a run
 drops its staged refs and records with its published ones, and a run that only
@@ -208,9 +223,10 @@ settles the attempt.
 - Every tracked file is hashed at collection, because the scratch index has
   no stat cache. That is a cost in proportion to the repository's size, paid
   only by review-declared tasks.
-- A staged commit is promoted on the worker that staged it, which is the only
-  store that holds it, exactly as a published commit is fetched only from the
-  worker that published it.
+- A staged commit reaches a consumer on another worker only through its
+  retained bundle, exactly as a published commit does. A producer whose bundle
+  was left out, for example for its size, records the reason, and its staged
+  commit can then be consumed only on the worker that staged it.
 - The frozen review authority is bound to the task's first attempt
   (M16-1), so a retried attempt cannot open rounds of its own. A retry
   completes only if its HEAD is exactly the head the latest round accepted;

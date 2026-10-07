@@ -54,7 +54,9 @@ const (
 	// there is no base..commit to bundle.
 	BundleOmittedNotDescendant = "bundle-omitted:not-descendant"
 	// BundleOmittedStaged: the commit is a review-gated task's staged work,
-	// which becomes a campaign output only on the worker that staged it.
+	// which an earlier rc.117 integration build kept only on the worker that
+	// staged it. Staged work is bundled now, so no producer records it; a
+	// consumer can still be handed such a record and is told what it means.
 	BundleOmittedStaged = "bundle-omitted:staged"
 )
 
@@ -69,8 +71,8 @@ func describeBundleOmission(code string) string {
 	case BundleOmittedNotDescendant:
 		return "the commit does not descend from its base, so no bundle of base..commit exists"
 	case BundleOmittedStaged:
-		return "the commit was staged by a task that declares review, and a staged commit is published, once its review gate accepts it, " +
-			"only on the worker that staged it; run the consumer on that worker"
+		return "the commit was staged by a task that declares review, on a build that retained no bundle of staged work, " +
+			"so it can be consumed only on the worker that staged it; run the consumer on that worker"
 	default:
 		const maxShown = 256
 		if len(code) > maxShown {
@@ -333,6 +335,10 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 	if provenance.Commit == provenance.Base {
 		return "", "", nil
 	}
+	source, err := bundleRef(provenance)
+	if err != nil {
+		return "", "", err
+	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {
 		return "", "", err
@@ -342,10 +348,10 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 		return "", "", fmt.Errorf("lock campaign refs: %w", err)
 	}
 	defer lock.Close()
-	if head, found, err := s.head(ctx, gitDir, provenance.Ref, log); err != nil {
+	if head, found, err := s.head(ctx, gitDir, source, log); err != nil {
 		return "", "", err
 	} else if !found || head != provenance.Commit {
-		return "", "", fmt.Errorf("bundle campaign commit: ref %s does not name commit %s", provenance.Ref, provenance.Commit)
+		return "", "", fmt.Errorf("bundle campaign commit: ref %s does not name commit %s", source, provenance.Commit)
 	}
 	if _, err := runLoggedCommandOutput(ctx, log, "", s.git(), "--git-dir", gitDir,
 		"merge-base", "--is-ancestor", provenance.Base, provenance.Commit); err != nil {
@@ -369,8 +375,8 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 	}()
 	path := filepath.Join(directory, "commit.bundle")
 	if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
-		"bundle", "create", path, provenance.Ref, "^"+provenance.Base); err != nil {
-		return "", "", fmt.Errorf("bundle campaign commit %s: %w", provenance.Ref, err)
+		"bundle", "create", path, source, "^"+provenance.Base); err != nil {
+		return "", "", fmt.Errorf("bundle campaign commit %s: %w", source, err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -380,10 +386,29 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 		return "", BundleOmittedSizeLimit, nil
 	}
 	if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir, "bundle", "verify", path); err != nil {
-		return "", "", fmt.Errorf("verify commit bundle of %s: %w", provenance.Ref, err)
+		return "", "", fmt.Errorf("verify commit bundle of %s: %w", source, err)
 	}
 	keep = true
 	return path, "", nil
+}
+
+// bundleRef is the store ref a commit's bundle is made from and names: the
+// campaign ref of a published commit, and the staged ref of the attempt that
+// staged a review-declared task's commit. A bundle of staged work names its
+// staging, so whoever imports it knows it as staged work of that attempt and
+// never as the task's campaign output.
+func bundleRef(provenance CommitProvenance) (string, error) {
+	if provenance.StagedAttempt == "" {
+		return CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name), nil
+	}
+	if !safePathComponent(provenance.StagedAttempt) {
+		return "", fmt.Errorf("campaign commit record names staging attempt %q, which is not a safe path component", provenance.StagedAttempt)
+	}
+	ref := StagedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.StagedAttempt, provenance.Name)
+	if err := validateGitRef(ref); err != nil {
+		return "", fmt.Errorf("campaign commit staging: %w", err)
+	}
+	return ref, nil
 }
 
 // Obtain makes a declared commit present in this worker's store under its
@@ -396,6 +421,11 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 // into the store with its provenance, so that it is released with the run like
 // any commit published here. Every failure is specific, and none falls back to
 // any other commit.
+//
+// A review-declared task's staged commit is imported as staged work of the
+// attempt that staged it, exactly as that attempt's worker holds it: the fetch
+// that follows publishes it only for a consumer the coordinator accepted the
+// producing result for, and otherwise reads it from the staging.
 func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, provenance CommitProvenance, delivery *CommitBundleDelivery, log io.Writer) error {
 	if err := s.validate(); err != nil {
 		return err
@@ -414,6 +444,10 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 		return fmt.Errorf("campaign commit record names ref %q, want %q", provenance.Ref, ref)
 	}
 	provenance.Ref = ref
+	source, err := bundleRef(provenance)
+	if err != nil {
+		return err
+	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {
 		return err
@@ -434,7 +468,7 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 			"and the commit can only be imported on top of it", ref, provenance.Base, provenance.Repository)
 	}
 	if provenance.Commit != provenance.Base {
-		if err := s.importBundle(ctx, workspaceDir, provenance, delivery, log); err != nil {
+		if err := s.importBundle(ctx, workspaceDir, provenance, source, delivery, log); err != nil {
 			return err
 		}
 	}
@@ -447,6 +481,21 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 	// Another consumer on this worker may have imported it meanwhile.
 	if held, err := s.heldCommit(ctx, gitDir, provenance, log); err != nil || held {
 		return err
+	}
+	if provenance.StagedAttempt != "" {
+		if _, _, staged, err := s.findStaged(provenance); err != nil || staged {
+			return err
+		}
+		// The record is written first, as Stage writes it, so that release
+		// finds the staged ref.
+		if err := writeCommitRecord(s.stagedPath(provenance.WorkflowRunID, provenance.TaskID, provenance.StagedAttempt, provenance.Name), provenance); err != nil {
+			return err
+		}
+		if err := runLoggedCommand(ctx, log, "", s.git(), "-C", workspaceDir,
+			"push", "--", gitDir, "+"+provenance.Commit+":"+source); err != nil {
+			return fmt.Errorf("import staged campaign ref %s: %w", source, err)
+		}
+		return nil
 	}
 	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", workspaceDir,
 		"push", "--", gitDir, provenance.Commit+":"+ref); err != nil {
@@ -475,8 +524,9 @@ func (s CampaignRefStore) hasCommit(ctx context.Context, workspaceDir, commit st
 }
 
 // importBundle fetches the declared commit from its delivered bundle into the
-// consuming workspace under its campaign ref.
-func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string, provenance CommitProvenance, delivery *CommitBundleDelivery, log io.Writer) error {
+// consuming workspace under its campaign ref. The bundle must name exactly
+// source, the ref bundleRef gives for the provenance record.
+func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string, provenance CommitProvenance, source string, delivery *CommitBundleDelivery, log io.Writer) error {
 	ref := provenance.Ref
 	if delivery == nil {
 		switch {
@@ -525,8 +575,8 @@ func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string,
 	if err != nil {
 		return fmt.Errorf("campaign commit %s: commit bundle is invalid: %w", ref, err)
 	}
-	if len(heads) != 1 || heads[0].ref != ref {
-		return fmt.Errorf("campaign commit %s: commit bundle names %d refs, want exactly %s", ref, len(heads), ref)
+	if len(heads) != 1 || heads[0].ref != source {
+		return fmt.Errorf("campaign commit %s: commit bundle names %d refs, want exactly %s", ref, len(heads), source)
 	}
 	if heads[0].commit != provenance.Commit {
 		return fmt.Errorf("campaign commit %s: commit bundle names commit %s, but its provenance record names %s",
@@ -547,7 +597,7 @@ func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string,
 		return fmt.Errorf("campaign commit %s: commit bundle failed verification: %w", ref, err)
 	}
 	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", workspaceDir,
-		"fetch", "--no-tags", "--", path, "+"+ref+":"+ref); err != nil {
+		"fetch", "--no-tags", "--", path, "+"+source+":"+ref); err != nil {
 		return fmt.Errorf("campaign commit %s: import commit bundle: %w", ref, err)
 	}
 	raw, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", workspaceDir, "rev-parse", "--verify", ref+"^{commit}")

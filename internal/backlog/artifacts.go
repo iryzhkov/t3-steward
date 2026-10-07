@@ -364,12 +364,11 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			continue
 		}
 		entry := publishedCommit{declaration: declaration, provenance: provenance}
-		if request.CommitBundles && gated {
-			// A staged commit has no campaign ref to bundle, and a bundle
-			// imported on another worker would be published there without the
-			// coordinator's acceptance, so none is made; the record says why.
-			entry.provenance.BundleOmitted = BundleOmittedStaged
-		} else if request.CommitBundles {
+		// A staged commit's bundle names its staging, so a worker that
+		// imports it holds it as staged work and publishes it only for a
+		// consumer the coordinator accepted the result for; an operator
+		// exports it once the coordinator accepted this attempt.
+		if request.CommitBundles {
 			bound, bundle, bundleErr := f.makeCommitBundle(ctx, request, provenance)
 			if bundleErr != nil {
 				failures = append(failures, fmt.Sprintf("declared commit %q: %v", declaration.Name, bundleErr))

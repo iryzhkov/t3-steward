@@ -40,6 +40,13 @@ type CommitProvenance struct {
 	// none was retained.
 	Bundle        *CommitBundleRecord `json:"bundle,omitempty"`
 	BundleOmitted string              `json:"bundleOmitted,omitempty"`
+	// StagedAttempt names the attempt of a review-declared task that staged
+	// the commit, which is published only once a consumer the coordinator
+	// accepted the result for fetches it. A worker that imports the commit
+	// from its bundle keeps it staged under this attempt, and the coordinator
+	// exports it only from this attempt once it was accepted. It is absent
+	// from a published commit's record.
+	StagedAttempt string `json:"stagedAttempt,omitempty"`
 }
 
 // Report renders the provenance for an operator or a log line.
@@ -171,7 +178,7 @@ func (s CampaignRefStore) Stage(ctx context.Context, request PublishCommitReques
 		Version: CampaignCommitRecordVersion, WorkflowRunID: request.WorkflowRunID,
 		TaskID: request.TaskID, Name: request.Name, Repository: request.Repository,
 		Base: request.Base, Commit: commit, Ref: CampaignRef(request.WorkflowRunID, request.TaskID, request.Name),
-		CreatedAt: createdAt.UTC(),
+		CreatedAt: createdAt.UTC(), StagedAttempt: attemptID,
 	}
 	// The record is written first: release finds staged work by its records,
 	// so a ref without one would never be released, while a record without
@@ -381,6 +388,13 @@ func (s CampaignRefStore) promote(ctx context.Context, gitDir string, provenance
 		"update-ref", ref, staged.Commit, ""); err != nil {
 		return fmt.Errorf("publish staged campaign ref %s: %w", ref, err)
 	}
+	return s.writePromotedProvenance(staged)
+}
+
+// writePromotedProvenance records a promoted staging as the published commit
+// it now is, no longer naming the attempt that staged it.
+func (s CampaignRefStore) writePromotedProvenance(staged CommitProvenance) error {
+	staged.StagedAttempt = ""
 	return s.writeProvenance(staged)
 }
 
@@ -399,7 +413,7 @@ func (s CampaignRefStore) restorePromotedRecord(provenance CommitProvenance, exi
 	if err != nil || !found {
 		return err
 	}
-	return s.writeProvenance(staged)
+	return s.writePromotedProvenance(staged)
 }
 
 // inspectionSource names the ref a consumer without acceptance fetches: the
