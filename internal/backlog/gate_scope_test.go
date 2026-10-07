@@ -1,0 +1,75 @@
+package backlog
+
+import (
+	"context"
+	"fmt"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
+)
+
+// A request with KillRemaining clears its scope before it starts and after it
+// exits; an ordinary request still leaves the scope alone on a normal exit.
+func TestSystemdScopeRunnerKillRemaining(t *testing.T) {
+	for _, kill := range []bool{false, true} {
+		t.Run(fmt.Sprintf("kill=%v", kill), func(t *testing.T) {
+			root := t.TempDir()
+			calls := filepath.Join(root, "calls")
+			systemdRun := writeExecutable(t, root, "systemd-run", fmt.Sprintf("#!/bin/sh\necho run >> %q\n", calls))
+			systemctl := writeExecutable(t, root, "systemctl", fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\nexit 1\n", calls))
+			_, err := (SystemdScopeRunner{SystemdRunBinary: systemdRun, SystemctlBinary: systemctl}).Run(context.Background(),
+				ProcessRequest{ID: "verify-attempt-1-gate-0", Dir: root, Program: "/bin/sh", Args: []string{"-c", "true"}, KillRemaining: kill})
+			if err != nil {
+				t.Fatal(err)
+			}
+			killCall := "--user kill --kill-who=all --signal=KILL " + processScopeUnit("verify-attempt-1-gate-0")
+			want := "run"
+			if kill {
+				want = killCall + "\nrun\n" + killCall
+			}
+			if got := strings.TrimSpace(readAbsoluteTestFile(t, calls)); got != want {
+				t.Fatalf("calls:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+// Finalization of one attempt is retried after a lost settlement, a deferred
+// collection or a worker restart, and the retry runs each gate command under
+// the same scope unit. A background child left by the first run kept that
+// unit loaded, so systemd-run refused the retry and the gate failed a command
+// that had passed.
+func TestGateRefinalizationAfterBackgroundChild(t *testing.T) {
+	if _, err := exec.LookPath("systemd-run"); err != nil {
+		t.Skip("systemd-run unavailable")
+	}
+	if out, _ := exec.Command("systemctl", "--user", "show-environment").CombinedOutput(); len(out) == 0 {
+		t.Skip("no user systemd instance")
+	}
+	dir := h2GateRepository(t)
+	id := fmt.Sprintf("gate-retry-%d", time.Now().UnixNano())
+	req := h2GateRequest(dir, id)
+	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt && { sleep 20 >/dev/null 2>&1 </dev/null & }"}, Timeout: 10 * time.Second}
+	unit := processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))
+	t.Cleanup(func() {
+		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", unit).Run()
+	})
+	for round := 1; round <= 2; round++ {
+		storage := t.TempDir()
+		result, err := (AttemptFinalizer{StorageRoot: storage, Processes: SystemdScopeRunner{}}).Finalize(context.Background(), req)
+		if err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+		cleanupImmutable(t, result.StorageDir)
+		if !result.Completion.VerificationPassed {
+			t.Fatalf("round %d: re-finalization of the same attempt failed: %s", round, result.Completion.Failure)
+		}
+	}
+	if err := exec.Command("systemctl", "--user", "is-active", "--quiet", unit).Run(); err == nil {
+		t.Fatalf("gate left %s running after the command exited", unit)
+	}
+}

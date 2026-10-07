@@ -21,6 +21,11 @@ type ProcessRequest struct {
 	Log     io.Writer
 	// Timeout bounds worker-owned commands; contained runners enforce it internally too.
 	Timeout time.Duration
+	// KillRemaining kills whatever is still running under this request's ID
+	// before the command starts and after it exits. A retried request reuses
+	// its ID, and a process the command left behind would otherwise keep the
+	// unit alive, refuse the retry and go on changing the workspace.
+	KillRemaining bool
 	// MaxOutputBytes bounds the combined standard output and standard error
 	// while they are being accumulated, rather than after the process has
 	// finished. A command that writes far more than the caller will ever keep
@@ -132,6 +137,9 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 	args = append(args, request.Args...)
 	fmt.Fprintf(log, "$ %s %s\n", r.systemdRun(), strings.Join(args, " "))
 
+	if request.KillRemaining {
+		r.killLeftScope(unit)
+	}
 	output := boundedBuffer{limit: request.MaxOutputBytes}
 	command := exec.Command(r.systemdRun(), args...)
 	command.Stdout = &output
@@ -147,6 +155,9 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 
 	select {
 	case err := <-waited:
+		if request.KillRemaining {
+			r.killLeftScope(unit)
+		}
 		_, _ = io.WriteString(log, output.String())
 		result := ProcessResult{Output: output.String(), Truncated: output.truncated}
 		if err == nil {
@@ -182,6 +193,14 @@ func (r SystemdScopeRunner) killScope(log io.Writer, unit string) error {
 		return err
 	}
 	return nil
+}
+
+// killLeftScope kills any process still in unit. Usually the unit is gone,
+// and the refusal to kill a unit that is not loaded is expected; if a process
+// does survive, the next request under the same unit fails rather than
+// running beside it.
+func (r SystemdScopeRunner) killLeftScope(unit string) {
+	_ = exec.Command(r.systemctl(), "--user", "kill", "--kill-who=all", "--signal=KILL", unit).Run()
 }
 
 func (r SystemdScopeRunner) systemdRun() string {

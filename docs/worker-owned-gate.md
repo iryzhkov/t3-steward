@@ -61,7 +61,10 @@ published.
 Every attempt runs its gate commands afresh, even when an earlier attempt
 passed the same gate on the same tree: no gate result is cached or reused, and
 the report names the attempt that produced it. The coordinator rejects, as
-invalid evidence, a report that claims to replay another attempt's result. A
+invalid evidence, a report that claims to replay another attempt's result. In
+the ordinary lane each gate command runs in its own transient systemd scope,
+and anything a command leaves running is killed when it exits, so a command
+cannot start a service for a later one. A
 declared file output, tracked or not, must still have the content the gate saw
 when it is captured; otherwise the gate report is amended to a failure naming
 the output, and the coordinator fails the attempt from that evidence.
