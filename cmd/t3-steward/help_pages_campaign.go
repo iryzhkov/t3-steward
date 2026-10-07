@@ -87,7 +87,7 @@ func campaignHelpPages() []helpPage {
 				{Name: "--idempotency-key", Value: "KEY", Required: true, Text: "The key the rerun is recorded under. Repeating it with the same content returns the same run."},
 				{Name: "--prompt", Value: "TEXT", Default: "source prompt", Text: "Corrected instructions for the selected root task only; retained as a new immutable input."},
 				{Name: "--reason", Value: "TEXT", Default: "none", Text: "Why the campaign is being rerun; recorded with the amendment."},
-				{Name: "--use-commit", Text: "Reuse retained commits from a failed attempt whose only failures were verification; requires coordinator 0.11.0-rc.117 or newer."},
+				{Name: "--use-commit", Default: "false", Text: "Reuse retained commits from a failed attempt whose only failures were verification; requires coordinator 0.11.0-rc.117 or newer."},
 				jsonFlag("the rerun receipt"),
 			},
 			Exits:    coordinatorExits(),

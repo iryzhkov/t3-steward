@@ -15,7 +15,7 @@ func TestCampaignRerunUseCommitCommandHelp(t *testing.T) {
 		if errOut != "" {
 			t.Fatalf("help stderr: %s", errOut)
 		}
-		for _, fragment := range []string{"--use-commit", "verification", "failed attempt"} {
+		for _, fragment := range []string{"--use-commit", "verification", "failed attempt", "false"} {
 			if !strings.Contains(out, fragment) {
 				t.Fatalf("%s help missing %q: %s", mode, fragment, out)
 			}
