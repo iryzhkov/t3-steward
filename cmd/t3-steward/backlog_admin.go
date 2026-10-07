@@ -1737,7 +1737,18 @@ func renderExplanation(out io.Writer, explanation *backlogadmin.Explanation) {
 		}
 	}
 	for _, blocker := range explanation.Blockers {
-		fmt.Fprintf(out, "  %s: %s\n", blocker.Code, blocker.Detail)
+		suffix := []string{}
+		if blocker.WorkerID != "" {
+			suffix = append(suffix, "worker "+blocker.WorkerID)
+		}
+		if blocker.QuotaPoolID != "" {
+			suffix = append(suffix, "pool "+blocker.QuotaPoolID)
+		}
+		fmt.Fprintf(out, "  %s: %s", blocker.Code, blocker.Detail)
+		if len(suffix) != 0 {
+			fmt.Fprintf(out, " [%s]", strings.Join(suffix, ", "))
+		}
+		fmt.Fprintln(out)
 	}
 	for _, detail := range explanation.Details {
 		fmt.Fprintf(out, "  detail: %s\n", detail)
@@ -1851,6 +1862,19 @@ func renderDiagnosis(out io.Writer, diagnosis *backlogadmin.Diagnosis) {
 		// applies attemptStarted for this caller and for backlog task show.
 		if detail := task; detail.Attempt != nil && !detail.Attempt.Progress.Terminal() {
 			renderAttemptTimeline(out, "    ", &detail, diagnosis.GeneratedAt)
+		}
+	}
+	for i := range diagnosis.Explanations {
+		explanation := &diagnosis.Explanations[i]
+		terminal := false
+		for _, task := range diagnosis.Workflow.Tasks {
+			if task.Task.ID == explanation.TaskID && task.Attempt != nil && task.Attempt.Progress.Terminal() {
+				terminal = true
+				break
+			}
+		}
+		if !terminal {
+			renderExplanation(out, explanation)
 		}
 	}
 	live := 0
