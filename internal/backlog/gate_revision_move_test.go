@@ -93,7 +93,9 @@ func TestGateHeadRewriteWithSameTreeFailsOnlyWithDeclaredCommit(t *testing.T) {
 
 // Publish runs Git in the producer's workspace on the host, after the gate. A
 // workspace pre-push hook ran there and could replace the published commit;
-// a url.*.insteadOf entry could send the push elsewhere.
+// a url.*.insteadOf entry could send the push elsewhere. Publication fetches
+// into the store (M16-3) rather than pushing from the workspace, so neither
+// applies: the commit lands in the store and nowhere else.
 func TestCampaignRefPublishIgnoresWorkspaceHooksAndRedirects(t *testing.T) {
 	ctx := context.Background()
 	repository := newGitFixture(t)
@@ -120,11 +122,18 @@ func TestCampaignRefPublishIgnoresWorkspaceHooksAndRedirects(t *testing.T) {
 	gitRun(t, repository, "init", "-q", "--bare", decoy)
 	gitRun(t, repository, "config", "url."+decoy+".insteadOf", filepath.Join(refs.Root, "campaigns.git"))
 	request.Name = "redirected"
-	if p, err := refs.Publish(ctx, request, nil); err == nil {
-		t.Fatalf("publication redirected by workspace config reported success: %+v", p)
+	published, err := refs.Publish(ctx, request, nil)
+	if err != nil {
+		t.Fatalf("publish with a workspace redirect: %v", err)
 	}
-	if _, err := refs.Resolve("run-1", "task-producer", "redirected"); err == nil {
-		t.Fatal("redirected publication left a provenance record")
+	if resolved, err := refs.Resolve("run-1", "task-producer", "redirected"); err != nil || resolved.Commit != commit || published.Commit != commit {
+		t.Fatalf("store does not name the commit: published %+v resolved %+v %v", published, resolved, err)
+	}
+	if refs := gitOutput(t, decoy, "for-each-ref"); refs != "" {
+		t.Fatalf("the workspace redirect received the publication: %s", refs)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("workspace pre-push hook ran during publication")
 	}
 }
 

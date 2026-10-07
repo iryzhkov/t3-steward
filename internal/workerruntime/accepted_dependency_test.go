@@ -19,7 +19,7 @@ func TestLocalDriverPublishesAStagedDependencyCommitOnlyWhenAccepted(t *testing.
 	repository, commit := makeGitRepository(t)
 	refs := backlog.CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}
 	staged, err := refs.Stage(ctx, backlog.PublishCommitRequest{
-		WorkflowRunID: "run-1", TaskID: "producer", Name: "change", Repository: "repo",
+		WorkflowRunID: "run-1", TaskID: "producer", Name: "change", Repository: "https://example.com/steward.git",
 		WorkspaceDir: repository, Base: commit,
 	}, "producer-attempt", nil)
 	if err != nil {

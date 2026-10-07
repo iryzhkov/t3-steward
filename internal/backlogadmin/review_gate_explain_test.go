@@ -39,7 +39,7 @@ func TestExplainShowsTheReviewGateDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := service.Query(ctx, Query{Version: Version, Kind: QueryExplanation, WorkflowRunID: "run-1", TaskID: "task-inspect"})
+	response, err := service.Query(ctx, Query{Version: ExtendedReadVersion, Kind: QueryExplanation, WorkflowRunID: "run-1", TaskID: "task-inspect"})
 	if err != nil {
 		t.Fatal(err)
 	}
