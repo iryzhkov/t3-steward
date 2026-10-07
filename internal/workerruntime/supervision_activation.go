@@ -196,6 +196,11 @@ func (d *LocalDriver) createActivationThread(ctx context.Context, pkg workerprot
 	if d.Config.DryRun {
 		return os.WriteFile(d.noEffectsThreadPath(pkg), []byte("active\n"), 0o600)
 	}
+	if recorder, ok := d.Publisher.(secretRecorder); ok {
+		if err := recorder.SnapshotSecrets(ctx, pkg); err != nil {
+			return err
+		}
+	}
 	// The overseer's sessions get a project of their own, so one never lands in
 	// a project a reviewed task is using. It is keyed by the run rather than by
 	// the thread: every activation of one run is the same supervision of the
@@ -366,7 +371,7 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 	}
 	d.logger().Info("supervision activation turn ended",
 		"activation", pkg.Supervision.ActivationID, "run", pkg.Supervision.RunID,
-		"epoch", pkg.Supervision.Epoch, "outcome", outcome, "reason", failure)
+		"epoch", pkg.Supervision.Epoch, "outcome", outcome, "reason", d.loggedText(ctx, pkg, failure))
 	proposal, instructions, checkpoint, err := d.collectRecoveryProposal(pkg, workspace)
 	if err != nil {
 		return err
@@ -387,6 +392,12 @@ func (d *LocalDriver) collectActivation(ctx context.Context, pkg workerproto.Exe
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
 		RecoveryProposal: proposal, RecoveryInstructions: instructions, RecoveryCheckpointTar: checkpoint,
 	}); err != nil {
+		// A refusal is permanent: the runtime records it as the activation's
+		// failure and publishes the redacted failed result in its place.
+		var secret *SecretScanError
+		if errors.As(err, &secret) && !secret.retryable() {
+			return &permanentCollectionFailure{secret: secret}
+		}
 		return fmt.Errorf("publish supervision activation custody: %w", err)
 	}
 	if thread == nil {

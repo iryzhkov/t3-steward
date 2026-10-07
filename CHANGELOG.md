@@ -6,6 +6,113 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.116] - 2026-10-06
+
+No database migration (schema 37). Workers on rc.114 or rc.115 keep working
+against an rc.116 coordinator; the new worker capabilities apply once a
+worker is upgraded.
+
+### Changed
+
+- A0 completion guard: A turn that ends while commands the task started are
+  still running (for example a gate started with `nohup ... &`) is no longer
+  collected. The worker sends the same session at most two follow-up turns
+  naming the commands and telling it to wait for them; a third such turn end
+  fails the attempt with `live-children-at-turn-end`, the process list, the
+  declared outputs present or missing, and what was retained. Linux workers
+  read `/proc`; a host without it collects as before and says the check did
+  not run. Every failed attempt of a task that declares a commit now uploads
+  its uncommitted work as the result artifact `wip.bundle` (from the private
+  ref `refs/steward/wip/<attempt>`) and names it in the failure text.
+  `backlog explain` gains a `turn end:` detail and `backlog task show` a
+  `turn end:` line once the worker advertises `turn-end-commands-v1`; the
+  coordinator asks for the new snapshot field only from such workers, so
+  rc.114 and rc.115 workers are unaffected. Like failure reasons, the turn-end
+  note is redacted by the result secret scan before the coordinator sees it.
+
+### Added
+
+- H1 structured review verdicts: A task can declare
+  `review_output: {verdict: verdict.json}` or
+  `review_output: {verdict_line: review.md}`; the path must also be a declared
+  output. The coordinator parses the verdict (`accept` or
+  `changes-requested`, with common spellings such as ACCEPT, APPROVE,
+  REQUEST_CHANGES and REJECT normalized), the blocking finding count and up
+  to five finding titles, and records it with the terminal attempt; no
+  migration. A missing, malformed, oversized (over 64 KiB) or unknown verdict
+  fails verification with `review_output verification failed`. A review that
+  requests changes still succeeds as execution. Output changes: `task result`,
+  `campaign show` and `campaign explain` print the verdict and add a
+  `reviewVerdict` object (`verdict`, `blocking_findings`, `finding_titles`) to
+  their JSON, and node-wait wake trailers gain `review=accept|changes-requested`
+  and `blocking=N`. A run-level wait aggregates the latest terminal attempt per
+  task: any changes-requested wins and blocking counts sum.
+- H3 commit export: `t3-steward campaign commit export RUN/TASK/NAME --bundle
+  FILE [--branch NAME]` writes a Git bundle of a declared campaign commit that
+  advertises exactly `refs/heads/NAME` and requires the recorded campaign base,
+  and prints the full commit, base and SHA-256 digest. It uses a retained
+  bundle when the coordinator has one and otherwise asks the producing worker
+  over the authenticated transport (new message `commit-bundle-export`); the
+  destination must not exist. Before a dependent agent starts, the worker now
+  verifies every declared dependency's artifact digest and commit ref under
+  `.t3/dependencies`, retries materialization once, and otherwise refuses with
+  an error that names the producer and input. See
+  docs/campaign-commit-export.md.
+- M16-12 campaign progress: `t3-steward campaign progress [<run>...]
+  [--owner THREAD] [--since RFC3339] [--json]` is a read-only mirror of
+  coordinator facts. Without run IDs it lists open runs and runs that became
+  terminal in the last 24 hours. Text output is one row per run and task,
+  bounded to 120 columns with non-ASCII escaped; `--json` prints schema
+  version 1 (`schemaVersion`, `generatedAt`, `runs[]` with `tasks[]` carrying
+  state, actual route and effort, attempts, retained outputs and
+  `reviewVerdicts`). An older coordinator is refused with an upgrade error.
+- F1 load-aware placement: Workers report live load, CPU count, available
+  memory, swap and free space on the workspace and temp filesystems with each
+  inventory, behind the capability `resource-telemetry-v1`. With fresh
+  telemetry the coordinator rejects a worker short of a task's memory or
+  scratch need plus reserve or over the swap limit, and ranks the rest by CPU
+  and memory headroom before the existing preference scores; workers without
+  telemetry rank after those with it but are not excluded. Assignments
+  proposed in the same offer cycle count against the worker they were
+  proposed to. Resource presets now carry expected needs (`light`: 0.25 CPU,
+  256 MiB memory, 512 MiB scratch; `build`: 2 CPU, 4096 MiB, 8192 MiB), and a
+  review member inherits its profile's preset. Tunables live under
+  `backlog_v2.coordinator.resource_placement`. A worker whose service TMPDIR
+  (or `/tmp`) is small never receives `build` tasks until TMPDIR points at a
+  larger filesystem. `backlog explain --json` gains a `placement` object with
+  the decision, its candidates, rejections and scores.
+- Result secret scan: Workers scan every sealed result object before it is
+  stored or offered for upload: declared outputs, verification logs, the
+  thread archive, the final message, recovery objects, declared Git commits
+  and Git bundles (including a failed attempt's `wip.bundle`), and quota-pause
+  checkpoints. Exact execution credentials, in plain, base64 and URL-encoded
+  forms, always block; high-confidence token patterns block in commits and
+  bundles and warn elsewhere under the default policy
+  (`backlog_v2.result_secret_scan.pattern_policy`: `default`, `block` or
+  `warn`; `max_object_bytes` caps one object at 64 MiB by default and fails
+  closed above it). Refusals are new operator-visible failures: the attempt
+  fails permanently with a redacted summary naming the object, detector, byte
+  offset and fingerprint, publishes an empty archive, and keeps the rejected
+  bytes on the worker. A refused `wip.bundle` stays on the worker while the
+  failure still publishes. Failure reasons, turn-end notes, acknowledgements
+  and runtime warnings are redacted before they leave the worker or reach its
+  log, and a reason the scan cannot check is replaced by a fixed notice.
+  Repository fixtures can be allowlisted by fingerprint in a committed
+  `.t3/secret-scan-allow`, read only as committed at the execution's base.
+- M16-2 `review --task current`: Inside a task workspace,
+  `t3-steward review --task current [--checkpoint ID] [--json]` pushes HEAD as
+  a never-moved checkpoint branch, opens the manifest-declared review round
+  for it and parks the task on that round; when parked it tells the agent to
+  end the turn. Repeating the command after a lost answer replays the same
+  round. Reviewer, model and policy flags are refused in task mode. Exit codes:
+  0 parked or already complete; 1 invalid flags, not in a task,
+  `remote-missing` or `push-refused`; 2 a final coordinator refusal; 75
+  retryable; 3-8 transport classes. The wake that resumes the task is held
+  until the round is collected (or 10 minutes past its deadline) and carries
+  the combined verdict, blocking count, per-reviewer verdicts and the paths of
+  the review documents written under `.t3/reviews/<round>/<reviewer>/`; a
+  mid-turn wake carries them too and is never held.
+
 ### Changed
 
 - M16-5: Campaign executors receive a concise contract for authorized work,

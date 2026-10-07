@@ -12,16 +12,23 @@ import (
 // This prefix is an internal durable intent in the existing journal Failure
 // field, not an error classifier. Only the typed publishing rejection writes it.
 const permanentCollectionFailurePrefix = "permanent collection size failure: "
+const permanentSecretFailurePrefix = "permanent collection secret failure: "
 
 type permanentCollectionFailure struct {
-	size *workerproto.ArtifactSizeError
+	size   *workerproto.ArtifactSizeError
+	secret *SecretScanError
 }
 
-func (e *permanentCollectionFailure) Error() string { return e.size.Error() }
-func (e *permanentCollectionFailure) Unwrap() error { return e.size }
+func (e *permanentCollectionFailure) Error() string { return e.Unwrap().Error() }
+func (e *permanentCollectionFailure) Unwrap() error {
+	if e.secret != nil {
+		return e.secret
+	}
+	return e.size
+}
 
 func permanentCollectionIntent(failure string) bool {
-	return strings.HasPrefix(failure, permanentCollectionFailurePrefix)
+	return strings.HasPrefix(failure, permanentCollectionFailurePrefix) || strings.HasPrefix(failure, permanentSecretFailurePrefix)
 }
 
 // failCollection keeps the finished flight registered until the same-current
@@ -47,7 +54,11 @@ func (r *Runtime) failCollection(id string, record AttemptRecord, flight *collec
 			return nil
 		}
 		current.Phase = PhaseFailed
-		current.Failure = permanentCollectionFailurePrefix + failure.Error() +
+		prefix := permanentCollectionFailurePrefix
+		if failure.secret != nil {
+			prefix = permanentSecretFailurePrefix
+		}
+		current.Failure = prefix + failure.Error() +
 			"; raw outputs, thread archive and capture retained in worker workspace/custody for this assignment; recover using the journal workspace path"
 		current.UpdatedAt = r.now()
 		state.Attempts[id] = current

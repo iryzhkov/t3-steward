@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -429,7 +430,7 @@ func (p WorkspacePreparer) materializeInputs(stageDir string, request WorkspaceP
 
 func (p WorkspacePreparer) materializeDependencyView(stageDir string, request WorkspacePreparation) error {
 	dependenciesDir := filepath.Join(stageDir, "dependencies")
-	if len(request.Task.DependencyInputs) == 0 {
+	if len(request.Task.DependencyInputs) == 0 && len(request.Task.CarriedInputs) == 0 {
 		if err := os.Mkdir(dependenciesDir, 0o500); err != nil {
 			return fmt.Errorf("create dependency directory: %w", err)
 		}
@@ -581,7 +582,7 @@ func writeWorkspaceBaseCommit(workspaceDir, commit string) error {
 // WorkspaceBaseCommit reports the commit a prepared workspace started from. It
 // returns an empty string for a workspace that has no pinned source.
 func WorkspaceBaseCommit(workspaceDir string) (string, error) {
-	raw, err := os.ReadFile(filepath.Join(workspaceDir, filepath.FromSlash(workspaceBaseCommitFile)))
+	raw, err := readWorkspaceBaseCommit(filepath.Join(workspaceDir, filepath.FromSlash(workspaceBaseCommitFile)))
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
@@ -593,6 +594,24 @@ func WorkspaceBaseCommit(workspaceDir string) (string, error) {
 		return "", fmt.Errorf("workspace base commit %q is not a commit ID", commit)
 	}
 	return commit, nil
+}
+
+// readWorkspaceBaseCommit reads the base pin, which lies in the workspace the
+// task can write. Only a small regular file is read: the open does not wait
+// on a FIFO the task put there, and a device or other special file is refused
+// from the opened descriptor.
+func readWorkspaceBaseCommit(path string) ([]byte, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if info, err := file.Stat(); err != nil {
+		return nil, err
+	} else if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", workspaceBaseCommitFile)
+	}
+	return io.ReadAll(io.LimitReader(file, 4096))
 }
 
 func (p WorkspacePreparer) git() string {

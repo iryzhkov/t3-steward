@@ -17,6 +17,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -33,6 +34,7 @@ const UploadRetention = 30 * 24 * time.Hour
 
 // CustodyConfig binds a worker-local content store to one coordinator and worker epoch.
 type CustodyConfig struct {
+	SecretScan       SecretScanConfig
 	Root             string
 	CoordinatorID    string
 	CoordinatorEpoch int64
@@ -269,6 +271,11 @@ func resultObjects(pkg workerproto.ExecutionPackage, result PublishedResult) ([]
 	} else if result.RecoveryInstructions != nil || result.RecoveryCheckpointTar != nil {
 		return nil, errors.New("publish result: recovery bytes need a typed proposal")
 	}
+	if len(result.WorkInProgressBundle) != 0 {
+		bundle := objectForBytes(backlog.WorkInProgressBundleID(pkg.Identity.AttemptID), "results/"+backlog.WorkInProgressBundleName,
+			string(domain.ArtifactGitState), backlog.CommitBundleMediaType, result.WorkInProgressBundle)
+		objects = append(objects, resultObject{object: bundle, data: result.WorkInProgressBundle, failure: "publish work-in-progress bundle"})
+	}
 	for _, extra := range []struct {
 		id, path, kind, media string
 		data                  []byte
@@ -293,6 +300,10 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 	if err != nil {
 		return err
 	}
+	return s.admitPlannedResult(context.Background(), pkg, result, planned)
+}
+
+func (s *CustodyStore) admitPlannedResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult, planned []resultObject) error {
 	objects := make([]workerproto.ArtifactObject, 0, len(planned))
 	for _, entry := range planned {
 		objects = append(objects, entry.object)
@@ -301,7 +312,14 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 	if err != nil {
 		return err
 	}
-	return s.validateManifest(s.uploadManifest(pkg, "result", objects, total, s.now()), "upload")
+	if err := s.validateManifest(s.uploadManifest(pkg, "result", objects, total, s.now()), "upload"); err != nil {
+		return err
+	}
+	// The finalizer's optional-bundle size probe has no file bytes yet.
+	if result.Finalized.StorageDir == "" && len(result.Finalized.Artifacts) > 0 {
+		return nil
+	}
+	return s.scanResult(ctx, pkg, result, planned)
 }
 
 // PublishResult retains finalizer output, final message, and thread archive as one upload.
@@ -326,6 +344,9 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 		return err
 	}
 	objects := make([]workerproto.ArtifactObject, 0, len(planned))
+	if err := s.admitPlannedResult(ctx, pkg, result, planned); err != nil {
+		return err
+	}
 	for _, entry := range planned {
 		if err := s.storeResultObject(result.Finalized, entry); err != nil {
 			return err
@@ -474,6 +495,15 @@ func (s *CustodyStore) storeResultObject(finalized backlog.FinalizedAttempt, ent
 
 // PublishCheckpoint retains checkpoint bytes and advertises an immutable upload.
 func (s *CustodyStore) PublishCheckpoint(ctx context.Context, pkg workerproto.ExecutionPackage, path string, data []byte) (*domain.CheckpointMetadata, error) {
+	// The task wrote the checkpoint, and it reaches the coordinator like a
+	// result, so it passes the same scan; patterns only warn, as for outputs.
+	scanner, _, err := s.executionScanner(ctx, pkg)
+	if err != nil {
+		return nil, err
+	}
+	if err := scanner.scan(path, "checkpoint", bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
 	id := "checkpoint-" + pkg.Identity.AttemptID + "-" + shortDigest(data)
 	object := objectForBytes(id, "checkpoints/"+id+".md", "checkpoint", "text/markdown", data)
 	if err := s.storeObject(bytes.NewReader(data), object); err != nil {
@@ -884,7 +914,17 @@ func openRegular(path string) (*os.File, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("path is not a regular file")
 	}
-	return os.Open(path)
+	// The path may have been replaced since the check: the open does not wait
+	// on a FIFO, and the opened file is checked again.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		f.Close()
+		return nil, errors.New("path is not a regular file")
+	}
+	return f, nil
 }
 
 func writeJSONExclusive(path string, value any) error {

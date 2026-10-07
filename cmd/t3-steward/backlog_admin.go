@@ -1380,6 +1380,9 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s%s\n", task.Task.Name, task.Task.ID, state, control, attempt, evidenceMarker(task.Evidence))
 		// A failed task says why, so the run's answer is readable without a
 		// "task show" per task.
+		if task.Attempt != nil && task.Attempt.ReviewVerdict != nil {
+			fmt.Fprintln(out, task.Attempt.ReviewVerdict.Prose())
+		}
 		if task.Attempt != nil && task.Attempt.Failure != "" {
 			fmt.Fprintf(out, "    failure: %s\n", task.Attempt.Failure)
 		}
@@ -1518,6 +1521,9 @@ func renderAttemptEvidence(out io.Writer, detail *backlogadmin.TaskDetail) {
 	}
 	if evidence.PauseReason != "" {
 		fmt.Fprintf(out, "paused: %s\n", evidence.PauseReason)
+	}
+	if evidence.TurnEnd != "" {
+		fmt.Fprintf(out, "turn end: %s\n", evidence.TurnEnd)
 	}
 	if evidence.Failure != "" && (detail.Attempt == nil || detail.Attempt.Failure != evidence.Failure) {
 		fmt.Fprintf(out, "worker failure: %s\n", evidence.Failure)
@@ -1715,8 +1721,20 @@ func renderExplanation(out io.Writer, explanation *backlogadmin.Explanation) {
 	}
 	fmt.Fprintf(out, "%s/%s: %s\neligible: %t\n", explanation.WorkflowRunID, explanation.TaskID,
 		explanation.Summary, explanation.Eligible)
+	if explanation.ReviewVerdict != nil {
+		fmt.Fprintln(out, explanation.ReviewVerdict.Prose())
+	}
 	if explanation.EarliestAt != nil {
 		fmt.Fprintf(out, "earliest: %s\n", formatTime(*explanation.EarliestAt))
+	}
+	if explanation.Placement != nil {
+		fmt.Fprintf(out, "selected worker: %s\n", explanation.Placement.SelectedWorkerID)
+		for _, evaluation := range explanation.Placement.ResourceEvaluations {
+			fmt.Fprintf(out, "  %s\n", resourceEvaluationText(evaluation))
+		}
+		for _, rejection := range explanation.Placement.Rejections {
+			fmt.Fprintf(out, "  %s %s: %s\n", rejection.WorkerID, rejection.Code, rejection.Detail)
+		}
 	}
 	for _, blocker := range explanation.Blockers {
 		fmt.Fprintf(out, "  %s: %s\n", blocker.Code, blocker.Detail)

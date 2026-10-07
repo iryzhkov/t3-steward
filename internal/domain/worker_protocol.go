@@ -32,7 +32,12 @@ type WorkerJournalExcerpt struct {
 	PauseReason string `json:"pauseReason,omitempty"`
 	// ThreadState is the worker's last observation of the T3 thread: active,
 	// stopped or missing. Gated like PauseReason.
-	ThreadState   string    `json:"threadState,omitempty"`
+	ThreadState string `json:"threadState,omitempty"`
+	// TurnEnd is the worker's account of the attempt's last turn end when it
+	// is not simply collected: the background commands it is waiting for, or
+	// why it could not look for them on this host. It is sent only when the
+	// coordinator asked for it (workerproto.CapabilityTurnEndCommands).
+	TurnEnd       string    `json:"turnEnd,omitempty"`
 	PackageSHA256 string    `json:"packageSha256"`
 	GraphRevision int64     `json:"graphRevision"`
 	TaskRevision  int64     `json:"taskRevision"`

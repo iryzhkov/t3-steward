@@ -186,6 +186,7 @@ func PlanTurnOutcomesWithTaskWaits(
 			attempt.Control = domain.ControlStopped
 			attempt.CompletedAt = turnOutcomeTime(outcome.ObservedAt)
 			attempt.FinalSummaryArtifactID = outcome.FinalSummaryArtifactID
+			attempt.ReviewVerdict = domain.CloneReviewVerdict(outcome.ReviewVerdict)
 			if outcome.VerificationPassed {
 				attempt.Progress = domain.ProgressSucceeded
 				attempt.Failure = ""
@@ -269,7 +270,7 @@ func validateTurnOutcome(outcome domain.TurnOutcome) error {
 	case domain.TurnOutcomeDone:
 		return nil
 	case domain.TurnOutcomeContinue, domain.TurnOutcomeMissing, domain.TurnOutcomeWaiting:
-		if outcome.VerificationPassed || outcome.Failure != "" || outcome.FinalSummaryArtifactID != "" {
+		if outcome.VerificationPassed || outcome.Failure != "" || outcome.FinalSummaryArtifactID != "" || outcome.ReviewVerdict != nil {
 			return fmt.Errorf("nonterminal turn outcome %q carries terminal result data", outcome.ID)
 		}
 		return nil

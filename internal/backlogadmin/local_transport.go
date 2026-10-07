@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -25,6 +26,7 @@ const (
 	localOperationQuery              = "query"
 	localOperationMutation           = "mutation"
 	localOperationArtifact           = "artifact"
+	localOperationCommitExport       = "commit-export"
 	localOperationSubmission         = "submission"
 	localOperationScheduleDefinition = "schedule-definition"
 	localOperationUnknownRecovery    = "unknown-recovery"
@@ -50,6 +52,7 @@ func Operations() []string {
 		localOperationQuery,
 		localOperationMutation,
 		localOperationArtifact,
+		localOperationCommitExport,
 		localOperationSubmission,
 		localOperationScheduleDefinition,
 		localOperationUnknownRecovery,
@@ -177,6 +180,7 @@ func (a *RemoteAdminAssertion) role() string {
 }
 
 type localRequest struct {
+	CommitExport *CommitExportRequest `json:"commitExport,omitempty"`
 	// ApprovalFrame is the original signed remote envelope. It is accepted only
 	// for a configured approver decision and reverified by the local coordinator.
 	ApprovalFrame      *remoteFrame                    `json:"approvalFrame,omitempty"`
@@ -199,6 +203,7 @@ type localRequest struct {
 }
 
 type localResponse struct {
+	CommitProvenance           *backlog.CommitProvenance                 `json:"commitProvenance,omitempty"`
 	WorkerEnrollment           *domain.WorkerEnrollment                  `json:"workerEnrollment,omitempty"`
 	GraphAmendment             *domain.GraphAmendmentResult              `json:"graphAmendment,omitempty"`
 	NodeWait                   *NodeWaitResponse                         `json:"nodeWait,omitempty"`
@@ -526,7 +531,7 @@ func (c LocalClient) Describe() TransportDescription {
 }
 
 func (c LocalClient) Query(ctx context.Context, query Query) (Response, error) {
-	return queryIntakeStatus(ctx, query, c.queryOnce)
+	return queryExtended(ctx, query, c.queryOnce)
 }
 
 func (c LocalClient) queryOnce(ctx context.Context, query Query) (Response, error) {
@@ -740,7 +745,7 @@ func (c LocalClient) exchange(ctx context.Context, request localRequest, body io
 		closeAll()
 		return localResponse{}, nil, c.fail(ClassProtocol, request.Operation, err)
 	}
-	if response.Error != "" || request.Operation != localOperationArtifact {
+	if response.Error != "" || (request.Operation != localOperationArtifact && request.Operation != localOperationCommitExport) {
 		closeAll()
 		return response, nil, nil
 	}

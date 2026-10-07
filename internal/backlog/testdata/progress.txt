@@ -1,0 +1,12 @@
+a queued queued 0/1 current=work:queued changed=2026-10-06T12:00:00Z
+  work queued route=- effort=- attempts=0 outputs= review=none recorded
+b active active 0/1 current=work:active changed=2026-10-06T12:00:00Z
+  work active route=codex/sol effort=medium attempts=1 outputs= review=none recorded
+c waiting-external waiting-external 0/1 current=work:waiting-external changed=2026-10-06T12:00:00Z
+  work waiting-external route=codex/sol effort=medium attempts=1 outputs= review=none recorded
+d failed failed 1/1 current=- changed=2026-10-06T12:00:00Z
+  work failed route=codex/sol effort=medium attempts=1 outputs= review=none recorded
+e succeeded succeeded 1/1 current=- changed=2026-10-06T12:00:00Z
+  work succeeded route=codex/sol effort=medium attempts=1 outputs=handoff.md review=accept
+f cancelled cancelled 1/1 current=- changed=2026-10-06T12:00:00Z
+  work cancelled route=codex/sol effort=medium attempts=1 outputs= review=none recorded

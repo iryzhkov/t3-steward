@@ -18,6 +18,7 @@ const (
 
 // TurnOutcome is a verified observation of one finished attempt turn.
 type TurnOutcome struct {
+	ReviewVerdict          *ReviewVerdict    `json:"reviewVerdict,omitempty"`
 	ID                     string            `json:"id"`
 	AttemptID              string            `json:"attemptId"`
 	Marker                 TurnOutcomeMarker `json:"marker"`

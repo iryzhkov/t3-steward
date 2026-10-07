@@ -69,6 +69,7 @@ var preferenceOrder = []string{
 
 // WorkerPlacementRequest is the immutable input to worker capability matching.
 type WorkerPlacementRequest struct {
+	ResourcePolicy domain.ResourcePlacementPolicy
 	Task           domain.Task
 	Project        string
 	Now            time.Time
@@ -90,9 +91,10 @@ type WorkerExclusion struct {
 
 // WorkerEvaluation records the complete placement decision for one worker.
 type WorkerEvaluation struct {
-	WorkerID   string            `json:"workerId"`
-	Eligible   bool              `json:"eligible"`
-	Exclusions []WorkerExclusion `json:"exclusions,omitempty"`
+	Resource   *domain.ResourceEvaluation `json:"resource,omitempty"`
+	WorkerID   string                     `json:"workerId"`
+	Eligible   bool                       `json:"eligible"`
+	Exclusions []WorkerExclusion          `json:"exclusions,omitempty"`
 }
 
 // WorkerPlacement is a deterministic capability-matching result. Provider
@@ -104,6 +106,9 @@ type WorkerPlacement struct {
 
 // MatchWorkers evaluates every worker independently and reports every exclusion.
 func MatchWorkers(request WorkerPlacementRequest, inventory []domain.WorkerInventory) (WorkerPlacement, error) {
+	if err := request.ResourcePolicy.WithDefaults().Validate(); err != nil {
+		return WorkerPlacement{}, err
+	}
 	if request.Now.IsZero() {
 		return WorkerPlacement{}, fmt.Errorf("match workers: current time is required")
 	}
@@ -197,6 +202,8 @@ func evaluateWorker(request WorkerPlacementRequest, worker domain.WorkerInventor
 
 	exclusions = append(exclusions, epochExclusions(request, worker)...)
 	exclusions = append(exclusions, capacityExclusions(request.Task.ResourceDemand, worker)...)
+	resource, liveExclusions := liveResourceEvaluation(request, worker)
+	exclusions = append(exclusions, liveExclusions...)
 
 	sort.Slice(exclusions, func(i, j int) bool {
 		if exclusions[i].Code == exclusions[j].Code {
@@ -205,7 +212,7 @@ func evaluateWorker(request WorkerPlacementRequest, worker domain.WorkerInventor
 		return exclusions[i].Code < exclusions[j].Code
 	})
 	return WorkerEvaluation{
-		WorkerID: worker.ID, Eligible: len(exclusions) == 0, Exclusions: exclusions,
+		WorkerID: worker.ID, Eligible: len(exclusions) == 0, Exclusions: exclusions, Resource: &resource,
 	}
 }
 
@@ -228,10 +235,9 @@ func epochExclusions(request WorkerPlacementRequest, worker domain.WorkerInvento
 // constraints. A task that declares no demand constrains nothing, so a worker
 // is never excluded for capacity it was not asked to provide.
 //
-// Only the class floor and allocatable capacity are hard constraints here.
-// Observed pressure is deliberately absent: it is an observation that scores a
-// candidate, and admitting or refusing work on live load alone would make the
-// resource model a load average.
+// These constraints concern configured capacity. Live memory, swap and disk
+// safety floors are applied separately by liveResourceEvaluation; CPU load
+// remains a ranking observation and does not redefine configured capacity.
 func capacityExclusions(demand domain.ResourceDemand, worker domain.WorkerInventory) []WorkerExclusion {
 	if demand.IsZero() {
 		return nil
@@ -385,6 +391,9 @@ func SelectWorker(request WorkerPlacementRequest, inventory []domain.WorkerInven
 	}
 	for _, evaluation := range placement.Evaluations {
 		worker := workers[evaluation.WorkerID]
+		if evaluation.Resource != nil {
+			decision.ResourceEvaluations = append(decision.ResourceEvaluations, *evaluation.Resource)
+		}
 		decision.CandidateIDs = append(decision.CandidateIDs, evaluation.WorkerID)
 		snapshot := worker.CapacitySnapshot()
 		decision.Snapshots = append(decision.Snapshots, domain.CapacitySnapshotRef{
@@ -404,15 +413,15 @@ func SelectWorker(request WorkerPlacementRequest, inventory []domain.WorkerInven
 		decision.Scores = append(decision.Scores, scoreWorker(request.Task, worker, weights))
 	}
 
+	rankResourceEvaluations(&decision)
 	for _, score := range decision.Scores {
 		if decision.SelectedWorkerID == "" {
 			decision.SelectedWorkerID = score.WorkerID
 			continue
 		}
-		best := scoreFor(decision.Scores, decision.SelectedWorkerID)
 		// Evaluations are ordered by worker ID, so keeping the incumbent on a
 		// tie selects the lowest ID and makes the choice reproducible.
-		if score.Total > best.Total {
+		if placementBetter(decision, score.WorkerID, decision.SelectedWorkerID) {
 			decision.SelectedWorkerID = score.WorkerID
 		}
 	}

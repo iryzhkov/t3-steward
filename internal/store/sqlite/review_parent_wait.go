@@ -22,7 +22,8 @@ type ReviewParentWaitResult struct {
 
 // WaitReviewParent is a trusted internal lifecycle boundary. The issued authority
 // and allocated checkpoint must be the originals; no policy is resolved here.
-// No public submission, CLI, completion gate or production caller uses it.
+// Its production caller is the coordinator's review-checkpoint-wait operation,
+// which fences the calling task and resolves both from durable records.
 func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuthority, allocated review.CheckpointAuthority) (ReviewParentWaitResult, error) {
 	var zero ReviewParentWaitResult
 	expected, err := expected.Canonical()
@@ -75,7 +76,7 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 	now := s.now().UTC()
 	p := frozen.Parent
 	node := domain.NodeWaitCondition{Target: domain.NodeRef{RunID: cp.RoundID, TaskID: receipt.Graph.Run.Sink.ID}, State: domain.NodeStateTerminal}
-	requestID := "review-parent:" + cp.Key()
+	requestID := domain.ReviewParentWaitPrefix + cp.Key()
 	result := ReviewParentWaitResult{RoundID: round.ID, RoundState: round.Combined, CollectionPending: !round.Terminal()}
 	// Look up both identities: a foreign row cannot masquerade as a registration.
 	rows, err := tx.QueryContext(ctx, "SELECT id,request_id,attempt_id,thread_id,record FROM coordinator_task_waits WHERE request_id=? OR id=?", requestID, taskWaitID(requestID))
@@ -147,7 +148,11 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 	if err != nil {
 		return zero, err
 	}
-	if round.Terminal() || observation.Outcome != "" {
+	// Only a collected round is finished. A child that ended before anything
+	// parked on it has no verdict yet, so the task still parks: the wait
+	// settles on the ended sink at once, and the wake that resumes the task is
+	// held until the round is collected, exactly as when the child ends later.
+	if round.Terminal() {
 		result.Status = "finished"
 		return result, tx.Commit()
 	}
@@ -157,8 +162,15 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 	if err := request.Validate(); err != nil {
 		return zero, err
 	}
-	if err := validateStructuredRegistrationTx(ctx, tx, &request, now, s.quotaStaleAfter); err != nil {
-		return zero, err
+	if observation.Outcome == "" {
+		if err := validateStructuredRegistrationTx(ctx, tx, &request, now, s.quotaStaleAfter); err != nil {
+			return zero, err
+		}
+	} else {
+		// The general registration refuses a condition that already holds;
+		// here it is the child's sink, resolved above from the materialized
+		// graph, and the wait exists for the collection that follows it.
+		request.Condition, request.Name = node.String(), node.String()
 	}
 	w, err := parkTaskWaitTx(ctx, tx, request, attempt, now)
 	if err != nil {

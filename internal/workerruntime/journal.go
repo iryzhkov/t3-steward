@@ -84,7 +84,10 @@ type AttemptRecord struct {
 	ObservedThreadState string `json:"observedThreadState,omitempty"`
 	// ObservedTurnID binds the stopped fence to a concrete provider turn even
 	// when a park and resume happen entirely between worker polls.
-	ObservedTurnID   string                                    `json:"observedTurnId,omitempty"`
+	ObservedTurnID string `json:"observedTurnId,omitempty"`
+	// TurnEnd is the background-command check of the attempt's turn ends:
+	// the nudges spent and the state explain reports.
+	TurnEnd          *TurnEndCheck                             `json:"turnEnd,omitempty"`
 	Assignment       domain.Assignment                         `json:"assignment"`
 	Package          workerproto.ExecutionPackageManifest      `json:"package"`
 	Phase            Phase                                     `json:"phase"`

@@ -83,6 +83,9 @@ func (s *WorkerService) ServeArtifactSend(ctx context.Context, input io.Reader, 
 // ServeArtifactSendEnvelope is ServeArtifactSend for an envelope the caller
 // already read from the stream.
 func (s *WorkerService) ServeArtifactSendEnvelope(ctx context.Context, envelope workerproto.Envelope, buffered *bufio.Reader, output io.Writer) error {
+	if envelope.Type == workerproto.MessageCommitBundle && s != nil && s.Exchange.Server != nil && s.Exchange.Runtime != nil {
+		return s.serveCommitBundle(ctx, envelope, buffered, output)
+	}
 	if s == nil || s.Exchange.Server == nil || s.Exchange.Custody == nil {
 		return errors.New("artifact send: worker service is not initialized")
 	}

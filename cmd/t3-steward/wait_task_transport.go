@@ -11,6 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/review"
 	"github.com/iryzhkov/t3-steward/internal/wait"
 )
 
@@ -160,6 +161,21 @@ func (s remoteTaskWaitStore) ListTaskWaits(ctx context.Context) ([]domain.TaskWa
 }
 
 var _ wait.TaskWaitLister = remoteTaskWaitStore{}
+
+var _ wait.ReviewRoundReader = remoteTaskWaitStore{}
+
+// GetReviewRound reads a review round with its documents, for the wake of a
+// task parked on that round.
+func (s remoteTaskWaitStore) GetReviewRound(ctx context.Context, id string) (review.Round, error) {
+	transport, err := newCoordinatorTransport(s.cfg)
+	if err != nil {
+		return review.Round{}, err
+	}
+	return fetchReviewRound(ctx, func(ctx context.Context, q backlogadmin.Query) (backlogadmin.Response, error) {
+		q.Version, q.Principal = backlogadmin.Version, transport.principal
+		return transport.client.Query(ctx, q)
+	}, id)
+}
 
 var _ wait.AskRelayStore = remoteTaskWaitStore{}
 

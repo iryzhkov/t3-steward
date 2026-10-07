@@ -48,7 +48,13 @@ var errNotInsideTask = errors.New(
 // two: a sandbox sets it for exactly one execution, while a workspace can in
 // principle be reached from a shell that belongs to another.
 func resolveTaskIdentity(getenv func(string) string) (taskIdentity, error) {
-	values, err := taskIdentityValues(getenv)
+	return resolveTaskIdentityFrom(getenv, "")
+}
+
+// resolveTaskIdentityFrom is resolveTaskIdentity looking for the workspace
+// record from directory rather than the current directory, when it is set.
+func resolveTaskIdentityFrom(getenv func(string) string, directory string) (taskIdentity, error) {
+	values, err := taskIdentityValuesFrom(getenv, directory)
 	if err != nil {
 		return taskIdentity{}, err
 	}
@@ -67,6 +73,10 @@ func resolveTaskIdentity(getenv func(string) string) (taskIdentity, error) {
 }
 
 func taskIdentityValues(getenv func(string) string) (map[string]string, error) {
+	return taskIdentityValuesFrom(getenv, "")
+}
+
+func taskIdentityValuesFrom(getenv func(string) string, directory string) (map[string]string, error) {
 	values := make(map[string]string, 6)
 	complete := true
 	for _, name := range domain.TaskWaitEnvironmentNames() {
@@ -80,24 +90,26 @@ func taskIdentityValues(getenv func(string) string) (map[string]string, error) {
 	if complete {
 		return values, nil
 	}
-	fileValues, err := readTaskIdentityFile()
+	fileValues, err := readTaskIdentityFileFrom(directory)
 	if err != nil {
 		return nil, err
 	}
 	return fileValues, nil
 }
 
-// readTaskIdentityFile reads the worker-written identity record from the
-// current directory or an ancestor, the way a tool finds the repository it is
-// inside.
+// readTaskIdentityFileFrom reads the worker-written identity record from the
+// directory, or the current directory when it is empty, or an ancestor, the
+// way a tool finds the repository it is inside.
 //
 // The file is accepted only as a private regular file owned by this user. It
 // decides which attempt a command speaks for, so a copy anyone could have
 // written, or a symlink pointing somewhere else, is refused rather than read.
-func readTaskIdentityFile() (map[string]string, error) {
-	directory, err := os.Getwd()
-	if err != nil {
-		return nil, errNotInsideTask
+func readTaskIdentityFileFrom(directory string) (map[string]string, error) {
+	if directory == "" {
+		var err error
+		if directory, err = os.Getwd(); err != nil {
+			return nil, errNotInsideTask
+		}
 	}
 	for {
 		path := filepath.Join(directory, filepath.FromSlash(domain.TaskIdentityFile))

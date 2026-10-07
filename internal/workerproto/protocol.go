@@ -102,9 +102,10 @@ type Acknowledgements struct {
 }
 
 type Observations struct {
-	Snapshot                  domain.WorkerSnapshot `json:"snapshot"`
-	Usage                     []domain.UsageSample  `json:"usage,omitempty"`
-	AcknowledgedUsageEventIDs []string              `json:"acknowledgedUsageEventIds,omitempty"`
+	Telemetry                 *domain.WorkerTelemetry `json:"telemetry,omitempty"`
+	Snapshot                  domain.WorkerSnapshot   `json:"snapshot"`
+	Usage                     []domain.UsageSample    `json:"usage,omitempty"`
+	AcknowledgedUsageEventIDs []string                `json:"acknowledgedUsageEventIds,omitempty"`
 }
 
 // ParkedAssignment is the coordinator's statement that one claimed assignment
@@ -164,7 +165,17 @@ const CapabilityCampaignSupervision = "campaign-supervision-v1"
 // the snapshot must be gated this way.
 const CapabilityQuotaObservations = "quota-observations-v1"
 
+// CapabilityTurnEndCommands advertises that this worker build holds an
+// attempt whose turn ended while commands it started were still running, and
+// reports that state in the journal excerpt's TurnEnd field when asked. It is
+// gated the way CapabilityQuotaObservations is, for the same strict decoding.
+const CapabilityTurnEndCommands = "turn-end-commands-v1"
+
+// CapabilityResourceTelemetry gates optional fields for peers with strict JSON decoding.
+const CapabilityResourceTelemetry = "resource-telemetry-v1"
+
 type SnapshotRequest struct {
+	ReportResourceTelemetry bool `json:"reportResourceTelemetry,omitempty"`
 	// ObservedWorkerEpoch and ObservedSequence acknowledge a durable snapshot
 	// read before the coordinator builds this parked-assignment statement.
 	ObservedWorkerEpoch string             `json:"observedWorkerEpoch,omitempty"`
@@ -186,8 +197,12 @@ type SnapshotRequest struct {
 	// QuotaObservationsWanted asks the worker to include its host's bucket
 	// observations in the snapshot. It is sent only to a worker advertising
 	// CapabilityQuotaObservations.
-	QuotaObservationsWanted bool     `json:"quotaObservationsWanted,omitempty"`
-	UsageAcknowledgements   []string `json:"usageAcknowledgements,omitempty"`
+	QuotaObservationsWanted bool `json:"quotaObservationsWanted,omitempty"`
+	// TurnEndWanted asks the worker to include each attempt's turn-end state
+	// in its journal excerpt. It is sent only to a worker advertising
+	// CapabilityTurnEndCommands.
+	TurnEndWanted         bool     `json:"turnEndWanted,omitempty"`
+	UsageAcknowledgements []string `json:"usageAcknowledgements,omitempty"`
 	// SessionStatesReported says that SessionStates is a statement rather than
 	// an absence, for the same reason ParkedReported does. Both are sent only to
 	// a worker advertising CapabilitySessionTitles.

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
@@ -106,28 +105,5 @@ func writeAskAnswerFile(workspace string, answer domain.AskAnswer) error {
 // workspace is a plain checkout. It is best effort: a failure leaves a file
 // the task may commit, which is visible, never a lost answer.
 func excludeAskAnswerFromGit(workspace string) {
-	gitDir := filepath.Join(workspace, ".git")
-	if info, err := os.Lstat(gitDir); err != nil || !info.IsDir() {
-		return
-	}
-	info := filepath.Join(gitDir, "info")
-	if err := os.MkdirAll(info, 0o700); err != nil {
-		return
-	}
-	exclude := filepath.Join(info, "exclude")
-	line := "/" + domain.AskAnswerFile
-	current, err := os.ReadFile(exclude)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return
-	}
-	for _, existing := range strings.Split(string(current), "\n") {
-		if strings.TrimSpace(existing) == line {
-			return
-		}
-	}
-	updated := string(current)
-	if updated != "" && !strings.HasSuffix(updated, "\n") {
-		updated += "\n"
-	}
-	_ = os.WriteFile(exclude, []byte(updated+line+"\n"), 0o600)
+	excludeFromGit(workspace, "/"+domain.AskAnswerFile)
 }

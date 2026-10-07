@@ -87,6 +87,7 @@ type ManifestRoute struct {
 
 // ManifestTask is one node in a workflow manifest.
 type ManifestTask struct {
+	ReviewOutput       *domain.ReviewOutput        `yaml:"review_output"`
 	ReviewRequirements *ManifestReviewRequirements `yaml:"review_requirements"`
 	Directories        []directoryresource.Request `yaml:"directories"`
 	Class              domain.TaskClass            `yaml:"class"`
@@ -337,6 +338,7 @@ func applyManifestDefaults(manifest *Manifest) {
 	applyPreflightDefaults(&manifest.Preflight)
 	applyManifestSupervisionDefaults(manifest)
 	for name, task := range manifest.Tasks {
+		task.ReviewOutput = domain.CloneReviewOutput(task.ReviewOutput)
 		task.ReviewRequirements = cloneManifestReview(task.ReviewRequirements)
 		if task.Class == "" {
 			task.Class = manifest.Class
@@ -547,6 +549,9 @@ func validateAuthoredProjectContext(index *domain.ProjectContext) error {
 
 func validateManifestTask(name string, task ManifestTask, tasks map[string]ManifestTask) error {
 	prefix := "task " + name
+	if err := validateReviewOutput(task.ReviewOutput, task.Outputs); err != nil {
+		return fmt.Errorf("%s review_output: %w", prefix, err)
+	}
 	if err := directoryresource.ValidateRequests(task.Directories); err != nil {
 		return fmt.Errorf("%s: %w", prefix, err)
 	}

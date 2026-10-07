@@ -108,6 +108,14 @@ const (
 	ReviewCheckpointDeadlineExpired  ReviewCheckpointCode = "deadline-expired"
 	ReviewCheckpointInternal         ReviewCheckpointCode = "internal"
 	ReviewCheckpointTransport        ReviewCheckpointCode = "transport"
+	// ReviewCheckpointNotOpen refuses to park on a checkpoint whose round was
+	// never opened.
+	ReviewCheckpointNotOpen ReviewCheckpointCode = "checkpoint-not-open"
+	// ReviewCheckpointPushRefused and ReviewCheckpointRemoteMissing are the
+	// client's own refusals: the checkpoint branch could not be published, so
+	// the coordinator was never asked.
+	ReviewCheckpointPushRefused   ReviewCheckpointCode = "push-refused"
+	ReviewCheckpointRemoteMissing ReviewCheckpointCode = "remote-missing"
 )
 
 // ReviewCheckpointRefusal is a structured refusal: a stable code, a reason for
@@ -131,6 +139,58 @@ func (r *ReviewCheckpointRefusal) Error() string {
 type ReviewCheckpointResult struct {
 	Round   *ReviewCheckpointRound   `json:"round,omitempty"`
 	Refusal *ReviewCheckpointRefusal `json:"refusal,omitempty"`
+}
+
+// ReviewParentWaitPrefix begins the request ID of the task-bound wait that
+// parks a task on the review child of one of its checkpoints. The rest of the
+// ID is the checkpoint's durable key, so each checkpoint parks at most once.
+const ReviewParentWaitPrefix = "review-parent:"
+
+// ReviewRoundID names the review round a task-bound wait parks on, or "" when
+// the wait is not a review parent wait. The round shares its ID with the review
+// child run, whose sink the wait observes.
+func (w TaskWait) ReviewRoundID() string {
+	if !strings.HasPrefix(w.RequestID, ReviewParentWaitPrefix) || w.Kind != WaitKindNode || w.Node == nil {
+		return ""
+	}
+	return w.Node.Target.RunID
+}
+
+// ReviewCheckpointPark is the coordinator's answer to parking a task on the
+// review round of one checkpoint.
+//
+// Status is parked when the task-bound wait holds the attempt now, settled
+// when the wait for this checkpoint already settled (a replay after the task
+// resumed), and finished when the review child had already ended before
+// anything could park on it. Only parked means the turn has to end.
+type ReviewCheckpointPark struct {
+	Status            string    `json:"status"`
+	CheckpointID      string    `json:"checkpointId"`
+	RoundID           string    `json:"roundId"`
+	RoundState        string    `json:"roundState,omitempty"`
+	CollectionPending bool      `json:"collectionPending,omitempty"`
+	Wait              *TaskWait `json:"wait,omitempty"`
+}
+
+// Parked reports whether the attempt is held by the wait, so the turn must end.
+func (p ReviewCheckpointPark) Parked() bool { return p.Status == "parked" }
+
+// ReviewCheckpointWaitResult carries exactly one of a park or a refusal.
+type ReviewCheckpointWaitResult struct {
+	Park    *ReviewCheckpointPark    `json:"park,omitempty"`
+	Refusal *ReviewCheckpointRefusal `json:"refusal,omitempty"`
+}
+
+// Outcome returns the park, or the refusal as an error.
+func (r ReviewCheckpointWaitResult) Outcome() (ReviewCheckpointPark, error) {
+	switch {
+	case r.Refusal != nil && r.Park == nil:
+		return ReviewCheckpointPark{}, r.Refusal
+	case r.Park != nil && r.Refusal == nil:
+		return *r.Park, nil
+	default:
+		return ReviewCheckpointPark{}, &ReviewCheckpointRefusal{Code: ReviewCheckpointTransport, Reason: "the coordinator answer carried neither exactly one park nor one refusal"}
+	}
 }
 
 // Outcome returns the round, or the refusal as an error.

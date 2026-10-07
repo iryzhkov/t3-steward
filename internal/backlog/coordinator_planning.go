@@ -13,6 +13,7 @@ import (
 // CoordinatorPlanningStateInput is one coordinator-owned snapshot used to
 // assemble deterministic planner input without producing external effects.
 type CoordinatorPlanningStateInput struct {
+	ResourcePolicy         domain.ResourcePlacementPolicy
 	DisableQuotaChecks     bool
 	Now                    time.Time
 	CoordinatorEpoch       int64
@@ -243,7 +244,8 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 	}
 
 	return PlanInput{
-		Now: input.Now, MaxWorkerSnapshotAge: input.MaxWorkerSnapshotAge,
+		ResourcePolicy: input.ResourcePolicy,
+		Now:            input.Now, MaxWorkerSnapshotAge: input.MaxWorkerSnapshotAge,
 		Workflows: planningWorkflows, Workers: workers,
 		QuotaPools:     append([]domain.QuotaPool(nil), input.QuotaPools...),
 		RouteEstimates: routeEstimates, ResourceOwners: resourceOwners,

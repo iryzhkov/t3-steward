@@ -586,13 +586,14 @@ func (v ledgerRunView) record(ctx context.Context, facts *ledgerFacts, key strin
 	fmt.Fprintf(&b, "### %s attempt %d: %s (%s)\n\n", ledgerOr(task.Name, attempt.TaskID), attempt.Number, attempt.Progress,
 		ledgerAttemptTime(attempt).UTC().Format(time.RFC3339))
 	b.WriteString("Steward record (facts the coordinator holds):\n\n")
-	stateLine := fmt.Sprintf("progress %s, control %s", attempt.Progress, attempt.Control)
+	taskFacts := v.taskProgress(task, attempt, rounds, reported)
+	stateLine := fmt.Sprintf("progress %s, control %s", taskFacts.State, taskFacts.Control)
 	if attempt.Failure != "" {
 		stateLine += "; failure: " + ledgerInline(attempt.Failure, ledgerMaxInlineBytes)
 	}
 	fmt.Fprintf(&b, "- State: %s\n", stateLine)
 	fmt.Fprintf(&b, "- Route: %s\n", v.route(attempt))
-	fmt.Fprintf(&b, "- Review verdicts: %s\n", ledgerVerdicts(rounds, reported, task.ID))
+	fmt.Fprintf(&b, "- Review verdicts: %s\n", taskFacts.ReviewVerdicts)
 	fmt.Fprintf(&b, "- Retained outputs: %s\n", v.outputs(attempt.ID))
 	fmt.Fprintf(&b, "- Usage: %s\n", v.attemptUsage(ctx, facts, attempt.ID))
 	fmt.Fprintf(&b, "- Ask answers: %s\n", v.answers(ctx, facts, attempt.ID))
@@ -656,8 +657,9 @@ func (v ledgerRunView) route(attempt domain.Attempt) string {
 	if attempt.AssignmentID == "" || !ok {
 		return "no assignment was recorded"
 	}
+	facts := v.taskProgress(domain.Task{}, attempt, nil, false)
 	route := assignment.Route
-	effort := ledgerOr(route.Options["effort"], "not set")
+	effort := ledgerOr(facts.Effort, "not set")
 	return fmt.Sprintf("%s/%s, effort %s, worker %s", ledgerInline(route.ProviderInstanceID, 128), ledgerInline(route.Model, 128),
 		ledgerInline(effort, 64), ledgerOr(ledgerInline(assignment.WorkerID, 128), "unknown"))
 }

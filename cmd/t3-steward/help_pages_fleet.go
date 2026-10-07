@@ -161,7 +161,7 @@ func fleetHelpPages() []helpPage {
 		{Path: "policy", Body: policyUsage, Parsers: []parserSite{{Func: "parsePolicyArgs"}}},
 		{Path: "policy show", Body: policyUsage, Parsers: []parserSite{{Func: "parsePolicyArgs"}}},
 		{Path: "policy validate", Body: policyUsage, Parsers: []parserSite{{Func: "parsePolicyArgs"}}},
-		{Path: "review", Body: reviewUsage, Parsers: []parserSite{{Func: "parseReviewArgs"}}},
+		{Path: "review", Body: reviewUsage, Parsers: []parserSite{{Func: "parseReviewArgs"}, {Func: "parseReviewTaskArgs"}}},
 		{Path: "review result", Body: reviewResultUsage, Parsers: []parserSite{{Func: "parseReviewResultArgs"}, {Func: "Parse"}}},
 		{Path: "task run", Body: taskRunUsage, Parsers: []parserSite{{Func: "parseTaskRunArgs"}}},
 		{Path: "task result", Body: taskResultUsage, Parsers: []parserSite{{Func: "parseTaskResultArgs"}, {Func: "Parse"}}},

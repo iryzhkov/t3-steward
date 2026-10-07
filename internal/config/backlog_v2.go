@@ -21,6 +21,14 @@ const (
 
 func (c *Config) validateBacklogV2() error {
 	v := &c.BacklogV2
+	if v.ResultSecretScan.MaxObjectBytes < 0 {
+		return errors.New("backlog_v2.result_secret_scan.max_object_bytes must be nonnegative")
+	}
+	switch v.ResultSecretScan.PatternPolicy {
+	case "", "default", "block", "warn":
+	default:
+		return errors.New("backlog_v2.result_secret_scan.pattern_policy must be default, block, or warn")
+	}
 	for route, metadata := range v.ReviewRoutes {
 		if !review.ValidRoute(route) {
 			return fmt.Errorf("backlog_v2.review_routes.%s: route must be nonempty INSTANCE/MODEL, with no whitespace and at most 256 bytes; MODEL may contain slashes and colons", route)
@@ -31,6 +39,9 @@ func (c *Config) validateBacklogV2() error {
 		if metadata.Tier != "economy" && metadata.Tier != "executor" && metadata.Tier != "critical" {
 			return fmt.Errorf("backlog_v2.review_routes.%s.tier must be economy|executor|critical", route)
 		}
+	}
+	if err := v.Coordinator.ResourcePlacement.Policy().Validate(); err != nil {
+		return fmt.Errorf("backlog_v2.coordinator.resource_placement: %w", err)
 	}
 	v.Mode = strings.ToLower(strings.TrimSpace(v.Mode))
 	if v.Coordinator.LegacyFileIntakeEnabled {

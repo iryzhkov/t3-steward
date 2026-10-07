@@ -20,7 +20,7 @@ func executionChildFixture(t *testing.T) (*Store, review.FrozenAuthority, review
 	raw := []byte("exact frozen criteria")
 	spec := f.Requirements
 	for i := range spec.Members {
-		spec.Members[i].Execution = &domain.ReviewExecutionProfile{Effort: "medium", QuotaPoolID: "review-pool", MaxTurns: 9, Resources: domain.ResourceDemand{MinCPUClass: domain.CPUClassMedium, PreferredCPUClass: domain.CPUClassHigh, CPUUnits: 1.5, MemoryMB: 512, ScratchMB: 64}}
+		spec.Members[i].Execution = &domain.ReviewExecutionProfile{Effort: "medium", QuotaPoolID: "review-pool", MaxTurns: 9, Resources: domain.ResourceDemand{MinCPUClass: domain.CPUClassMedium, PreferredCPUClass: domain.CPUClassHigh, CPUUnits: 1.5, MemoryMB: 512, ScratchMB: 64}, ResourcePreset: "build"}
 	}
 	spec.CriteriaDigest = childDigest(raw)
 	req, err := review.NewRequirements(spec)
@@ -135,7 +135,7 @@ func TestReviewExecutionProfileSQLiteFreshReopenedTerminal(t *testing.T) {
 			}
 			for i, task := range first.Graph.Tasks {
 				profile := f.Requirements.Members[i].Execution
-				if task.MaxTurns != profile.MaxTurns || task.ResourceDemand != profile.Resources || task.Routes[0].QuotaPoolID != profile.QuotaPoolID || !reflect.DeepEqual(task.Routes[0].Options, map[string]string{"effort": profile.Effort}) {
+				if task.MaxTurns != profile.MaxTurns || task.ResourceDemand != profile.Resources || task.ResourcePreset != "build" || task.Routes[0].QuotaPoolID != profile.QuotaPoolID || !reflect.DeepEqual(task.Routes[0].Options, map[string]string{"effort": profile.Effort}) {
 					t.Fatal("lost exact child profile")
 				}
 			}

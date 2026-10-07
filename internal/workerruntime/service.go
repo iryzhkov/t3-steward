@@ -20,6 +20,9 @@ import (
 // WorkerServiceOptions composes the fixed restricted-command runtime for one
 // configured worker identity. Construction performs no T3 or fleet operation.
 type WorkerServiceOptions struct {
+	// ModelLoginFiles overrides the usual provider auth files; an empty slice
+	// selects no files (useful for isolated integrations).
+	ModelLoginFiles     []string
 	RuntimeIdentity     *domain.WorkerRuntimeIdentity
 	ObserveInventory    func(context.Context, config.BacklogV2, domain.WorkerInventory) (domain.WorkerInventory, error)
 	Settings            config.BacklogV2
@@ -105,6 +108,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	}
 	custody, err := OpenCustodyStore(CustodyConfig{
 		Root:             artifactRoot,
+		SecretScan:       SecretScanConfig{MaxBytes: options.Settings.ResultSecretScan.MaxObjectBytes, PatternPolicy: options.Settings.ResultSecretScan.PatternPolicy, Canaries: serviceScanCanaries(options, credentials, journalRoot), Log: options.Logger},
 		CoordinatorID:    options.Settings.Coordinator.ID,
 		CoordinatorEpoch: options.CoordinatorEpoch,
 		WorkerID:         options.WorkerID,
@@ -177,6 +181,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		SnapshotTTL:      options.Settings.Freshness.WorkerMaxAge.D(),
 		LeaseDuration:    options.Settings.Leases.Duration.D(),
 		MaxPackageBytes:  options.Settings.MessageLimits.MaxBytes,
+		WorkspaceRoot:    options.Settings.Storage.Workspaces,
 		Inventory:        binding.Inventory,
 		ObserveInventory: observerForSettings(options),
 		LiveTaskWait:     options.LiveTaskWait,
@@ -218,6 +223,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 			workerproto.MessageArtifactAcknowledge:  true,
 			workerproto.MessageRepositoryProbe:      true,
 			workerproto.MessageRepositoryRefResolve: true,
+			workerproto.MessageCommitBundle:         true,
 		},
 		SupportedVersions: []int{workerproto.Version},
 		MaxClockSkew:      options.Settings.Freshness.WorkerMaxAge.D(),

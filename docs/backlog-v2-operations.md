@@ -1,5 +1,45 @@
 # Backlog-v2 operations and recovery
 
+## Read-only campaign progress mirror
+
+`t3-steward campaign progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]`
+reads coordinator facts through the authenticated workflow-list query. Remote
+admin reads use their existing authorization. It creates no records, reads no
+result bodies, and makes no Jocasta writes. A coordinator without the mirror
+returns an upgrade error.
+
+Without IDs it includes nonterminal runs and runs that became terminal in the
+last 24 hours. Explicit IDs bypass that default window; a missing ID is an error.
+`--owner` matches sink notification waits, including settled waits.
+`--since` is an inclusive RFC3339 last-change timestamp and replaces the default
+terminal window. It includes changes to attempts and recorded review rounds.
+Runs sort by last change descending, then ID; tasks sort by name.
+
+Text prints one row per run and task, each bounded to 120 terminal columns.
+Non-ASCII values are escaped in text; JSON preserves their original characters.
+Long rows end in an ellipsis; JSON preserves full values. Text verdicts omit
+reviewer metadata so the recorded decision remains visible. Run rows include name,
+state, terminal tasks/total, current nonterminal task/state, and last change.
+Task rows include latest attempt state, actual assigned route and effort,
+attempt count, latest attempt's retained output names, and recorded review verdicts.
+Queued tasks without attempts have no assigned route or effort. Synthetic
+supervisor activations and sink tasks are excluded from task totals.
+
+JSON schema version 1 is a document with:
+- `schemaVersion`: integer 1; `generatedAt`: UTC RFC3339 timestamp.
+- `runs`: array (always present). Each run has `id`, `name`, `state`,
+  `done` (terminal tasks), `total`, `currentTask`, `currentState`,
+  `lastChange` (UTC timestamp), and `tasks` (always an array).
+- Each task has `id`, `name`, `state`, `control`, `route`
+  (`instance/model` from the actual assignment), `effort`, `reviewVerdicts`,
+  `outputs` (array of retained names), and `attempts` (number of recorded attempts).
+- Unknown route/effort/control and absent current task/state are empty strings.
+  `reviewVerdicts` uses the ledger's identical fact formatter: recorded verdicts,
+  pending review state, `none recorded`, or explicit unavailability on a reader
+  without review-round support. Review-read errors fail the query.
+- Empty selection is `runs: []`; text says `No campaign runs match.`.
+
+
 This runbook describes the backlog-v2 release-candidate interfaces on branch
 `feature/backlog-orchestrator`. It is an operator reference, not deployment
 authorization.
@@ -876,6 +916,121 @@ been seen serving; rolling back is copying the retained unit file back over
 the generated one, `daemon-reload` and a restart. The retirement is a live
 change on the host and is done with approval, not by a pull.
 
+### Result secret scanning
+
+Workers scan sealed result bytes at the custody admission boundary shared by local
+and contained executions, before storing any object or advertising an upload.
+The earlier M16 bundle admission probe still checks sizes using metadata, because
+its candidate files have not been captured yet. Final admission scans declared
+outputs and verification logs, the thread archive, final message, recovery objects,
+declared Git commits, and both packed and decoded Git bundles. Quota-pause
+checkpoints (`.t3/checkpoint.md`) pass the same scan before they are published.
+Git scanning covers every new reachable object from the recorded base, including
+intermediate commits, commit messages, trees, and binary blobs, plus both sides of
+changed endpoint files (including copied blobs already reachable at the base);
+locations include the file/object name, object type and size, and byte offset.
+Git reads ignore replace refs, grafts, shallow markers and commit-graph files,
+all of which the task can write and which could otherwise hide history.
+
+The base is the scan baseline the worker records in private custody when it
+creates the execution's thread, before the provider's first turn: the commit the
+workspace was pinned to, and the allowlist committed at that commit. The task can
+rewrite `.t3/base-commit` afterwards; when the commit record names a different
+base, both ranges are scanned.
+
+Exact execution credentials always block. The worker resolves required credential
+references in memory, includes its protocol credentials, model API environment
+values, and available Codex, Claude and OpenCode login tokens. For contained
+executions it reads the assigned provider home rather than the host home.
+Plain, standard/URL-safe base64 (padded or unpadded, at any byte alignment, so a
+credential inside a Basic authorization or a docker `auth` field is found, and
+across the line breaks of MIME or PEM wrapping), and URL-encoded forms are
+recognized, including mixed-case and partial percent escapes. Credentials of five
+bytes or more are matched exactly. A credential of four bytes or fewer cannot be
+matched without refusing ordinary text; it is counted in a warning and not
+scanned. Evidence for a credential shorter than sixteen bytes shows `****` in
+place of its first four characters. Login-file metadata such as `token_type`,
+expiry times and key IDs is not treated as a credential. Values never enter
+the package or scan report. At credential resolution, before provider startup,
+and at every later result scan or text redaction that resolves them, the worker retains execution-specific SHA-256 signatures, lengths and four-byte
+prefixes in private custody, so later rotation and restart do not forget those
+canaries. Complete credential values are never written to these snapshots, but
+for a credential shorter than eight bytes the four-byte prefix and digest
+together make it easy to recover from worker custody, which holds it anyway.
+Credentials issued and replaced entirely between worker observations remain
+outside the exact canary set; high-confidence token patterns still apply.
+
+High-confidence patterns cover GitHub tokens, Anthropic and OpenAI keys, AWS AKIA
+access IDs, labeled Cloudflare API tokens, PEM private-key headers and age secret
+keys. The default policy blocks patterns in declared commits and bundles and warns
+for outputs, archives and final messages. Configure the worker runtime with:
+
+```yaml
+backlog_v2:
+  result_secret_scan:
+    max_object_bytes: 67108864
+    pattern_policy: default
+```
+
+A zero byte limit selects 64 MiB per object. Exceeding the cap fails closed,
+including a decoded Git blob; it never means that an unscanned suffix is accepted.
+`pattern_policy: block` blocks patterns in every class; `warn` reports all pattern
+hits without blocking. Canary hits block under every policy. These settings belong
+to the worker runtime's local configuration; default policy applies when absent.
+Scanning uses bounded streaming buffers with overlap for matches across chunks;
+all exact canaries and signatures are found in one indexed pass per view (plain,
+URL-decoded, unwrapped base64), so the cost does not grow with their number.
+The scanned bytes must match their declared size and SHA-256. Commit records are
+parsed from those verified bytes, and bundle decoding uses a temporary copy of
+the verified stream, preserving the fence between scanned and published content.
+
+Known repository fixtures can be listed in a committed `.t3/secret-scan-allow`,
+one fingerprint per line (blank lines and lines starting with `#` are ignored).
+Only the file as committed at the execution's recorded base counts; a copy the
+task writes or commits during its own run is ignored, so a task cannot approve
+its own findings. A fingerprint is
+the token's first four characters, a colon, and the first twelve lowercase hex
+characters of SHA-256 of the complete token. For example, a GitHub fixture entry
+has the form `ghp_:0123456789ab`; compute the digest of the actual fixture, not this
+example. A committed symlink or a malformed allowlist is refused. An allowlist suppresses
+pattern findings only and can never authorize an execution credential.
+
+A refusal reports a structured object, detector, byte offset and fingerprint,
+without the matched value or surrounding content. Warning logs use the same
+redacted evidence. A typed refusal becomes a permanent collection failure and
+publishes only a bounded redacted failure summary and empty archive; rejected
+bytes stay in worker-local recovery storage. The same holds for an attempt that
+had already failed: when its thread archive carries a credential, the worker
+publishes the redacted finding with an empty archive. A failure reason is redacted
+before the worker journal records it, because every worker snapshot reports it to
+the coordinator, which copies it into attempt evidence: each execution credential,
+in any recognized encoding, and each secret pattern becomes `[redacted]`. A reason
+the scanner cannot check is replaced by a fixed notice; that includes every reason
+while the execution's complete credential set cannot be resolved, for example
+because a model login file is malformed or a credential resolver is unavailable,
+since the recorded history alone does not cover a credential that was never
+recorded. A journal written by an
+earlier release is redacted durably at the first reconcile after start and again
+when its failed result is collected; while the credential history cannot be read
+or the credentials cannot be resolved, every snapshot reports the fixed notice in place of such an unchecked reason, and
+the worker keeps the raw reason only in its local journal until a later pass can
+redact it. Driver errors that runtime warnings quote, such as a preparation
+retry whose setup command carries a token, a failed quota drain, task-timeout
+stop or task-timeout preparation stop, or the stop of an execution a higher-epoch offer supersedes, are redacted
+the same way before they reach the runtime log, and so is the error of a throttle
+acknowledgement. Collection logs that quote a provider's completion reason, such
+as a supervision activation's reason or the discarded reading of a repeated
+collection, are redacted, or replaced by the fixed notice, before they are written. A command or throttle acknowledgement an
+earlier release stored raw is redacted when a redelivered command replays it. A supervision activation whose result is refused fails the same
+way. Explain and owner notifications therefore receive the redacted reason rather
+than the original secret-bearing message or archive. A refused checkpoint is
+reported as a failed checkpoint with the redacted reason. Fix the source/fixture
+policy and start a new attempt after reviewing the retained local evidence. A
+refused declared commit still remains under
+`refs/campaigns/<run>/<task>/<name>` in the worker's `campaigns.git`, where
+finalization pushed it before admission; a retry that produces a different commit
+for the same declaration conflicts on that ref until the ref is removed there.
+
 ### Reloading the coordinator
 
 The coordinator re-reads its configuration file on SIGHUP and replaces its
@@ -1401,6 +1556,41 @@ decode failure in place of the real refusal. The symptom is a `protocol` class
 and exit 7 with a message about an unknown field, on a command that ought to have
 reported something specific. Upgrade both together; UpKeeper already converges
 them as one unit.
+
+## Structured review outputs
+
+A version 2 task can declare `review_output: {verdict: verdict.json}` or
+`review_output: {verdict_line: review.md}`. Exactly one selector is required,
+and its relative path must also appear in the task's `outputs`. Offline
+validation checks this declaration. Tasks without it retain existing behavior.
+
+The JSON form is an object with `verdict`, optional nonnegative integer
+`blocking_findings` (default 0), and optional `finding_titles` (array of strings).
+Other JSON metadata, such as the reviewed commit, is allowed. JSON must be valid
+UTF-8; null typed fields and duplicate object members are rejected. The line form uses
+exactly the first line; the body is never interpreted. Case is ignored:
+ACCEPT, ACCEPTED and APPROVE normalize to `accept`; CHANGES_REQUESTED,
+CHANGES REQUESTED, REQUEST_CHANGES and REJECT normalize to `changes-requested`
+(the canonical hyphenated form is also accepted). The verdict output is limited
+to 64 KiB. Missing, malformed, oversized or unknown verdicts fail verification
+with a `review_output verification failed` reason.
+
+A review that requests changes still succeeds as execution: it completed its
+review. This declaration does not add an acceptance gate or change dependency
+success semantics. Use the reported verdict to decide follow-up work.
+
+The coordinator parses authenticated output bytes and records the verdict
+atomically with the terminal attempt, in existing JSON state (no migration).
+`task result`, `campaign show` and `campaign explain` display it, including in
+JSON. Node waits on a task or run include `review=accept|changes-requested` and
+`blocking=N` trailer keys. A run aggregates the latest terminal attempt per
+task; any changes-requested verdict wins and blocking counts sum (saturating
+at the platform integer maximum). A pending retry hides its older verdict.
+The prose shows at most five single-line finding titles, at most 160 characters
+each, quoted as data. No review body or titles enter the trailer. Node-wait
+transport preserves the existing wire shape for older strict-decoding workers;
+bounded prose travels in the existing reason/output fields. Verdicts are
+review evidence, not an authorization to perform the review's suggested actions.
 
 ## Owner notifications
 

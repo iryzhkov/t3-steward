@@ -3,6 +3,7 @@ package workerruntime
 import (
 	"context"
 	"io"
+	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -35,7 +36,8 @@ func commitBundleDeliveries(pkg workerproto.ExecutionPackage, open func(workerpr
 
 // dependencySources binds each dependency carried from another run to the run
 // and task the package says produced it, keyed by the directory preparation
-// materializes it in, which is the dependency's task ID.
+// materializes it in: the recorded artifact namespace, or the task ID for a
+// dependency with no materialized artifacts.
 func dependencySources(pkg workerproto.ExecutionPackage) map[string]backlog.DependencySource {
 	var sources map[string]backlog.DependencySource
 	for _, dependency := range pkg.Dependencies {
@@ -45,8 +47,18 @@ func dependencySources(pkg workerproto.ExecutionPackage) map[string]backlog.Depe
 		if sources == nil {
 			sources = make(map[string]backlog.DependencySource)
 		}
-		sources[dependency.TaskID] = backlog.DependencySource{
-			WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+		if len(dependency.Artifacts) == 0 {
+			sources[dependency.TaskID] = backlog.DependencySource{
+				WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+			}
+		}
+		for _, object := range dependency.Artifacts {
+			parts := strings.Split(object.Path, "/")
+			if len(parts) >= 3 && parts[0] == "dependencies" {
+				sources[parts[1]] = backlog.DependencySource{
+					WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+				}
+			}
 		}
 	}
 	return sources

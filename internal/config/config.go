@@ -497,7 +497,13 @@ type Archive struct {
 }
 
 // BacklogV2 configures the disabled-by-default coordinator runtime.
+type V2ResultSecretScan struct {
+	MaxObjectBytes int64  `yaml:"max_object_bytes"`
+	PatternPolicy  string `yaml:"pattern_policy"`
+}
+
 type BacklogV2 struct {
+	ResultSecretScan V2ResultSecretScan `yaml:"result_secret_scan"`
 	// ReviewRoutes classifies explicit routes without choosing routes or applying role policy.
 	ReviewRoutes      map[string]ReviewRouteMetadata `yaml:"review_routes"`
 	Mode              string                         `yaml:"mode"`
@@ -532,7 +538,8 @@ type V2Verification struct {
 }
 
 type V2Coordinator struct {
-	ID string `yaml:"id"`
+	ID                string              `yaml:"id"`
+	ResourcePlacement V2ResourcePlacement `yaml:"resource_placement"`
 	// LegacyFileIntakeEnabled is a compatibility boolean. False/default is accepted;
 	// true is rejected because Markdown intake has been retired.
 	LegacyFileIntakeEnabled bool `yaml:"legacy_file_intake_enabled"`

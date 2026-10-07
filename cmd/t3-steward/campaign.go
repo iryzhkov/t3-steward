@@ -34,10 +34,12 @@ Read-only (coordinator):
   check <directory|workflow.yaml> [--json] [--task NAME]
   list [--state open|terminal] [--project P] [--class C] [--json]
     --limit N and --since DURATION select the list window; --limit 0 lists all.
+  progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]
   show <run> [--json]
   status <run> [--json]                 alias of show
   graph <run> [--json|--dot]
   explain <run>/<task> [--json]
+  commit export <run>/<task>/<commit-name> --bundle FILE [--branch NAME]
 Mutating (coordinator):
   submit <directory|workflow.yaml> --idempotency-key KEY [--register-only]
     [--json] [--no-notify] [--notify-thread <current|id>]
@@ -153,7 +155,8 @@ type campaignCLI struct {
 	retryRecoveryAs func(context.Context, supervisorIdentity, domain.RecoveryRetryRequest) (domain.RecoveryRetryReceipt, error)
 	// principal names who is running the command. It appears in the audit
 	// record of a submission that skipped the live check.
-	principal string
+	principal    string
+	exportCommit func(context.Context, backlogadmin.CommitExportRequest) (backlogadmin.ArtifactContent, error)
 }
 
 func cmdCampaign(g globalFlags, args []string) error {
@@ -184,6 +187,17 @@ func campaignCLIFor(cfg config.Config) campaignCLI {
 		limits: campaign.Limits{
 			MaxFiles: cfg.BacklogV2.MessageLimits.MaxFiles,
 			MaxBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
+		},
+		exportCommit: func(ctx context.Context, request backlogadmin.CommitExportRequest) (backlogadmin.ArtifactContent, error) {
+			transport, err := newCoordinatorTransport(cfg)
+			if err != nil {
+				return backlogadmin.ArtifactContent{}, err
+			}
+			client, ok := transport.client.(backlogadmin.CommitExportTransport)
+			if !ok {
+				return backlogadmin.ArtifactContent{}, errors.New("coordinator commit export is unavailable; upgrade the coordinator")
+			}
+			return client.ExportCommit(ctx, request)
 		},
 		stdout:      os.Stdout,
 		stderr:      os.Stderr,
@@ -333,6 +347,10 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 	case "help", "--help", "-h":
 		_, err := admitCampaignHelp(c.stdout, args)
 		return err
+	case "commit":
+		return c.runCommit(ctx, args[1:])
+	case "progress":
+		return c.runProgress(ctx, args[1:])
 	case "validate":
 		return c.runValidate(args[1:])
 	case "plan":
@@ -433,7 +451,7 @@ func (c campaignCLI) explainNamesATask(ctx context.Context, args []string) error
 
 // campaignCommands are the subcommands run dispatches, in the order a
 // did-you-mean suggestion prefers them.
-var campaignCommands = []string{"validate", "plan", "check", "submit", "list", "show", "status", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "help"}
+var campaignCommands = []string{"validate", "plan", "check", "submit", "list", "progress", "show", "status", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "commit", "help"}
 
 // nearestCampaignCommand returns the campaign subcommand within two edits of
 // name, or "" when none is that close.

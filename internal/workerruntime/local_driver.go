@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -28,12 +29,17 @@ type ArtifactSource interface {
 }
 
 type PublishedResult struct {
+	// WorkspaceDir supplies Git objects and the repository fixture allowlist.
+	WorkspaceDir          string
 	Finalized             backlog.FinalizedAttempt
 	FinalMessage          string
 	ThreadArchive         []byte
 	RecoveryProposal      *domain.RecoveryProposal
 	RecoveryInstructions  []byte
 	RecoveryCheckpointTar []byte
+	// WorkInProgressBundle is the snapshot of uncommitted work a failed
+	// attempt uploads when its commands were still running at turn end.
+	WorkInProgressBundle []byte
 }
 
 type ArtifactPublisher interface {
@@ -63,6 +69,9 @@ type LocalDriverConfig struct {
 	ArtifactRoot    string
 	RunsRoot        string
 	StopTimeout     time.Duration
+	// SnapshotTimeout bounds a work-in-progress snapshot of a failing
+	// attempt. Zero uses DefaultSnapshotTimeout.
+	SnapshotTimeout time.Duration
 	// PreflightFreshness bounds how long a preflight receipt may be reused for
 	// an unchanged identity. Zero uses DefaultPreflightFreshness.
 	PreflightFreshness time.Duration
@@ -158,7 +167,19 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		if d.Credentials == nil {
 			return "", errors.New("prepare workspace: required credential resolver is unavailable")
 		}
-		if err := d.Credentials.Require(ctx, environment.RequiredCredentials); err != nil {
+		if recorder, ok := d.Publisher.(secretRecorder); ok {
+			resolver, ok := d.Credentials.(secretValueResolver)
+			if !ok {
+				return "", errors.New("required credential resolver does not expose secret scan canaries")
+			}
+			values, err := resolver.SecretValues(ctx, environment.RequiredCredentials)
+			if err != nil {
+				return "", err
+			}
+			if err := recorder.RecordSecretValues(ctx, pkg, values); err != nil {
+				return "", err
+			}
+		} else if err := d.Credentials.Require(ctx, environment.RequiredCredentials); err != nil {
 			return "", err
 		}
 	}
@@ -169,6 +190,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		if info, err := os.Lstat(workspace); err == nil {
 			if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 				return "", errors.New("contained workspace is not a real directory")
+			}
+			if err := d.ensureDependencyIntegrity(ctx, pkg, workspace); err != nil {
+				return "", err
 			}
 			if err := manager.PrepareExecution(ctx, pkg, workspace); err != nil {
 				return "", err
@@ -206,11 +230,22 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		inputs = append(inputs, d.domainArtifact(pkg, object, domain.ArtifactInput, name, "submission"))
 	}
 	for _, dependency := range pkg.Dependencies {
-		dependencyTask := domain.Task{ID: dependency.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: dependency.TaskID}
+		producer := dependency.TaskID
+		if len(dependency.Artifacts) > 0 {
+			relative, err := dependencyObjectPath(dependency, dependency.Artifacts[0])
+			if err != nil {
+				return "", dependencyFailure(dependency, dependency.Artifacts[0], err)
+			}
+			producer = strings.Split(filepath.ToSlash(relative), "/")[0]
+		}
+		dependencyTask := domain.Task{ID: dependency.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: producer}
 		names := make([]string, 0, len(dependency.Artifacts))
 		for _, object := range dependency.Artifacts {
 			parts := strings.Split(filepath.ToSlash(object.Path), "/")
-			if len(parts) < 3 || parts[0] != "dependencies" {
+			if _, err := dependencyObjectPath(dependency, object); err != nil {
+				return "", dependencyFailure(dependency, object, err)
+			}
+			if len(parts) < 3 || parts[0] != "dependencies" || parts[1] != producer {
 				return "", fmt.Errorf("prepare workspace: invalid dependency object path %q", object.Path)
 			}
 			name := strings.Join(parts[2:], "/")
@@ -220,11 +255,11 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 			artifact.AttemptID = ""
 			dependencyArtifacts = append(dependencyArtifacts, artifact)
 		}
-		task.Needs = append(task.Needs, dependency.TaskID)
+		task.Needs = append(task.Needs, producer)
 		if task.DependencyInputs == nil {
 			task.DependencyInputs = make(map[string][]string)
 		}
-		task.DependencyInputs[dependency.TaskID] = names
+		task.DependencyInputs[producer] = names
 		dependencyTasks = append(dependencyTasks, dependencyTask)
 	}
 	if d.Config.DryRun {
@@ -264,6 +299,9 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	if err := d.writeProjectContext(pkg, prepared.WorkspaceDir); err != nil {
 		return "", err
 	}
+	if err := d.ensureDependencyIntegrity(ctx, pkg, prepared.WorkspaceDir); err != nil {
+		return "", err
+	}
 	if manager := d.containedManager(pkg); manager != nil {
 		if err := manager.PrepareExecution(ctx, pkg, prepared.WorkspaceDir); err != nil {
 			return "", err
@@ -283,6 +321,9 @@ func (d *LocalDriver) InspectWorkspace(ctx context.Context, pkg workerproto.Exec
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", false, errors.New("prepared workspace is not a real directory")
+	}
+	if err := d.ensureDependencyIntegrity(ctx, pkg, workspace); err != nil {
+		return workspace, false, err
 	}
 	if err := verifyProjectContextFile(pkg, workspace); err != nil {
 		return workspace, false, fmt.Errorf("inspect prepared workspace: %w", err)
@@ -754,6 +795,9 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 			return fmt.Errorf("execution package environment is no longer authorized: %w", err)
 		}
 	}
+	if err := d.ensureDependencyIntegrity(ctx, pkg, workspace); err != nil {
+		return err
+	}
 
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
@@ -762,6 +806,16 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	}
 	if d.Config.DryRun {
 		return os.WriteFile(d.noEffectsThreadPath(pkg), []byte("active\n"), 0o600)
+	}
+	if recorder, ok := d.Publisher.(secretRecorder); ok {
+		if err := recorder.SnapshotSecrets(ctx, pkg); err != nil {
+			return err
+		}
+		// Before the provider's first turn the workspace is still what
+		// preparation checked out, so its base and allowlist are trusted.
+		if err := recorder.RecordScanBaseline(ctx, pkg, workspace); err != nil {
+			return err
+		}
 	}
 	promptArtifact, err := d.readCachedArtifact(pkg.Prompt, pkg.Limits.MaxArtifactBytes)
 	if err != nil {
@@ -1027,12 +1081,24 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
-	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
-		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
-	}); err != nil {
+	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace}
+	if finalized.Completion.Failure != "" {
+		// A failed attempt does not publish its declared commit, so its
+		// uncommitted work travels with the failure as a bundle. The
+		// coordinator derives this failure from the uploaded evidence, so the
+		// bundle artifact itself is the record; a bundle that is not retained
+		// or does not fit the upload is named in the worker log.
+		d.retainWorkInProgress(ctx, pkg, workspace)
+		result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
+	}
+	if err := d.Publisher.PublishResult(ctx, pkg, result); err != nil {
 		var size *workerproto.ArtifactSizeError
 		if errors.As(err, &size) {
 			return &permanentCollectionFailure{size: size}
+		}
+		var secret *SecretScanError
+		if errors.As(err, &secret) && !secret.retryable() {
+			return &permanentCollectionFailure{secret: secret}
 		}
 		return fmt.Errorf("publish result custody: %w", err)
 	}
@@ -1143,8 +1209,12 @@ func (d *LocalDriver) settleCollectedTurn(pkg workerproto.ExecutionPackage, thre
 	if err != nil || recordedFailure != "" {
 		return message, archive, failure, nil
 	}
+	// The current reading is discarded in favour of the recorded turn, so the
+	// result scan never sees it; it is redacted here before it is logged.
+	ctx, cancel := context.WithTimeout(context.Background(), failureRedactionTimeout)
+	defer cancel()
 	d.logger().Info("the turn read as unfinished on a repeated collection; judging the turn this collection recorded when it started",
-		"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "turn", thread.TurnID, "reading", failure)
+		"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "turn", thread.TurnID, "reading", d.loggedText(ctx, pkg, failure))
 	return recorded.Message, recorded.Archive, "", nil
 }
 
@@ -1195,6 +1265,8 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 	if strings.TrimSpace(failure) == "" {
 		failure = "attempt failed on the worker"
 	}
+	retained := d.retainWorkInProgress(ctx, pkg, workspace)
+	failure = withWorkInProgress(failure, retained)
 	message := FailedMarker + "\n" + failure + "\n"
 	archive := []byte("{}")
 	thread, err := d.T3.GetThread(ctx, pkg.Identity.ThreadID)
@@ -1204,10 +1276,38 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		}
 	}
 	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
-	if err := d.Publisher.PublishResult(ctx, pkg, PublishedResult{
-		Finalized: finalized, FinalMessage: message, ThreadArchive: archive,
-	}); err != nil {
-		return fmt.Errorf("publish failed result custody: %w", err)
+	// The workspace lends the secret scan the objects a work-in-progress
+	// bundle's prerequisites need; without it the scan cannot decode the bundle
+	// and refuses it.
+	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace}
+	result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
+	publishErr := d.Publisher.PublishResult(ctx, pkg, result)
+	var secret *SecretScanError
+	if errors.As(publishErr, &secret) && !secret.retryable() {
+		// The thread or the failure text carries a credential. Publish the
+		// redacted finding with an empty archive instead, so the failed result
+		// still reaches the coordinator; the raw text stays on the worker.
+		failure = permanentSecretFailurePrefix + secret.Error() +
+			"; the failure reason and thread archive were withheld and remain on the worker for this assignment"
+		d.logger().Warn("failed result withheld by secret scan; publishing redacted failure",
+			"attempt", pkg.Identity.AttemptID, "object", secret.Object, "detector", secret.Detector,
+			"byte_offset", secret.Offset, "fingerprint", secret.Fingerprint)
+		// The redacted result is a failed result too, so it carries the
+		// work-in-progress bundle when the scan admits the bundle on its own:
+		// a credential in the archive or the reason must not cost the
+		// uncommitted work. A bundle the scan refuses stays on the worker.
+		if strings.HasPrefix(retained, "wip.bundle retained") {
+			failure += "; " + retained
+		}
+		redacted := PublishedResult{
+			Finalized:    backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}},
+			FinalMessage: FailedMarker + "\n" + failure + "\n", ThreadArchive: []byte("{}"), WorkspaceDir: workspace,
+		}
+		redacted.WorkInProgressBundle = d.workInProgressBundle(pkg, redacted)
+		publishErr = d.Publisher.PublishResult(ctx, pkg, redacted)
+	}
+	if publishErr != nil {
+		return fmt.Errorf("publish failed result custody: %w", publishErr)
 	}
 	if err != nil {
 		return fmt.Errorf("%w: observe thread: %v", ErrSettleUnproven, err)
@@ -1218,6 +1318,35 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		}
 	}
 	return nil
+}
+
+// RedactFailure removes the execution's credentials and secret patterns from
+// a failure reason before the runtime records it, because the journal failure
+// is reported to the coordinator. A publisher without a scanner leaves the
+// text unchanged.
+func (d *LocalDriver) RedactFailure(ctx context.Context, pkg workerproto.ExecutionPackage, failure string) (string, error) {
+	redactor, ok := d.Publisher.(interface {
+		RedactText(context.Context, workerproto.ExecutionPackage, string) (string, error)
+	})
+	if !ok {
+		return failure, nil
+	}
+	return redactor.RedactText(ctx, pkg, failure)
+}
+
+// loggedText is provider or agent text a collection log quotes, with the
+// execution's credentials removed, or the withheld notice when the scanner
+// cannot check it. The caller keeps the original text for its own decisions.
+func (d *LocalDriver) loggedText(ctx context.Context, pkg workerproto.ExecutionPackage, text string) string {
+	if text == "" {
+		return ""
+	}
+	redacted, err := d.RedactFailure(ctx, pkg, text)
+	if err != nil {
+		d.logger().Warn("logged text withheld; the secret scan could not check it", "attempt", pkg.Identity.AttemptID, "error", err)
+		return withheldFailure
+	}
+	return redacted
 }
 
 func (d *LocalDriver) Cleanup(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) error {
@@ -1614,11 +1743,16 @@ func readBoundedRegularFile(path string, maxBytes int64) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxBytes {
 		return nil, errors.New("file is not a bounded regular file")
 	}
-	file, err := os.Open(path)
+	// The file may have been replaced since the check: the open does not
+	// wait on a FIFO, and the opened file is checked again.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("file is not a bounded regular file")
+	}
 	return io.ReadAll(io.LimitReader(file, maxBytes+1))
 }
 

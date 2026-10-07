@@ -185,7 +185,7 @@ func (r *coordinatorRepositoryRefResolver) requireCapability(ctx context.Context
 }
 
 func (r *coordinatorRepositoryRefResolver) dialWorker(ctx context.Context, workerID string) (repositoryRefClient, func() error, error) {
-	client, closer, err := dialRepositoryProbeSession(ctx, r.settings, r.resolver, r.epoch, r.factory, workerID, "-ref")
+	client, closer, err := dialRepositoryProbeSession(ctx, r.settings, r.resolver, r.epoch, r.factory, workerID, coordinatorWorkerControlOperation, "-ref")
 	if err != nil {
 		return nil, nil, err
 	}

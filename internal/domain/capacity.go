@@ -471,17 +471,18 @@ type PlacementScore struct {
 // so "why is this still queued" and "why did this land here" are answered from
 // the same durable evidence.
 type PlacementDecision struct {
-	TaskID           string                `json:"taskId,omitempty"`
-	AttemptID        string                `json:"attemptId,omitempty"`
-	AssignmentID     string                `json:"assignmentId,omitempty"`
-	SelectedWorkerID string                `json:"selectedWorkerId,omitempty"`
-	ReservationID    string                `json:"reservationId,omitempty"`
-	Demand           ResourceDemand        `json:"demand"`
-	CandidateIDs     []string              `json:"candidateIds,omitempty"`
-	Rejections       []PlacementRejection  `json:"rejections,omitempty"`
-	Scores           []PlacementScore      `json:"scores,omitempty"`
-	Snapshots        []CapacitySnapshotRef `json:"snapshots,omitempty"`
-	DecidedAt        time.Time             `json:"decidedAt"`
+	ResourceEvaluations []ResourceEvaluation  `json:"resourceEvaluations,omitempty"`
+	TaskID              string                `json:"taskId,omitempty"`
+	AttemptID           string                `json:"attemptId,omitempty"`
+	AssignmentID        string                `json:"assignmentId,omitempty"`
+	SelectedWorkerID    string                `json:"selectedWorkerId,omitempty"`
+	ReservationID       string                `json:"reservationId,omitempty"`
+	Demand              ResourceDemand        `json:"demand"`
+	CandidateIDs        []string              `json:"candidateIds,omitempty"`
+	Rejections          []PlacementRejection  `json:"rejections,omitempty"`
+	Scores              []PlacementScore      `json:"scores,omitempty"`
+	Snapshots           []CapacitySnapshotRef `json:"snapshots,omitempty"`
+	DecidedAt           time.Time             `json:"decidedAt"`
 }
 
 // Placed reports whether the decision selected a worker.

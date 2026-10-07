@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // The campaign family's second-level pages. The namespace is a facade: submit
 // creates exactly one workflow and one run, and every lifecycle verb below is
 // an existing backlog operation.
@@ -16,6 +18,8 @@ const campaignAuthoringNote = "validate, plan, check and submit share one option
 
 func campaignHelpPages() []helpPage {
 	return []helpPage{
+		{Path: "campaign commit", Purpose: "export a declared commit from the coordinator.", Usage: []string{"t3-steward campaign commit export <run>/<task>/<commit-name> --bundle FILE [--branch NAME]"}, Flags: []helpFlag{{Name: "--bundle", Value: "FILE", Required: true, Text: "New local destination. Existing paths are refused."}, {Name: "--branch", Value: "NAME", Default: "commit name", Text: "The bundle advertises exactly refs/heads/NAME."}}, Exits: coordinatorExits(), JSONNote: "--json is not accepted. Export prints commit, base and sha256 as text.", Parsers: []parserSite{{Func: "parseCampaignCommitExportArgs"}}},
+		{Path: "campaign commit export", Purpose: "write a verified bundle of a declared commit, read-only on the fleet.", Usage: []string{strings.TrimSpace(campaignCommitExportUsage)}, Flags: []helpFlag{{Name: "--bundle", Value: "FILE", Required: true, Text: "New local destination. Existing paths are refused."}, {Name: "--branch", Value: "NAME", Default: "commit name", Text: "The bundle advertises exactly refs/heads/NAME."}}, Exits: coordinatorExits(), JSONNote: "--json is not accepted. Prints commit, base and sha256 as text.", Notes: "Authenticated and read-only: resolves provenance through the coordinator, reads a retained bundle or the producing worker, and never changes worker refs. Prints commit, base and sha256. The campaign base is the bundle prerequisite; import into a repository that already holds it. Unknown producers, absent provenance, invalid refs, corrupt bundles and old transports are refused.", Parsers: []parserSite{{Func: "parseCampaignCommitExportArgs"}}},
 		{
 			Path:     "campaign validate",
 			Purpose:  "check a campaign directory's structure, graph and size, offline.",
@@ -130,6 +134,16 @@ func campaignHelpPages() []helpPage {
 				"--since takes a Go duration or a whole number of days, such as 24h or 7d."
 			return page
 		}(),
+		{
+			Path: "campaign progress", Purpose: "compact read-only progress mirror from coordinator facts.",
+			Usage:    []string{"t3-steward campaign progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]"},
+			Flags:    []helpFlag{{Name: "--owner", Value: "THREAD", Default: "all notify threads", Text: "Filter by the recorded notify thread, including settled notifications."}, {Name: "--since", Value: "RFC3339", Default: "open runs and terminal runs from the last 24 hours", Text: "Inclusive last-change timestamp; replaces the default 24-hour terminal window."}, {Name: "--json", Default: "false", Text: "Print schemaVersion 1 with complete values."}},
+			Exits:    coordinatorExits(),
+			JSONKeys: []string{"schemaVersion", "generatedAt", "runs"},
+			JSONNote: "runs and each tasks/outputs field are arrays, including when empty; see docs/backlog-v2-operations.md.",
+			Notes:    "Without run IDs, lists open runs and runs terminal in the last 24 hours. Explicit IDs bypass that default window. No result bodies or state writes. Text rows are at most 120 terminal columns; non-ASCII values are escaped. An older coordinator is refused; upgrade it.",
+			Parsers:  []parserSite{{Func: "parseProgressArgs"}},
+		},
 		campaignAliasPage("campaign status", "alias of campaign show: one run with its tasks and supervision.",
 			"t3-steward campaign status <run> [--json]", "backlog show"),
 		func() helpPage {

@@ -63,17 +63,18 @@ type QuarantineReader interface {
 }
 
 type Service struct {
-	enrollWorker   WorkerEnrollmentHandler
-	graphInputRoot string
-	graphValidator func(domain.Workflow, domain.Task) error
-	reader         Reader
-	authorizer     Authorizer
-	now            func() time.Time
-	artifactOpen   ArtifactOpenFunc
-	runtime        RuntimeInfo
-	recovery       UnknownRecoveryWriter
-	quarantine     QuarantineReader
-	quarantineOps  QuarantineWriter
+	enrollWorker     WorkerEnrollmentHandler
+	graphInputRoot   string
+	graphValidator   func(domain.Workflow, domain.Task) error
+	reader           Reader
+	authorizer       Authorizer
+	now              func() time.Time
+	artifactOpen     ArtifactOpenFunc
+	commitBundleOpen CommitBundleOpenFunc
+	runtime          RuntimeInfo
+	recovery         UnknownRecoveryWriter
+	quarantine       QuarantineReader
+	quarantineOps    QuarantineWriter
 	// supervision is the durable half of the supervision family. It is set
 	// explicitly rather than asserted from the reader because the binding is
 	// phrased in this package's types and the store cannot name them.
@@ -270,9 +271,29 @@ func (s *Service) RecoverUnknown(ctx context.Context, principal Principal, reque
 }
 
 func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
+	response, err := s.query(ctx, query)
+	// A progress mirror is asked for only by a client of this release, which
+	// reads the whole response.
+	if err != nil || query.Version != Version || query.ProgressMirror != nil {
+		return response, err
+	}
+	// A strict older client rejects every field its release did not declare,
+	// so a v1 read keeps the shape v1 had; this release's clients ask for
+	// ExtendedReadVersion.
+	if err := projectV1Response(&response); err != nil {
+		return Response{}, fmt.Errorf("project the v1 %s response: %w", query.Kind, err)
+	}
+	return response, nil
+}
+
+func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	if query.Version != Version && !intakeStatus {
+	extendedRead := query.Version == ExtendedReadVersion && query.Kind != QueryStatus
+	if query.Version != Version && !intakeStatus && !extendedRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
+	}
+	if query.ProgressMirror != nil && query.Kind != QueryWorkflows {
+		return Response{}, fmt.Errorf("%w: progress mirror needs workflows query", ErrInvalidQuery)
 	}
 	if !validQuery(query) {
 		return Response{}, fmt.Errorf("%w: kind %q or target is invalid", ErrInvalidQuery, query.Kind)
@@ -313,7 +334,15 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		}
 		response.Status = &status
 	case QueryWorkflows:
-		response.Workflows = view.workflowSummaries(query.Filter)
+		if query.ProgressMirror != nil {
+			doc, err := s.progressMirror(ctx, view.records, *query.ProgressMirror, view.now)
+			if err != nil {
+				return Response{}, err
+			}
+			response.ProgressMirror = &doc
+		} else {
+			response.Workflows = view.workflowSummaries(query.Filter)
+		}
 	case QueryWorkflow:
 		detail, ok := view.workflowDetail(query.WorkflowRunID)
 		if !ok {
@@ -495,6 +524,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 	loaded := newView(records, workers, admissions, s.runtime, s.now().UTC())
 	loaded.supervisorClientConfigured = s.supervisorClientConfigured
 	loaded.workerProviders = s.workerProviders
+	loaded.resourcePolicy = s.viabilitySettings.ResourcePolicy
 	if loaded.supervision, err = s.supervisionSnapshots(ctx, records, workers); err != nil {
 		return view{}, err
 	}
@@ -568,6 +598,7 @@ func notFound(kind, id string) error {
 }
 
 type view struct {
+	resourcePolicy  domain.ResourcePlacementPolicy
 	requirements    []domain.WorkerRequirement
 	enrollments     []domain.WorkerEnrollment
 	workerProviders map[string][]WorkerProviderAuthorization
@@ -1055,6 +1086,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	if sink := v.runs[runID].Sink; sink != nil && task.ID == sink.ID {
 		explanation.Summary = "coordinator sink waits for all predecessors to be terminal and execution to be quiescent"
 		if sink.Progress.Terminal() {
+			explanation.ReviewVerdict = domain.AggregateReviewVerdicts(runID, "", v.records.Attempts)
 			explanation.Summary = "coordinator sink is terminal: " + string(sink.Progress)
 		}
 		return explanation, true
@@ -1062,7 +1094,27 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID])
 	if attempt != nil {
 		explanation.AttemptID = attempt.ID
+		// What the worker did about background commands at the turn end blocks
+		// no scheduling decision, so it is a detail rather than a blocker. A
+		// host that could not look for them collected the turn as before, and
+		// that warning stays visible once the attempt is terminal; a terminal
+		// attempt no longer waits for anything.
+		var assignment *domain.Assignment
+		if found, ok := v.assignments[attempt.AssignmentID]; ok {
+			assignment = &found
+		}
+		if evidence := v.attemptEvidence(*attempt, assignment); evidence != nil && evidence.TurnEnd != "" &&
+			(!attempt.Progress.Terminal() || !strings.HasPrefix(evidence.TurnEnd, "waiting for ")) {
+			explanation.Details = append(explanation.Details, "turn end: "+evidence.TurnEnd)
+		}
+		for _, assignment := range v.records.Assignments {
+			if assignment.AttemptID == attempt.ID && assignment.Placement != nil {
+				explanation.Placement = assignment.Placement
+				break
+			}
+		}
 		if attempt.Progress.Terminal() {
+			explanation.ReviewVerdict = domain.CloneReviewVerdict(attempt.ReviewVerdict)
 			explanation.Summary = "task is terminal"
 			return explanation, true
 		}
@@ -1117,7 +1169,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 			}
 		}
 	}
-	v.addWorkerBlocker(&explanation, task)
+	v.addWorkerBlocker(&explanation, task, v.workflows[v.runs[runID].WorkflowID].Project)
 	v.addRouteBlocker(&explanation, task, attempt)
 	v.addQuotaBlocker(&explanation, task, attempt)
 	for _, lock := range v.locks(Filter{}) {
@@ -1185,7 +1237,11 @@ func (v view) addSupervisionBlocker(explanation *Explanation, runID string, task
 // about: an operator whose task requires a device no host provides was told
 // "no fresh ready worker satisfies placement", which names neither the
 // requirement nor the host that failed it.
-func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
+func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task, projects ...string) {
+	var project string
+	if len(projects) != 0 {
+		project = projects[0]
+	}
 	// Staleness stays the view's own decision, which already accounts for the
 	// snapshot's validity window and the coordinator epoch. A stale worker is
 	// dropped here rather than re-judged by the matcher, so this change adds
@@ -1219,8 +1275,8 @@ func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
 	}
 	// MatchWorkers requires a positive bound; freshness was applied above, so
 	// this one is deliberately not binding.
-	placement, err := backlog.MatchWorkers(backlog.WorkerPlacementRequest{
-		Task: task, Now: v.now, MaxSnapshotAge: time.Duration(1 << 62),
+	selection, err := backlog.SelectWorker(backlog.WorkerPlacementRequest{
+		Task: task, Project: project, Now: v.now, MaxSnapshotAge: time.Duration(1 << 62), ResourcePolicy: v.resourcePolicy,
 	}, inventories)
 	if err != nil {
 		explanation.Blockers = append(explanation.Blockers, Blocker{
@@ -1228,6 +1284,10 @@ func (v view) addWorkerBlocker(explanation *Explanation, task domain.Task) {
 		})
 		return
 	}
+	if explanation.Placement == nil {
+		explanation.Placement = &selection.Decision
+	}
+	placement := selection.Placement
 	if len(placement.EligibleWorkerIDs) != 0 {
 		return
 	}

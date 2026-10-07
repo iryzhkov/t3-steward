@@ -168,6 +168,11 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if err != nil {
 		return report, err
 	}
+	reviewVerdict, reviewErr := reviewVerdictFromResult(task, artifacts, payloads)
+	if reviewErr != nil {
+		verificationPassed = false
+		failure = strings.TrimPrefix(failure+"; review_output verification failed: "+reviewErr.Error(), "; ")
+	}
 	for index, artifact := range artifacts {
 		published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
 			CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,
@@ -211,6 +216,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	report.Transition, err = ReconcileTurnOutcomes(ctx, i.Store, []domain.TurnOutcome{{
 		ID: outcomeID, AttemptID: attempt.ID,
 		Marker: domain.TurnOutcomeDone, VerificationPassed: verificationPassed, Failure: failure,
+		ReviewVerdict:          reviewVerdict,
 		FinalSummaryArtifactID: summary.ID, ObservedAt: manifest.CreatedAt,
 	}}, now)
 	return report, err
@@ -388,9 +394,11 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 			return domain.Artifact{}, fmt.Errorf("result import object %q cannot publish recovery content", object.ID)
 		}
 	case domain.ArtifactGitState:
-		// The only Git state a result carries is the bundle of a commit the task
-		// declared, which is how that commit reaches a consumer on another worker.
-		if !IsCommitBundleOf(task, name) || object.MediaType != CommitBundleMediaType {
+		// The Git state a result carries is the bundle of a commit the task
+		// declared, which is how that commit reaches a consumer on another
+		// worker, or the work-in-progress bundle of a failed attempt whose
+		// commands were still running when its turn ended.
+		if !(IsCommitBundleOf(task, name) || isWorkInProgressBundleOf(task, attempt.ID, object.ID, name)) || object.MediaType != CommitBundleMediaType {
 			return domain.Artifact{}, fmt.Errorf("result import object %q is not the bundle of a commit the task declares", object.ID)
 		}
 	default:
