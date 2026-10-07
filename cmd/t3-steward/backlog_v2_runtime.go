@@ -93,6 +93,10 @@ func (s coordinatorLocalService) Mutate(ctx context.Context, mutation backlogadm
 	return s.admin.Mutate(ctx, mutation)
 }
 
+func (s coordinatorLocalService) Lease(ctx context.Context, principal backlogadmin.Principal, request domain.LeaseRequest) (domain.LeaseResponse, error) {
+	return s.admin.Lease(ctx, principal, request)
+}
+
 func (s coordinatorLocalService) RecoverUnknown(
 	ctx context.Context,
 	principal backlogadmin.Principal,

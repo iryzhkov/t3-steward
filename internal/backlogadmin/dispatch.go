@@ -58,6 +58,10 @@ func (d adminDispatch) handle(
 		response.Error = "unexpected commit export request"
 		return response, nil
 	}
+	if request.Lease != nil && request.Operation != localOperationLease {
+		response.Error = "unexpected lease request"
+		return response, nil
+	}
 	if request.RecoveryRetry != nil && request.Operation != localOperationRecoveryRetry {
 		response.Error = "unexpected recovery retry request"
 		return response, nil
@@ -103,6 +107,8 @@ func (d adminDispatch) handle(
 		response.ArtifactSize = value.Metadata.Size
 		response.CommitProvenance = value.Provenance
 		return response, &value
+	case localOperationLease:
+		d.lease(ctx, principal, request, &response)
 	case localOperationRecoveryRetry:
 		d.retryRecovery(ctx, principal, request, &response)
 	case localOperationSupervisionShow, localOperationSupervisionDecision:

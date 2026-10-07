@@ -331,6 +331,7 @@ func familyHelpPages() []helpPage {
 		{Path: "campaign", Body: campaignUsage + "\n" + campaign.ExecutorHelp},
 		{Path: "coordinator", Body: coordinatorUsage},
 		{Path: "worker", Body: workerUsage},
+		{Path: "lease", Body: leaseUsage, Parsers: []parserSite{{Func: "parseLeaseArgs"}, familyDispatchSite("lease")}},
 		{
 			// models is not a family: it has no page below it and it parses its
 			// own arguments, so it declares the sites they are parsed at. It was

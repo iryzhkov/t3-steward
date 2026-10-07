@@ -509,6 +509,7 @@ var versionedMigrations = []struct {
 	// V35, V36 and V38 are assigned to other M16 units and land with them;
 	// V40 is reserved for M16-3.
 	{39, coordinatorMigrationV39},
+	{42, coordinatorMigrationV42},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {

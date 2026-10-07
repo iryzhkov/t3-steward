@@ -81,11 +81,11 @@ func TestEveryAnswerWithAReplayFlagIsMarkedOnAReplay(t *testing.T) {
 				marked.Type().Field(i).Name)
 		}
 	}
-	// The five answers markReplayedAnswer names. A count stated here turns the
+	// The six answers markReplayedAnswer names, including ownership leases. A count stated here turns the
 	// addition of a response type that carries a replay flag into a failure even
 	// if the walk above were ever weakened, and the addition of one that does
 	// not into a deliberate edit rather than a silent pass.
-	if checked != 5 {
-		t.Fatalf("walked %d answers carrying a replay flag, want the 5 markReplayedAnswer names", checked)
+	if checked != 6 {
+		t.Fatalf("walked %d answers carrying a replay flag, want the 6 markReplayedAnswer names", checked)
 	}
 }
