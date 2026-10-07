@@ -93,7 +93,10 @@ func leaseCompatibilityError(err error) error {
 		return nil
 	}
 	message := err.Error()
-	if !strings.Contains(message, "unknown local admin operation") && !strings.Contains(message, "unknown admin frame operation") && !strings.Contains(message, "unknown operation \"lease\"") {
+	// Older local coordinators strictly decode the envelope before dispatch:
+	// the missing Lease field therefore fails before the unknown-operation path.
+	unsupportedLocalField := strings.Contains(message, `decode local admin frame: json: unknown field "lease"`)
+	if !unsupportedLocalField && !strings.Contains(message, "unknown local admin operation") && !strings.Contains(message, "unknown admin frame operation") && !strings.Contains(message, "unknown operation \"lease\"") {
 		return err
 	}
 	upgrade := errors.New("the coordinator does not support leases; upgrade it")

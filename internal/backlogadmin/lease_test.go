@@ -141,16 +141,22 @@ func TestLeaseOlderCoordinatorCarrierMessages(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		var request localRequest
-		if err := readLocalJSON(conn, 1<<20, &request); err != nil {
-			done <- err
+		// The base coordinator strictly decodes a request type without Lease
+		// before dispatching, so it refuses the new field as a protocol error.
+		var request struct {
+			Version   string `json:"version"`
+			Operation string `json:"operation"`
+		}
+		err = readLocalJSON(conn, 1<<20, &request)
+		if err == nil {
+			done <- errors.New("old coordinator unexpectedly decoded lease field")
 			return
 		}
-		done <- writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: "unknown local admin operation"})
+		done <- writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: err.Error(), ErrorClass: ClassProtocol})
 	}()
 	local := LocalClient{Path: path, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: time.Second}
 	_, err = local.Lease(context.Background(), leaseTestRequest())
-	if ClassOf(err) != ClassRejected || !strings.Contains(err.Error(), "the coordinator does not support leases; upgrade it") {
+	if ClassOf(err) != ClassProtocol || !strings.Contains(err.Error(), "the coordinator does not support leases; upgrade it") {
 		t.Fatalf("old local: %v", err)
 	}
 	if err := <-done; err != nil {
