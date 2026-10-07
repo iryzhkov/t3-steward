@@ -131,9 +131,7 @@ func nodeWakeResult(w domain.NodeWait) string {
 // line: bounded, alphanumeric first, then only - _ and dots. Legacy rerun
 // IDs additionally allow exactly the run:rerun: prefix before that safe key.
 func commandSafeRunID(run string) bool {
-	if strings.HasPrefix(run, "run:rerun:") {
-		run = strings.TrimPrefix(run, "run:rerun:")
-	}
+	run = strings.TrimPrefix(run, "run:rerun:")
 	if run == "" || len(run) > 128 || !(run[0] >= 'a' && run[0] <= 'z' || run[0] >= 'A' && run[0] <= 'Z' || run[0] >= '0' && run[0] <= '9') {
 		return false
 	}
