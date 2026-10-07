@@ -38,8 +38,13 @@ RACE_GCFLAGS =
 # replace check-review as the gate before review.
 NO_SQLITE_CHECKPTR_GCFLAGS := -gcflags=modernc.org/...=-d=checkptr=0
 check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr: RACE_GCFLAGS = $(NO_SQLITE_CHECKPTR_GCFLAGS)
+# The commit test-affected compares against, and its list-only switch. Like
+# RACE_GCFLAGS they are assigned with = so that only the make command line sets
+# them: a BASE left in the environment must not choose what gets tested.
+BASE =
+TEST_AFFECTED_LIST =
 
-.PHONY: build test check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr qualification lint install clean
+.PHONY: build test check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-checkptr test-affected qualification lint install clean
 
 build:
 	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o bin/$(BINARY) ./cmd/$(BINARY)
@@ -87,6 +92,33 @@ check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-che
 	else \
 		echo "no Go packages changed against $(FAST_BASE); skipping the race pass"; \
 	fi
+
+# The edit-test loop: `make test-affected BASE=<commit>` runs, under the race
+# detector with checkptr kept and at full size, the tests of every package
+# changed against BASE and of every package whose tests import one of them,
+# directly, transitively or only from a _test.go file. Uncommitted and
+# untracked files count; a changed template, golden or other file inside a
+# package directory selects that package, and a change to go.mod or go.sum
+# selects every package (scripts/affected-go-packages.sh). BASE is required and
+# never defaults to the whole module. TEST_AFFECTED_LIST=1 prints the selection
+# without running it. It does not build, vet or lint, and it replaces neither
+# check-review nor `make test` as the gate.
+test-affected:
+	@if [ -z '$(BASE)' ]; then \
+		echo 'test-affected: BASE is required: make test-affected BASE=<commit>' >&2; \
+		exit 2; \
+	fi; \
+	changed=$$(sh scripts/affected-go-packages.sh --changed '$(BASE)') || exit 1; \
+	pkgs=$$(sh scripts/affected-go-packages.sh '$(BASE)') || exit 1; \
+	if [ -z "$$pkgs" ]; then \
+		echo 'test-affected: no Go package changed against $(BASE); nothing to run'; \
+		exit 0; \
+	fi; \
+	echo "test-affected: $$(echo "$$changed" | wc -l | tr -d ' ') packages changed against $(BASE), $$(echo "$$pkgs" | wc -l | tr -d ' ') selected with their importers:"; \
+	echo "$$pkgs"; \
+	if [ -n '$(TEST_AFFECTED_LIST)' ]; then exit 0; fi; \
+	echo "go test -race -count=1 -timeout $(RACE_TIMEOUT)" $$pkgs; \
+	go test -race -count=1 -timeout $(RACE_TIMEOUT) $$pkgs
 
 # The nested-process qualification gates, which repeat tests the ordinary pass
 # already runs in fresh go test processes. The nightly workflow runs them.

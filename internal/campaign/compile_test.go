@@ -138,6 +138,33 @@ func TestCompiledManifestPinsTheRefRoutesAndEfforts(t *testing.T) {
 	}
 }
 
+// The implement prompt points the executor at the affected-package loop for
+// iterating, pinned to the unit's base, and keeps the declared verification as
+// the one full run.
+func TestCompiledImplementPromptIteratesOnAffectedPackages(t *testing.T) {
+	plan, err := ParseCompilePlan("plan.md", readCompileFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unit := range plan.Units {
+		prompt := compiledFile(t, unit, "prompts/implement.md")
+		for _, want := range []string{
+			"While iterating",
+			"`make test-affected BASE=" + plan.Ref + "`",
+			"Huyang `verify_run`",
+			"`test_scope=affected`",
+			"still runs once",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s prompts/implement.md does not contain %q:\n%s", unit.ID, want, prompt)
+			}
+		}
+		if strings.Contains(compiledFile(t, unit, "prompts/review.md"), "test-affected") {
+			t.Fatalf("%s: the review prompt names the executor's iteration loop", unit.ID)
+		}
+	}
+}
+
 // Every refusal names the plan line and the reason, and none of them is
 // reached after anything was written, because parsing writes nothing.
 func TestCompilePlanRefusals(t *testing.T) {
