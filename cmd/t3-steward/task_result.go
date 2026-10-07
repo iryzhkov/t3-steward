@@ -363,6 +363,9 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		collected.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
 		collected.ReviewGate = task.Attempt.ReviewGate
 	}
+	if err := resultDirectoryName(task.Task.Name); err != nil {
+		return taskResultTask{}, err
+	}
 	staging, err := stageResultDirectory(collected.Directory)
 	if err != nil {
 		return taskResultTask{}, err
@@ -418,8 +421,14 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 			collected.FinalMessage = string(body)
 		}
 	}
-	if err := replaceResultDirectory(staging, collected.Directory); err != nil {
+	left, err := replaceResultDirectory(staging, collected.Directory)
+	if err != nil {
 		return taskResultTask{}, err
+	}
+	for _, path := range left {
+		if c.stderr != nil {
+			fmt.Fprintf(c.stderr, "warning: could not remove the previous collection at %s\n", path)
+		}
 	}
 	if !final {
 		collected.Missing = append(collected.Missing, finalMessageArtifactName)

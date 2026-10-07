@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -123,6 +124,122 @@ func TestTaskResultReplacesTheDirectoryAnEarlierCollectionWrote(t *testing.T) {
 			names = append(names, entry.Name())
 		}
 		t.Fatalf("run directory holds %v, want only the task directory", names)
+	}
+}
+
+// Two collections of the same task at once, as two agents waiting on one run
+// do, each succeed, and exactly one complete directory is left, with nothing
+// beside it. Moving the directory aside and renaming the new one in is not one
+// step, so either could find the other's directory in the way.
+func TestConcurrentCollectionsOfOneTaskEachSucceedAndLeaveOneDirectory(t *testing.T) {
+	runDirectory := filepath.Join(t.TempDir(), "run-1")
+	directory := filepath.Join(runDirectory, "task")
+	const collectors, rounds = 4, 50
+	errs := make(chan error, collectors*rounds)
+	var wait sync.WaitGroup
+	for collector := 0; collector < collectors; collector++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for round := 0; round < rounds; round++ {
+				staged, err := stageResultDirectory(directory)
+				if err != nil {
+					errs <- err
+					return
+				}
+				if err := os.WriteFile(filepath.Join(staged, "final-message.md"), []byte("done"), 0o600); err != nil {
+					errs <- err
+					return
+				}
+				if left, err := replaceResultDirectory(staged, directory); err != nil || len(left) != 0 {
+					errs <- errors.Join(err, errors.New("left behind: "+filepath.Join(left...)))
+				}
+				_ = os.RemoveAll(staged)
+			}
+		}()
+	}
+	wait.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if got := readFile(t, directory, "final-message.md"); got != "done" {
+		t.Fatalf("final message = %q", got)
+	}
+	entries, err := os.ReadDir(runDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("run directory holds %d entries, want only the task directory", len(entries))
+	}
+}
+
+// Once the new collection is in place, failing to delete the earlier one is
+// cleanup that did not happen, not a failed collection: the new results are
+// there, and the leftover is reported rather than the collection refused.
+func TestAPreviousCollectionThatCannotBeRemovedDoesNotFailTheNewOne(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root removes read-only directories")
+	}
+	directory := filepath.Join(t.TempDir(), "run-1", "task")
+	locked := filepath.Join(directory, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "old.txt"), []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	t.Cleanup(func() {
+		for _, path := range left {
+			_ = os.Chmod(filepath.Join(path, "locked"), 0o700)
+		}
+	})
+	staged, err := stageResultDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staged, "final-message.md"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	left, err = replaceResultDirectory(staged, directory)
+	if err != nil {
+		t.Fatalf("the collection failed after its results were in place: %v", err)
+	}
+	if got := readFile(t, directory, "final-message.md"); got != "new" {
+		t.Fatalf("final message = %q", got)
+	}
+	if len(left) != 1 {
+		t.Fatalf("leftovers = %v, want the previous collection reported", left)
+	}
+}
+
+// The task's directory is replaced wholesale, so a task name that is not one
+// path element is refused before anything is touched: ".." would otherwise
+// replace the output directory itself, which --output . makes the caller's
+// checkout.
+func TestTaskResultRefusesATaskNameThatIsNotOneDirectory(t *testing.T) {
+	for _, name := range []string{"", ".", "..", "a/b", `a\b`} {
+		t.Run(name, func(t *testing.T) {
+			f := newTaskResultFixture(t)
+			output := t.TempDir()
+			precious := filepath.Join(output, "precious")
+			if err := os.WriteFile(precious, []byte("keep"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			task := f.detail.Tasks[0]
+			task.Task.Name = name
+			if _, err := f.cli().collect(context.Background(), f.detail, task, filepath.Join(output, "run-1"), true); err == nil {
+				t.Fatalf("task name %q was accepted", name)
+			}
+			if got := readFile(t, precious); got != "keep" {
+				t.Fatalf("precious = %q", got)
+			}
+		})
 	}
 }
 
