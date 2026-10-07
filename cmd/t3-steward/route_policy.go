@@ -207,16 +207,6 @@ func (c taskRunCLI) loadPolicy(ctx context.Context, path, role string) (*routePo
 	// authorization is required when the policy chooses a route automatically.
 	return p, nil
 }
-func (c taskRunCLI) validateLoadedPolicy(ctx context.Context, p *routePolicy) error {
-	if c.query == nil {
-		return errors.New("configured route catalog unavailable; configure coordinator-client.json")
-	}
-	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryWorkers})
-	if err != nil {
-		return fmt.Errorf("configured route catalog unavailable: %w; check t3-steward coordinator identity", err)
-	}
-	return validatePolicyCatalog(p, response.Workers)
-}
 func policyEffort(p *routePolicy, route string) (string, error) {
 	effort := ""
 	for _, r := range p.Roles {
