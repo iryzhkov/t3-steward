@@ -962,8 +962,19 @@ outside the exact canary set; high-confidence token patterns still apply.
 
 High-confidence patterns cover GitHub tokens, Anthropic and OpenAI keys, AWS AKIA
 access IDs, labeled Cloudflare API tokens, PEM private-key headers and age secret
-keys. The default policy blocks patterns in declared commits and bundles and warns
-for outputs, archives and final messages. Configure the worker runtime with:
+keys. The prefix patterns (GitHub, Anthropic, OpenAI, AWS and age) match only at a
+left boundary: at the start of the scanned object or text, or after a byte that is
+not an ASCII letter, digit, underscore or hyphen. A percent escape such as `%3D`
+or a backslash escape `\n`, `\t` or `\r` right before the prefix also counts, so a
+key in an encoded query string or a JSON string is still found. A prefix inside a
+longer identifier is therefore not a finding: a Steward task id (the word task, a
+hyphen and 32 hex digits) no longer reads as an OpenAI key, and neither do words
+such as disk or risk followed by a hyphen and a long identifier. The reported byte
+offset and fingerprint are those of the token itself. The Cloudflare pattern is
+anchored on its label and the private-key pattern on its PEM header, so neither
+needs the boundary. The default policy blocks patterns in declared commits and
+bundles and warns for outputs, archives and final messages. Configure the worker
+runtime with:
 
 ```yaml
 backlog_v2:
