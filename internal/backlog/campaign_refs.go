@@ -635,7 +635,9 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	// they are found under the run's staging namespace. A campaign ref whose
 	// record a crashed promotion never wrote is found under the run's
 	// campaign namespace, so it is released with the run as well.
-	namespaces := []string{"refs/campaigns/" + workflowRunID + "/"}
+	// A retained failed candidate's quarantine ref is swept the same way, so a
+	// ref whose record a crash never wrote is released too.
+	namespaces := []string{"refs/campaigns/" + workflowRunID + "/", "refs/campaigns-quarantine/" + workflowRunID + "/"}
 	if len(staged) != 0 {
 		namespaces = append(namespaces, "refs/campaign-staged/"+workflowRunID+"/")
 	}
@@ -665,15 +667,23 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 }
 
 // holdsRun reports whether the store has published or staged anything for one
-// workflow run.
+// workflow run. A run directory left without records, as a crash between a
+// quarantine ref and its record can leave it, still holds the run, because
+// Runs lists it and only the release below sweeps its refs.
 func (s CampaignRefStore) holdsRun(workflowRunID string) (bool, error) {
 	for _, kind := range []string{"provenance", "staged"} {
-		records, err := s.listRecords(filepath.Join(s.Root, kind, workflowRunID))
+		dir := filepath.Join(s.Root, kind, workflowRunID)
+		records, err := s.listRecords(dir)
 		if err != nil {
 			return false, err
 		}
 		if len(records) != 0 {
 			return true, nil
+		}
+		if _, err := os.Lstat(dir); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect campaign commit records: %w", err)
 		}
 	}
 	return false, nil

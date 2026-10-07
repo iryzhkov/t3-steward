@@ -69,6 +69,22 @@ func (s CampaignRefStore) discardFailedAttempt(ctx context.Context, run, task, a
 			return err
 		}
 	}
+	// A quarantine ref whose record was never written, because its
+	// publication failed between the two, is found by its namespace.
+	gitDir := filepath.Join(s.Root, "campaigns.git")
+	if _, err := os.Lstat(gitDir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	names, err := runLoggedCommandOutput(ctx, nil, "", s.git(), "--git-dir", gitDir,
+		"for-each-ref", "--format=%(refname)", "refs/campaigns-quarantine/"+run+"/"+task+"/"+attempt+"/")
+	if err != nil {
+		return fmt.Errorf("list quarantine refs of attempt %s: %w", attempt, err)
+	}
+	for _, name := range strings.Fields(string(names)) {
+		if err := runLoggedCommand(ctx, nil, "", s.git(), "--git-dir", gitDir, "update-ref", "-d", name); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
