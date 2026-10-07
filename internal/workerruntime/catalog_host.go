@@ -296,6 +296,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 	// cpu class and executor capacity are coordinator admission data, and no
 	// execution package depends on them.
 	capacityOnly := false
+	var pinned map[string]bool
 	if h.retained != nil && h.retained.Projection.Revision != projection.Revision {
 		attempts, err := h.retainedAttempts(settings)
 		if err != nil {
@@ -306,6 +307,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 				return refuse(busyCatalogRefusal(h.Bootstrap.WorkerID, live, catalogChangeAreas(h.retained.Projection, projection)))
 			}
 			capacityOnly = true
+			pinned = liveCatalogRevisions(attempts)
 		}
 		if projection.Worker.Epoch != h.retained.Projection.Worker.Epoch {
 			return refuse(errors.New("worker epoch change requires explicit custody recovery"))
@@ -331,7 +333,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		next := retainedCatalog{Projection: projection, CoordinatorEpoch: envelope.CoordinatorEpoch, AppliedAt: time.Now().UTC()}
 		switch {
 		case capacityOnly:
-			next.PreviousRevisions = appendPreviousRevision(h.retained.PreviousRevisions, h.retained.Projection.Revision, projection.Revision)
+			next.PreviousRevisions = appendPreviousRevision(h.retained.PreviousRevisions, h.retained.Projection.Revision, projection.Revision, pinned)
 		case h.retained != nil && h.retained.Projection.Revision == projection.Revision:
 			next.PreviousRevisions = slices.Clone(h.retained.PreviousRevisions)
 		}

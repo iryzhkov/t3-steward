@@ -13,9 +13,10 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-// maxPreviousCatalogRevisions bounds how many capacity-only predecessors a
-// worker keeps executing packages of. Each is added only while work from it
-// may still be live, so a handful covers any realistic run of resizes.
+// maxPreviousCatalogRevisions bounds how many capacity-only predecessors no
+// live attempt names a worker keeps executing packages of, for packages still
+// in flight from the coordinator. A predecessor a live attempt names is kept
+// beyond the bound.
 const maxPreviousCatalogRevisions = 32
 
 // capacityOnlyChange reports whether next differs from current only in the
@@ -71,13 +72,31 @@ func catalogChangeAreas(current, next CatalogProjection) string {
 func liveAttemptCount(attempts map[string]AttemptRecord) int {
 	live := 0
 	for _, record := range attempts {
-		terminal := record.Phase == PhaseCompleted || record.Phase == PhaseFailed ||
-			(record.Phase == PhaseStopped && record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop))
-		if record.SettlePending || !terminal {
+		if retainsExecution(record) {
 			live++
 		}
 	}
 	return live
+}
+
+// retainsExecution reports whether a catalog replacement would have to drain
+// the attempt.
+func retainsExecution(record AttemptRecord) bool {
+	terminal := record.Phase == PhaseCompleted || record.Phase == PhaseFailed ||
+		(record.Phase == PhaseStopped && record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop))
+	return record.SettlePending || !terminal
+}
+
+// liveCatalogRevisions is the set of catalog revisions the packages of live
+// attempts name: the revisions a capacity-only change must keep executable.
+func liveCatalogRevisions(attempts map[string]AttemptRecord) map[string]bool {
+	pinned := map[string]bool{}
+	for _, record := range attempts {
+		if retainsExecution(record) {
+			pinned[record.Package.Package.Environment.CatalogRevision] = true
+		}
+	}
+	return pinned
 }
 
 // busyCatalogRefusal is the reason a busy worker gives for a catalog change it
@@ -92,14 +111,25 @@ func busyCatalogRefusal(workerID string, live int, areas string) error {
 }
 
 // appendPreviousRevision records that packages of previous stay executable
-// after a capacity-only change to current.
-func appendPreviousRevision(revisions []string, previous, current string) []string {
+// after a capacity-only change to current. Revisions in pinned, those live
+// attempts name, are always kept; only the oldest unpinned ones beyond
+// maxPreviousCatalogRevisions are dropped.
+func appendPreviousRevision(revisions []string, previous, current string, pinned map[string]bool) []string {
 	result := slices.DeleteFunc(slices.Clone(revisions), func(r string) bool { return r == previous || r == current })
 	result = append(result, previous)
-	if len(result) > maxPreviousCatalogRevisions {
-		result = result[len(result)-maxPreviousCatalogRevisions:]
+	unpinned := 0
+	for _, r := range result {
+		if !pinned[r] {
+			unpinned++
+		}
 	}
-	return result
+	return slices.DeleteFunc(result, func(r string) bool {
+		if pinned[r] || unpinned <= maxPreviousCatalogRevisions {
+			return false
+		}
+		unpinned--
+		return true
+	})
 }
 
 // catalogRevisionSet is the catalog revisions a driver executes packages of:

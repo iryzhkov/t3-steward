@@ -236,6 +236,36 @@ func TestBuildLoadCeilingExcludesOnlyBuildWork(t *testing.T) {
 	}
 }
 
+// The ceiling acts only on complete telemetry: a fresh snapshot that reports
+// cpus and load but misses any other field is partial, and partial telemetry
+// never excludes build work on load.
+func TestBuildLoadCeilingIgnoresPartialTelemetry(t *testing.T) {
+	for name, clear := range map[string]func(*domain.WorkerTelemetry){
+		"memory available": func(v *domain.WorkerTelemetry) { v.MemoryAvailableMB = nil },
+		"swap used":        func(v *domain.WorkerTelemetry) { v.SwapUsedMB = nil },
+		"workspace free":   func(v *domain.WorkerTelemetry) { v.WorkspaceFreeMB = nil },
+		"temp free":        func(v *domain.WorkerTelemetry) { v.TempFreeMB = nil },
+		"running attempts": func(v *domain.WorkerTelemetry) { v.RunningAttempts = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := resourceWorker("agent-a")
+			w.Telemetry.CPUCount = resourcePtr(10)
+			w.Telemetry.Load1 = resourcePtr(20.0)
+			w.Telemetry.Load5 = resourcePtr(20.0)
+			clear(w.Telemetry)
+			evaluation, exclusions := liveResourceEvaluation(placementRequest(buildTask("build")), w)
+			if evaluation.State != "partial" {
+				t.Fatalf("state = %s, want partial", evaluation.State)
+			}
+			for _, e := range exclusions {
+				if e.Code == ExclusionResourceCPULoad {
+					t.Fatalf("partial telemetry excluded build: %s", e.Detail)
+				}
+			}
+		})
+	}
+}
+
 // Swap on zram is compressed memory, not paging to disk; only disk swap is a
 // pressure signal when the worker reports the split.
 func TestZramSwapDoesNotExclude(t *testing.T) {

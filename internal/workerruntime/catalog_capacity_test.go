@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -133,6 +135,69 @@ func TestBusyWorkerAcceptsCapacityOnlyCatalogChange(t *testing.T) {
 	}
 	if !restarted.service.Exchange.Runtime.driver.(*LocalDriver).acceptsCatalogRevision(projection.Revision) {
 		t.Fatal("restart forgot that packages of the previous capacity revision stay executable")
+	}
+}
+
+// Every catalog revision a live attempt's package names stays executable, no
+// matter how many capacity-only changes the worker adopts while the attempt
+// lives, before and after a restart.
+func TestBusyCapacityChangesKeepLiveRevision(t *testing.T) {
+	host, original, exchange := busyCatalogWorker(t)
+	if err := host.service.Exchange.Runtime.journal.update(func(s *journalState) error {
+		record := s.Attempts["parked"]
+		record.Phase = PhaseClaimed
+		s.Attempts["parked"] = record
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := original.Settings(host.Bootstrap, host.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := original.Revision
+	for i := 1; i <= maxPreviousCatalogRevisions+1; i++ {
+		worker := settings.Workers["normandy"]
+		worker.Executors.CPUUnits = float64(9 + i)
+		settings.Workers["normandy"] = worker
+		changed, err := BuildCatalogProjection(settings, "normandy")
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := exchange(catalogEnvelope(t, fmt.Sprintf("resize-%d", i), CatalogRequest{Projection: changed, ExpectedRevision: previous}))
+		if err != nil || response.Type != MessageCatalog {
+			t.Fatalf("resize %d: %+v %v", i, response, err)
+		}
+		previous = changed.Revision
+	}
+	if !host.service.Exchange.Runtime.driver.(*LocalDriver).acceptsCatalogRevision(original.Revision) {
+		t.Fatalf("capacity changes evicted live package revision %s", original.Revision)
+	}
+	restarted := &CatalogHost{Home: host.Home, Bootstrap: host.Bootstrap, Options: host.Options}
+	if err := restarted.Load(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.service.Exchange.Runtime.driver.(*LocalDriver).acceptsCatalogRevision(original.Revision) {
+		t.Fatalf("capacity changes evicted live package revision %s after restart", original.Revision)
+	}
+}
+
+// Predecessors no live attempt names are bounded history; a pinned one is
+// never dropped to make room.
+func TestAppendPreviousRevisionKeepsPinnedRevisions(t *testing.T) {
+	var history []string
+	for i := 0; i < maxPreviousCatalogRevisions+5; i++ {
+		history = appendPreviousRevision(history, fmt.Sprintf("r%d", i), fmt.Sprintf("r%d", i+1), map[string]bool{"r0": true})
+	}
+	if len(history) != maxPreviousCatalogRevisions+1 {
+		t.Fatalf("history length = %d, want %d unpinned plus the pinned one", len(history), maxPreviousCatalogRevisions+1)
+	}
+	if !slices.Contains(history, "r0") {
+		t.Fatalf("pinned revision dropped: %v", history)
+	}
+	last := fmt.Sprintf("r%d", maxPreviousCatalogRevisions+4)
+	if history[len(history)-1] != last || slices.Contains(history, "r1") {
+		t.Fatalf("unpinned history did not keep the newest: %v", history)
 	}
 }
 

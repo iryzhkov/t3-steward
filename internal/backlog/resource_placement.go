@@ -79,7 +79,9 @@ func liveResourceEvaluation(request WorkerPlacementRequest, worker domain.Worker
 	if knownCPU {
 		cores := float64(*v.CPUCount)
 		e.CPUHeadroom = math.Max(-1, math.Min(1, (cores-math.Max(*v.Load1, *v.Load5)-demand.CPUUnits)/cores))
-		if exclusion, over := buildLoadCeiling(*v.CPUCount, math.Max(*v.Load1, *v.Load5), demand, p); over {
+		// Only complete telemetry may exclude on load; partial telemetry
+		// still informs the score.
+		if exclusion, over := buildLoadCeiling(*v.CPUCount, math.Max(*v.Load1, *v.Load5), demand, p); over && e.State == "known" {
 			exclusions = append(exclusions, exclusion)
 		}
 	}
