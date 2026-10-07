@@ -3,6 +3,7 @@ package workerruntime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,6 +91,62 @@ func TestResultDurableStillRefusesFutureAuthority(t *testing.T) {
 	}
 	if durable, err := store.ResultDurable(pkg); err == nil || durable {
 		t.Fatalf("store accepted a package from a future epoch: durable=%v err=%v", durable, err)
+	}
+}
+
+// Accepting an earlier coordinator epoch relaxes nothing else: an earlier-epoch
+// receipt for another assignment epoch, or with rehashed foreign custody
+// endpoints, is still ambiguous custody after the refresh.
+func TestResultDurableRefusesAnEarlierEpochReceiptWithAForeignBinding(t *testing.T) {
+	for _, mutation := range []string{"assignment-epoch", "worker-endpoint", "coordinator-endpoint"} {
+		t.Run(mutation, func(t *testing.T) {
+			root := t.TempDir()
+			old := testCustodyStore(t, root, func() time.Time { return runtimeTestNow })
+			pkg := testPackage()
+			if err := old.PublishResult(context.Background(), pkg, PublishedResult{FinalMessage: "done", ThreadArchive: []byte("{}")}); err != nil {
+				t.Fatal(err)
+			}
+			p, err := old.PendingUploadByPurpose("result")
+			if err != nil || p == nil {
+				t.Fatal(err)
+			}
+			switch mutation {
+			case "assignment-epoch":
+				p.Manifest.AssignmentEpoch++
+			case "worker-endpoint":
+				for i := range p.Custody {
+					p.Custody[i].From = "worker:foreign"
+				}
+			case "coordinator-endpoint":
+				for i := range p.Custody {
+					p.Custody[i].To = "outbox:foreign"
+				}
+			}
+			previous := ""
+			for i := range p.Custody {
+				p.Custody[i].PreviousSHA256 = previous
+				if p.Custody[i], err = workerproto.BuildCustodyRecord(p.Custody[i]); err != nil {
+					t.Fatal(err)
+				}
+				previous = p.Custody[i].RecordSHA256
+			}
+			raw, err := json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := resultReceiptPath(t, old, "outbox")
+			if err := os.Chmod(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			next := reopenCustodyAtEpoch(t, old, old.config.CoordinatorEpoch+1)
+			pkg.CoordinatorEpoch++
+			if durable, err := next.ResultDurable(pkg); err == nil || durable {
+				t.Fatalf("earlier-epoch receipt with a foreign %s accepted: durable=%v err=%v", mutation, durable, err)
+			}
+		})
 	}
 }
 
