@@ -95,6 +95,9 @@ func (h *CatalogHost) activate(ctx context.Context, c retainedCatalog) error {
 	if err != nil {
 		return err
 	}
+	// The result secret scan is worker-local policy that no catalog carries;
+	// it is kept from the host's own options.
+	settings.ResultSecretScan = h.Options.Settings.ResultSecretScan
 	options := h.Options
 	if options.RuntimeIdentity != nil {
 		identity := *options.RuntimeIdentity
