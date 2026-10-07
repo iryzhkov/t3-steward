@@ -178,13 +178,13 @@ func (c campaignCLI) collectRefusal(ctx context.Context, run string, err error) 
 	// The hint is advice read after the refusal; failing to read it must not
 	// replace the refusal itself.
 	if tasks, listErr := c.notify(ctx, backlogadmin.NodeWaitOperation{Action: "list-task"}); listErr == nil {
-		for _, a := range openWaitAttention(run, tasks.TaskWaits) {
-			if a.Kind == "ask" {
-				hint = "Its attention clears when the ask is answered: t3-steward ask answer " + a.Subject + " --option ..."
+		// The oldest open question is the one to answer first.
+		if open := openWaitAttention(run, tasks.TaskWaits); len(open) > 0 {
+			if open[0].Kind == "ask" {
+				hint = "Its attention clears when the ask is answered: t3-steward ask answer " + open[0].Subject + " --option ..."
 			} else {
-				hint = "Its attention clears when the request is decided: t3-steward wait inspect " + a.Subject
+				hint = "Its attention clears when the request is decided: t3-steward wait inspect " + open[0].Subject
 			}
-			break
 		}
 	}
 	return fmt.Errorf("%w. %s", err, hint)
