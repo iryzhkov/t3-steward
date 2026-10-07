@@ -53,7 +53,7 @@ func insertScheduledRunAttemptsTx(ctx context.Context, tx *sql.Tx, run domain.Wo
 			progress = domain.ProgressBlocked
 		}
 		attempt := domain.Attempt{
-			ID: "attempt:" + run.ID + ":" + task.ID + ":1", WorkflowRunID: run.ID, TaskID: task.ID,
+			ID: domain.ScheduledAttemptID(run.ID, task.ID), WorkflowRunID: run.ID, TaskID: task.ID,
 			Number: 1, Revision: 1, Progress: progress, Control: domain.ControlUnassigned, UpdatedAt: now,
 		}
 		if err := upsertJSON(ctx, tx, "scheduled attempt", attempt.ID,

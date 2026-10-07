@@ -334,6 +334,8 @@ after the record has been pruned is refused by the rerun itself, which reads the
 artifact before it creates anything, rather than failing hours later in
 preparation.
 
+See [Path-safe coordinator identities](safe-identities.md) for ID derivation and compatibility with existing records.
+
 On every coordinator boundary, after the projection has advanced the sinks, the
 refs of every run whose provenance records retention has removed are released
 together. A run whose sink is not yet terminal is never released, which covers

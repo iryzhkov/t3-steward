@@ -84,7 +84,7 @@ func (s *Service) AmendGraph(ctx context.Context, p Principal, r domain.GraphAme
 		canonical.Source = obs.Target.String()
 	}
 	now := s.now().UTC()
-	taskID, promptID := "task:graph:"+r.ID, "input:graph:"+r.ID
+	taskID, promptID := domain.GraphTaskID(r.ID), domain.GraphPromptInputID(r.ID)
 	tasks, err := domain.AmendTasks(canonical, run, records.Tasks, taskID, promptID)
 	if err != nil {
 		return result, err

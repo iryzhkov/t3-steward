@@ -54,10 +54,10 @@ func (s *Service) rerunGraph(
 	if err = json.Unmarshal(raw, &tasks); err != nil {
 		return result, err
 	}
-	runID := "run:rerun:" + r.ID
+	runID := domain.RerunRunID(r.ID)
 	idMap := map[string]string{}
 	for index, task := range tasks {
-		idMap[task.ID] = fmt.Sprintf("task:rerun:%s:%d", r.ID, index)
+		idMap[task.ID] = domain.RerunTaskID(r.ID, index)
 	}
 	builder := rerunReferences{service: s, request: r, source: source, runID: runID, records: records}
 	for index := range tasks {
@@ -67,7 +67,7 @@ func (s *Service) rerunGraph(
 		task.RunID = runID
 		task.DefinitionRevision = 1
 		if sourceTaskID == scope.From.ID && r.Prompt != "" {
-			promptID := "input:rerun:" + r.ID + ":prompt"
+			promptID := domain.RerunPromptInputID(r.ID)
 			prompt, prepareErr := backlog.PrepareGraphInput(s.graphInputRoot, promptID, runID, task.ID, r.Prompt, s.now().UTC())
 			if prepareErr != nil {
 				return result, prepareErr
@@ -288,7 +288,7 @@ func (b *rerunReferences) reference(ctx context.Context, artifactID, taskID stri
 	if artifact.WorkflowRunID != b.source.ID {
 		return "", fmt.Errorf("rerun input %s is outside the source run's custody", artifactID)
 	}
-	referenced := fmt.Sprintf("input:rerun:%s:%d", b.request.ID, len(b.inputs))
+	referenced := domain.RerunInputID(b.request.ID, len(b.inputs))
 	artifact.ID = referenced
 	artifact.WorkflowRunID = b.runID
 	artifact.AttemptID = ""

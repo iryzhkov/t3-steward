@@ -106,7 +106,7 @@ func amendmentCommit(t *testing.T, store *Store, run domain.WorkflowRun, request
 	if err != nil {
 		t.Fatal(err)
 	}
-	taskID, promptID := "task:graph:"+request.ID, "input:graph:"+request.ID
+	taskID, promptID := domain.GraphTaskID(request.ID), domain.GraphPromptInputID(request.ID)
 	tasks, err := domain.AmendTasks(request, run, records.Tasks, taskID, promptID)
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestAmendmentWidensBranchHoldToNewDescendant(t *testing.T) {
 		t.Fatalf("expected the one hold to survive: %#v", projection.Holds)
 	}
 	hold := projection.Holds[0]
-	added := "task:graph:widen"
+	added := domain.GraphTaskID("widen")
 	if hold.State != domain.HoldActive || hold.GraphRevision != 2 {
 		t.Fatalf("hold did not move onto the amended graph: %#v", hold)
 	}
@@ -437,7 +437,7 @@ func TestCloneInheritsSupervisionConfigurationWithoutAcceptances(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	cloneRunID := "run:clone:cloned"
+	cloneRunID := domain.CloneRunID("cloned")
 	tasks, inputs, remap := clonedTasks("clone", cloneRunID, sourceTasks)
 	result, err := store.CommitGraphClone(ctx, GraphCommit{
 		Request: domain.GraphAmendment{
@@ -500,7 +500,7 @@ func TestRerunInheritsSupervisionConfigurationWithoutHoldsOrIncidents(t *testing
 	}
 	seedSupervisionHoldRow(t, store, run.ID, "hold-1")
 	seedSupervisionIncidentRow(t, store, run.ID, "incident-1")
-	rerunRunID := "run:rerun:again"
+	rerunRunID := domain.RerunRunID("again")
 	tasks, inputs, remap := clonedTasks("rerun", rerunRunID, sourceTasks)
 	result, err := store.CommitGraphRerun(ctx, GraphCommit{
 		Request: domain.GraphAmendment{
