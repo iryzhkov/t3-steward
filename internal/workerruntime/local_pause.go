@@ -46,12 +46,12 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		// It is marked recovered, so a later episode does not inherit it.
 		return r.markLocalPauseRecovered(id, record, now)
 	}
-	// The intent of an episode that has since recovered, or of a bucket that
-	// no longer governs, still owns a late stop of its turn, but its notice
-	// says nothing about this episode: the pause starts over from first
-	// contact, with its own notice and its own escalation window.
+	// The intent of an episode that has since ended still owns a late stop of
+	// its turn, but its notice says nothing about this episode: the pause
+	// starts over from first contact, with its own notice and its own
+	// escalation window.
 	prior := record.LocalThrottle
-	if prior != nil && (prior.RecoveredAt != nil || prior.Bucket != pause.Bucket) {
+	if prior != nil && quotaEpisodeEnded(*prior, pause, now) {
 		r.log.Info("new quota episode for an attempt with an earlier drain intent; the pause starts over", "assignment", id,
 			"thread", record.Package.Package.Identity.ThreadID, "bucket", pause.Bucket.String(), "earlier_bucket", prior.Bucket.String(),
 			"recovered", prior.RecoveredAt != nil)
@@ -180,6 +180,27 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		return nil
 	}
 	return r.markLocalPauseStopped(ctx, id, nil)
+}
+
+// quotaEpisodeEnded reports whether the pause in force belongs to an earlier
+// quota episode than the one now governing the route.
+func quotaEpisodeEnded(prior LocalThrottleRequest, pause QuotaPause, now time.Time) bool {
+	switch {
+	case prior.RecoveredAt != nil:
+		// A pass saw the bucket recover while the thread kept working.
+		return true
+	case prior.ResetsAt != nil && !prior.ResetsAt.After(now):
+		// Its window reset, whether or not a pass saw the recovery (a failed
+		// read, a worker that was down, or a rollback that dropped the mark).
+		return true
+	case prior.Bucket != pause.Bucket:
+		// A delivered notice answers for its own bucket only. An undelivered
+		// notice or a stop already decided carries over with its request
+		// time, so a change of governing bucket cannot postpone the stop.
+		return prior.Kind == domain.ThrottleCommandDrain && prior.drainNoticeDelivered()
+	default:
+		return false
+	}
 }
 
 // markLocalPauseRecovered records, once, that the bucket of a drain intent

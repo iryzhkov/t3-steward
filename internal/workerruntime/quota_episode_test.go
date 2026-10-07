@@ -2,6 +2,7 @@ package workerruntime
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -73,6 +74,113 @@ func TestQuotaNewEpisodeGetsItsOwnNoticeWindow(t *testing.T) {
 				t.Fatalf("new episode did not escalate after its window: notices=%d stops=%d", d.notices, d.stopCalls)
 			}
 		})
+	}
+}
+
+type erroringQuotaGuard struct {
+	*fakeQuotaGuard
+	err error
+}
+
+func (g *erroringQuotaGuard) PauseRequired(ctx context.Context, route domain.ProviderRoute) (QuotaPause, bool, error) {
+	if g.err != nil {
+		return QuotaPause{}, false, g.err
+	}
+	return g.fakeQuotaGuard.PauseRequired(ctx, route)
+}
+
+// A recovery no pass observed, here because every read failed while the
+// bucket was healthy, still ends the episode once its window has reset: the
+// next window of the same bucket sends its own notice.
+func TestQuotaEpisodeEndsWhenItsWindowResetsUnobserved(t *testing.T) {
+	now := runtimeTestNow
+	base := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true}
+	inner := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
+	guard := &erroringQuotaGuard{fakeQuotaGuard: inner}
+	r := runningRuntime(t, base, guard, &now)
+	r.config.PauseEscalation = 30 * time.Second
+	d := &retryNoticeDriver{&watchdogDrainDriver{fakeDriver: base, state: backlog.DispatchThreadActive}}
+	r.driver = d
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	guard.err = errors.New("quota store locked")
+	now = now.Add(3 * time.Hour) // past the paused window's reset
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	guard.err = nil
+	reset := now.Add(5 * time.Hour)
+	inner.pause.ResetsAt = &reset
+	inner.pause.ObservedAt = now
+	inner.pause.Phase = domain.PhaseDraining
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	inner.pause.Phase = domain.PhaseStopped
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if d.stopCalls != 0 || d.notices != 2 {
+		t.Fatalf("new window of the same bucket reused the old episode's notice: notices=%d stops=%d", d.notices, d.stopCalls)
+	}
+}
+
+// A stop already decided is not demoted to a fresh notice when another
+// stopped bucket takes over: the failed stop is retried.
+func TestQuotaDecidedStopSurvivesBucketChange(t *testing.T) {
+	now := runtimeTestNow
+	base := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true}
+	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
+	r := runningRuntime(t, base, guard, &now)
+	r.config.PauseEscalation = 30 * time.Second
+	d := &retryNoticeDriver{&watchdogDrainDriver{fakeDriver: base, state: backlog.DispatchThreadActive}}
+	r.driver = d
+	if err := r.Reconcile(context.Background()); err != nil { // notice
+		t.Fatal(err)
+	}
+	base.stopErr = errors.New("t3 unreachable")
+	now = now.Add(31 * time.Second)
+	if err := r.Reconcile(context.Background()); err != nil { // escalated stop fails
+		t.Fatal(err)
+	}
+	if d.stopCalls != 1 {
+		t.Fatalf("setup: stops=%d", d.stopCalls)
+	}
+	base.stopErr = nil
+	guard.pause.Bucket = domain.BucketKey{ProviderInstanceID: "codex", LimitID: "codex", Window: "weekly"}
+	now = now.Add(time.Second)
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if d.stopCalls != 2 || d.notices != 1 {
+		t.Fatalf("failed stop was not retried after the governing bucket changed: notices=%d stops=%d", d.notices, d.stopCalls)
+	}
+}
+
+// An undelivered notice is no episode of its own: when the governing bucket
+// changes, the request keeps its time and still escalates.
+func TestQuotaUndeliveredNoticeEscalatesAcrossBucketChanges(t *testing.T) {
+	now := runtimeTestNow
+	base := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true}
+	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
+	r := runningRuntime(t, base, guard, &now)
+	r.config.PauseEscalation = 30 * time.Second
+	d := &retryNoticeDriver{&watchdogDrainDriver{fakeDriver: base, state: backlog.DispatchThreadActive, noticeErr: errors.New("send failed")}}
+	r.driver = d
+	other := domain.BucketKey{ProviderInstanceID: "codex", LimitID: "codex", Window: "weekly"}
+	for i := 0; i < 20 && d.stopCalls == 0; i++ {
+		guard.pause.Bucket = sevenDay
+		if i%2 == 1 {
+			guard.pause.Bucket = other
+		}
+		if err := r.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Minute)
+	}
+	if d.stopCalls == 0 {
+		t.Fatalf("undeliverable notice never escalated across bucket changes: notices=%d stops=%d", d.notices, d.stopCalls)
 	}
 }
 

@@ -80,9 +80,11 @@ Must:
    A later pass observes the stop and reads optional checkpoint evidence; a missing checkpoint
    file still records the pause. A queued notice's intent survives quota recovery while the
    turn remains active; its later stop is still a pause. The kept intent is marked recovered,
-   and its notice is no evidence for a later episode: when the bucket drains again, or a
-   different bucket governs the route, the pause starts over with its own notice and its own
-   escalation window. Missing or failed stopped-turn identity
+   and its notice is no evidence for a later episode. When the bucket drains again, when the
+   paused window has reset (even if no pass saw the recovery), or when a different bucket
+   governs the route after a delivered notice, the pause starts over with its own notice and
+   its own escalation window. An undelivered notice or a stop already decided carries over a
+   change of governing bucket with its request time, so the change cannot postpone the stop. Missing or failed stopped-turn identity
    lookups defer completion and resume until the worker can fence the stopped turn.
    If a thread ended during a host drain before the worker recorded
    a request, it is parked with reason `turn ended during a host quota drain`. An explicit
