@@ -50,6 +50,12 @@ func (m5RuntimeDriver) Warn(context.Context, workerproto.ExecutionPackage, domai
 func (m5RuntimeDriver) Checkpoint(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) (*domain.CheckpointMetadata, error) {
 	return nil, nil
 }
+func (m5RuntimeDriver) RequestQuotaDrain(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error {
+	return nil
+}
+func (m5RuntimeDriver) ReadQuotaCheckpoint(context.Context, workerproto.ExecutionPackage) (*domain.CheckpointMetadata, error) {
+	return nil, nil
+}
 func (m5RuntimeDriver) Resume(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error {
 	return nil
 }
