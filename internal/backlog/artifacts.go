@@ -230,6 +230,17 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if copyErr != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", output.declaration.Name, copyErr)
 		}
+		if gatedCommit != "" {
+			// A process left behind by a gate command can rewrite a tracked
+			// output after the gate's checks, so what was captured must be the
+			// gated commit's content.
+			if reason, checkErr := gatedOutputMatches(ctx, request.WorkspaceDir, gatedCommit, output.relative,
+				filepath.Join(stageDir, "artifacts", "outputs", output.declaration.Name)); checkErr != nil {
+				return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", output.declaration.Name, checkErr)
+			} else if reason != "" {
+				failures = append(failures, fmt.Sprintf("declared output %q %s", output.declaration.Name, reason))
+			}
+		}
 		media := output.declaration.MediaType
 		if media == "" {
 			media = mediaType(output.declaration.Name)

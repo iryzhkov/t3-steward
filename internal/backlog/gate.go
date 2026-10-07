@@ -289,6 +289,29 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	return report, rawLog, nil
 }
 
+// gatedOutputMatches reports why a captured declared output that is a regular
+// file tracked in the gated commit differs from that commit's content, or ""
+// when it matches or is not tracked there.
+func gatedOutputMatches(ctx context.Context, workspace, commit, relative, captured string) (string, error) {
+	entry, err := gateGit(ctx, workspace, "ls-tree", "-z", commit, "--", filepath.ToSlash(relative))
+	if err != nil {
+		return "", err
+	}
+	meta, _, found := strings.Cut(strings.TrimSuffix(entry, "\x00"), "\t")
+	fields := strings.Fields(meta)
+	if !found || len(fields) != 3 || fields[1] != "blob" || (fields[0] != "100644" && fields[0] != "100755") {
+		return "", nil
+	}
+	got, err := gateGit(ctx, workspace, "hash-object", "--no-filters", "--", captured)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(got) != fields[2] {
+		return "changed after the gate: it differs from the gated commit " + commit, nil
+	}
+	return "", nil
+}
+
 func gateDeclaresCommit(req AttemptFinalization) bool {
 	return slices.ContainsFunc(req.Task.Outputs, func(output domain.ArtifactDeclaration) bool { return output.Commit != nil })
 }

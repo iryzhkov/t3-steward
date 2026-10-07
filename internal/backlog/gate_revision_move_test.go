@@ -128,6 +128,89 @@ func TestCampaignRefPublishIgnoresWorkspaceHooksAndRedirects(t *testing.T) {
 	}
 }
 
+// gateBackgroundChild returns a gate command that passes and leaves a child
+// running action once the gate has passed (its cache record is written after
+// the final checks), then creating done.
+func gateBackgroundChild(cache, action, done string) string {
+	child := fmt.Sprintf(`(until ls %q/*.json >/dev/null 2>&1; do :; done; %s; touch %q) >/dev/null 2>&1 </dev/null &`, cache, action, done)
+	return "grep -qx source source.txt && { " + child + " }"
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background child did not finish: %s", path)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A child left by a gate command rewrote a tracked declared file output after
+// the gate's checks; the passing gate attested one tree and the captured
+// output came from another.
+func TestGateBackgroundChildCannotRewriteTrackedOutput(t *testing.T) {
+	dir := h2GateRepository(t)
+	storage := t.TempDir()
+	done := filepath.Join(t.TempDir(), "done")
+	req := h2GateRequest(dir, "background-output")
+	rewrite := `i=0; while [ $i -lt 400 ]; do echo bad > .s.tmp && mv .s.tmp source.txt; i=$((i+1)); done`
+	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild(filepath.Join(storage, "gate-cache"), rewrite, done)}, Timeout: 5 * time.Second}
+	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "source.txt"}}
+	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, done)
+	cleanupImmutable(t, result.StorageDir)
+	for _, a := range result.Artifacts {
+		if a.Name != "source.txt" {
+			continue
+		}
+		got := strings.TrimSpace(string(readStoredArtifact(t, storage, a)))
+		if got != "source" && result.Completion.VerificationPassed {
+			t.Fatalf("verification passed with captured source.txt=%q, not the gated tree's content", got)
+		}
+		if got != "source" && !strings.Contains(result.Completion.Failure, "changed after the gate") {
+			t.Fatalf("failure does not name the changed output: %q", result.Completion.Failure)
+		}
+		return
+	}
+	t.Fatalf("no output captured: %+v", result.Completion)
+}
+
+// A child left by a gate command moved the declared revision after the gate's
+// checks; publication is pinned to the gated commit and refuses it.
+func TestGateBackgroundChildCannotMoveDeclaredRevision(t *testing.T) {
+	dir := h2GateRepository(t)
+	base := gateBindingGit(t, dir, "rev-parse", "HEAD")
+	writeTestFile(t, dir, "source.txt", "bad")
+	h2Commit(t, dir)
+	bad := gateBindingGit(t, dir, "rev-parse", "HEAD")
+	gateBindingGit(t, dir, "checkout", "-q", "--detach", base)
+	gateBindingGit(t, dir, "branch", "work", base)
+	storage := t.TempDir()
+	done := filepath.Join(t.TempDir(), "done")
+	req := h2GateRequest(dir, "background-ref")
+	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild(filepath.Join(storage, "gate-cache"), "git update-ref refs/heads/work "+bad, done)}, Timeout: 5 * time.Second}
+	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "handoff", Commit: &domain.CommitOutput{Revision: "work"}}}
+	req.Repository, req.BaseCommit = dir, base
+	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}
+	result, err := (AttemptFinalizer{StorageRoot: storage, CampaignRefs: refs, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, done)
+	cleanupImmutable(t, result.StorageDir)
+	if p, err := refs.Resolve(req.Attempt.WorkflowRunID, req.Task.ID, "handoff"); err == nil && p.Commit != base {
+		t.Fatalf("published %s, not the gated commit %s", p.Commit, base)
+	}
+}
+
 // Publication is pinned to the gated commit, so a declared revision that
 // moves after the gate's own checks still cannot publish another commit.
 func TestCampaignRefPublishRefusesCommitOtherThanGated(t *testing.T) {
