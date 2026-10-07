@@ -24,6 +24,7 @@ inputs:
 routes: []
 tasks:
     implement:
+        review_output: null
         review_requirements: null
         directories: []
         class: ""
@@ -40,6 +41,7 @@ tasks:
         verify:
             - go test ./...
             - git diff --check
+        gate: null
         placement:
             hosts: []
             requires: []
@@ -68,6 +70,7 @@ tasks:
         deadline: null
         expires_at: null
     review:
+        review_output: null
         review_requirements: null
         directories: []
         class: ""
@@ -84,6 +87,7 @@ tasks:
             - review.md
         commits: []
         verify: []
+        gate: null
         placement:
             hosts: []
             requires: []
