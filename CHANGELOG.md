@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.117] - 2026-10-07
+
 Database migrations V39 and V42 (schema 37 to 42). Every new worker
 behaviour below is gated by a capability the peer advertises, so rc.115 and
 rc.116 workers keep running ordinary tasks against this coordinator; tasks
