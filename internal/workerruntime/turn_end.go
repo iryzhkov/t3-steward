@@ -190,8 +190,9 @@ func (r *Runtime) failLiveCommands(ctx context.Context, id string, record Attemp
 	retained, err := inspector.SnapshotWorkInProgress(ctx, pkg, record.WorkspacePath)
 	if err != nil {
 		// The snapshot error quotes Git, which may name a credential. It is
-		// checked whole, before it is logged or the reason is shortened.
-		retained = "wip.bundle not retained: " + r.checkedText(ctx, id, pkg, err.Error())
+		// checked whole, before it is logged or the reason is shortened, and
+		// only then bounded, since Git's standard error has no limit.
+		retained = truncateText("wip.bundle not retained: "+r.checkedText(ctx, id, pkg, err.Error()), maxLiveCommandFailure)
 	}
 	listed := make([]string, 0, len(commands))
 	for index, command := range commands {

@@ -90,18 +90,21 @@ func (failingRedactTurnEndDriver) RedactFailure(context.Context, workerproto.Exe
 // error in its reason and its warning. The error is redacted before the
 // warning is logged and before the reason is shortened, so neither the log
 // nor the recorded failure carries the credential or a prefix of it; with no
-// scanner the error is withheld.
+// scanner the error is withheld. However long Git's standard error is, the
+// warning quotes a bounded part of it.
 func TestLiveCommandsSnapshotErrorIsRedactedBeforeItIsLogged(t *testing.T) {
 	secret := "synthetic-execution-credential-" + strings.Repeat("q", 50)
-	snapshotErr := fmt.Errorf("read working tree status: git status: exit status 128: fatal: Invalid path '%s/%s': No such file or directory", strings.Repeat("p", 1960), secret)
 	for _, tc := range []struct {
 		name        string
+		padding     int
 		unavailable bool
 	}{
-		{name: "redacted"},
-		{name: "scanner unavailable", unavailable: true},
+		{name: "redacted", padding: 1960},
+		{name: "scanner unavailable", padding: 1960, unavailable: true},
+		{name: "huge error", padding: 4 << 20},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			snapshotErr := fmt.Errorf("read working tree status: git status: exit status 128: fatal: Invalid path '%s/%s': No such file or directory", strings.Repeat("p", tc.padding), secret)
 			root := t.TempDir()
 			inner := &turnEndDriver{
 				fakeDriver: &fakeDriver{workspace: filepath.Join(root, "workspace"), workspaceReady: true},
@@ -150,6 +153,9 @@ func TestLiveCommandsSnapshotErrorIsRedactedBeforeItIsLogged(t *testing.T) {
 			record := mustRecord(t, runtime, "assignment-1")
 			if record.Phase != PhaseFailed && record.Phase != PhaseCompleted {
 				t.Fatalf("phase = %q, want the attempt failed", record.Phase)
+			}
+			if logs.Len() > 64<<10 {
+				t.Fatalf("the worker log quotes an unbounded snapshot error: %d bytes", logs.Len())
 			}
 			if strings.Contains(logs.String(), secret[:30]) {
 				t.Fatalf("the worker log carries the credential:\n%s", logs.String())
