@@ -28,15 +28,23 @@ after release or expiry increments the token; renew retains it.
 Inspect with `lease show NAME --json` or `lease list --json`.
 Every verb accepts `--json`. Check returns 0 when your thread holds the live
 lease, 10 when another thread holds it, and 11 when free or expired.
-Mutation conflicts and wrong fencing tokens return 10. Coordinator transport
+Mutation conflicts, wrong fencing tokens and principals without coordinator
+admin authority return 10. Coordinator transport
 failures retain exits 3–8: publish scripts must proceed only on exit 0.
 An older coordinator reports that leases are unsupported and needs upgrading.
 
 Mutation requests have generated replay IDs. Supply and retain
 `--request-id KEY` to retry a lost answer; a different request under the same
-ID is refused. For recovery, `lease release NAME --force --reason TEXT` records
+ID is refused. The first answer for an ID, including a refusal or an error, is
+replayed, so after an error answer retry with a new `--request-id`. A replayed
+grant whose lease has since expired is reported as a refusal (exit 10). For recovery, `lease release NAME --force --reason TEXT` records
 the forcing thread and authenticated principal. Task-scoped supervisor
 principals cannot mutate leases.
+
+The holder is a thread id, not a credential: renew, release and check compare
+the thread and token, which `show` and `list` print, and not the principal that
+acquired the lease. Leases coordinate cooperating sessions that already hold
+coordinator admin authority; they are not an authorization boundary between them.
 
 These leases provide a scriptable fence. Automatic Git hooks, publish-skill and
 UpKeeper enforcement, resource-lock dispatch, deployment windows and expiry

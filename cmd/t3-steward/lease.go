@@ -29,13 +29,15 @@ same repository at once.
   --plan TEXT          Plan reference, up to 256 characters.
   --reason TEXT        Required for acquire and forced release.
   --force              Release another holder's lease, audited by thread/principal.
-  --request-id KEY     Mutation replay key; generated if omitted, reuse on retry.
+  --request-id KEY     Mutation replay key; generated if omitted. Reuse it when no
+                       answer arrived. The first answer for a key is replayed, so
+                       after an error answer, retry with a new --request-id.
   --json               Print one JSON response, including a refusal.
 
 Acquire a lease before integrating or releasing; check immediately before pushing
 main or upkeeper push, and release afterward. Same-holder acquire returns the
 existing token without extending expiry. A fresh acquire increments the token.
-Exit 0: success/held by caller; 10: conflict or fencing refusal;
+Exit 0: success/held by caller; 10: conflict, fencing or authority refusal;
 11: check found free/expired. Transport failures retain exits 3..8 and fail closed.
 Show/list/check are reads. deploy: names are reserved and refused.
 An older coordinator must be upgraded before it can serve leases.
@@ -45,6 +47,8 @@ type leaseCLI struct {
 	stdout   io.Writer
 	resolve  func(string) (string, error)
 	exchange func(context.Context, domain.LeaseRequest) (domain.LeaseResponse, error)
+	// now judges whether a replayed grant is still live; time.Now when nil.
+	now func() time.Time
 }
 
 func cmdLease(g globalFlags, args []string) error {
@@ -170,6 +174,17 @@ func (c leaseCLI) run(ctx context.Context, args []string) error {
 	response, err := c.exchange(ctx, req)
 	if err != nil {
 		return err
+	}
+	// The coordinator replays the first answer for a request id verbatim. A
+	// replayed grant whose lease has since expired no longer means the caller
+	// holds it: the name may already belong to another thread.
+	now := time.Now
+	if c.now != nil {
+		now = c.now
+	}
+	if response.Replay && response.Code == 0 && (req.Action == "acquire" || req.Action == "renew") && response.Lease != nil && !response.Lease.Live(now()) {
+		response.Code = 10
+		response.Message = fmt.Sprintf("refused: replayed answer for request id %s granted token %d until %s, which has expired; %s again with a new --request-id", req.RequestID, response.Lease.Token, response.Lease.ExpiresAt.UTC().Format(time.RFC3339), req.Action)
 	}
 	if asJSON {
 		if err := json.NewEncoder(c.stdout).Encode(response); err != nil {

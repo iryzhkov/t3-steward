@@ -24,8 +24,16 @@ func TestLeaseShortHelpKeepsUsageOptionsAndVerdictExits(t *testing.T) {
 	if !strings.Contains(short, "Options:\n  --config; --owner-thread; --ttl") {
 		t.Fatalf("options list missing:\n%s", short)
 	}
-	if !strings.Contains(short, "Exit: 0 held by caller or done; 10 conflict or fencing refusal; 11 check found") || strings.Contains(short, "Exit: 0 accepted/done; nonzero refused or failed.") {
+	if !strings.Contains(short, "Exit: 0 held by caller or done; 10 conflict, fencing or authority refusal;") || strings.Contains(short, "Exit: 0 accepted/done; nonzero refused or failed.") {
 		t.Fatalf("exit line omits lease verdicts:\n%s", short)
+	}
+	// Self-review: authority refusals also answer 10, and an error answer is
+	// replayed for the same request id, so a retry after one needs a new id.
+	if !strings.Contains(short, "10 conflict, fencing or authority refusal") {
+		t.Fatalf("exit line omits authority refusals:\n%s", short)
+	}
+	if !strings.Contains(page.Body, "after an error answer, retry with a new --request-id") {
+		t.Fatalf("full reference omits request-id retry rule:\n%s", page.Body)
 	}
 	for _, line := range []string{
 		"  --owner-thread ID    Holder thread, default current; resolves the calling T3 thread.\n",
