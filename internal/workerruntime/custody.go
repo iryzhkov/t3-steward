@@ -568,6 +568,16 @@ func (s *CustodyStore) PublishContinuation(ctx context.Context, pkg workerproto.
 	if objects[0].SHA256 != checkpoint.SHA256 || objects[0].Size != checkpoint.Size {
 		return errors.New("publish continuation checkpoint: the snapshot does not match its checkpoint")
 	}
+	// The task wrote continuation.md, and the snapshot reaches the
+	// coordinator while the attempt runs, so it passes the same scan as every
+	// other checkpoint; a refused snapshot stays on the worker.
+	scanner, _, err := s.executionScanner(ctx, pkg)
+	if err != nil {
+		return err
+	}
+	if err := scanner.scan(objects[0].Path, "checkpoint", bytes.NewReader(snapshot.Data)); err != nil {
+		return err
+	}
 	for index, data := range [][]byte{snapshot.Data, raw} {
 		if err := s.storeObject(bytes.NewReader(data), objects[index]); err != nil {
 			return fmt.Errorf("publish continuation checkpoint: %w", err)

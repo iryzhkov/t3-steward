@@ -1116,7 +1116,18 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		d.retainWorkInProgress(ctx, pkg, workspace)
 		result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	}
-	if err := d.Publisher.PublishResult(ctx, pkg, result); err != nil {
+	publishErr := d.Publisher.PublishResult(ctx, pkg, result)
+	var refused *SecretScanError
+	if result.Continuation != nil && errors.As(publishErr, &refused) && !refused.retryable() &&
+		refused.Object == "results/"+domain.ContinuationArtifactName {
+		// The checkpoint is optional evidence and never costs a result its
+		// publication: a snapshot the secret scan refuses stays on the worker.
+		d.logger().Warn("the continuation checkpoint was refused by the result secret scan; the result goes without it",
+			"attempt", pkg.Identity.AttemptID, "detector", refused.Detector, "byte_offset", refused.Offset, "fingerprint", refused.Fingerprint)
+		result.Continuation = nil
+		publishErr = d.Publisher.PublishResult(ctx, pkg, result)
+	}
+	if err := publishErr; err != nil {
 		var size *workerproto.ArtifactSizeError
 		if errors.As(err, &size) {
 			return &permanentCollectionFailure{size: size}
