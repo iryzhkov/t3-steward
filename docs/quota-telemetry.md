@@ -17,8 +17,10 @@ every 30 seconds it appends to its own SQLite file:
 <directory of the state database>/quota-telemetry/recorder.sqlite
 ```
 
-The directory is created 0700 and the file 0600, in write-ahead-log mode. Only
-the recorder creates or writes it. Nothing else depends on it, and it is not
+The directory is created 0700 (an existing one loses any group and other
+access) and the file 0600, in write-ahead-log mode. A symlink in place of the
+directory or the file is refused, not followed. Only the recorder creates or
+writes it. Nothing else depends on it, and it is not
 part of coordinator backups: a lost or deleted file is recreated on the next
 tick, with a new `recorder` `started` event that marks where coverage begins.
 
@@ -46,7 +48,9 @@ t3-steward quota telemetry [--since DUR|RFC3339] [--route TEXT] [--pool ID] [--k
 - `--limit`: keep the newest N matching events, 1 to 10,000, default 200; they
   print oldest first.
 
-The command opens the file read-only and never creates it. On a host without
+The command opens the file read-only and never creates it or its sidecar
+files: when the recorder is not running (no `-wal` or `-shm` file), the file
+is read as immutable. On a host without
 the file it exits 1 with "no quota telemetry store at PATH; the recorder runs
 inside the coordinator, so run this on the coordinator host (for example: ssh
 <coordinator-host> t3-steward quota telemetry)". A file written by a newer
@@ -74,7 +78,12 @@ TIME  KIND  ROUTE  EFFORT  TYPE(derived)  TASK  DURATION  DETAIL
 
 Dispatch is not start: the time between them is `dispatchToStartMs` on the
 start event. A retry is a new assignment with its own dispatch, start and
-finish. An attempt parked on an external wait keeps its assignment open; its
+finish. An assignment offered again keeps its id at a later epoch; each
+epoch has its own events, keyed `assignment:epoch`. The earlier epoch ends
+with outcome `superseded` at the later epoch's offer, records no checks, and
+takes its route and worker from the binding frozen with its own dispatch; when
+none was frozen they are left empty with `routeUnknown: true`, never copied
+from the later epoch. An attempt parked on an external wait keeps its assignment open; its
 finish comes when the attempt ends.
 
 ## JSON schema
@@ -107,8 +116,10 @@ finish comes when the attempt ends.
   quotaPoolId}`, `executionRole`, `taskType`, `dispatchedAt`, `startedAt`,
   `finishedAt`, `dispatchToStartMs`, `durationMs` and `outcome`.
 - `check` (with `work`): `stage` (`verification` or `gate`), `index`,
-  `exitCode`, `startedAt`, `completedAt`, `durationMs`, `command` (cut to 256
-  bytes, with `commandTruncated`).
+  `exitCode`, `startedAt`, `completedAt`, `durationMs`, `command` (credential
+  shapes such as forge and provider tokens, `password=` values and URL
+  passwords replaced with `[redacted]`, then cut to 256 bytes, with
+  `commandTruncated`).
 - `recorder`: `state` (`started` or `gap`), `coverageFrom`, `from`, `to`,
   `failedTicks`, `lastError`, `reason`.
 
@@ -118,7 +129,7 @@ Nulls represent a missing reset, usage or timestamp; a zero is never
 substituted. `effort` is null with `effortAbsent: true` when the route names
 no effort. `durationMs` is finish minus start, wall clock with parked time
 included; model-active time is not available. It is null when the start was
-not recorded. The outcome is the attempt's progress, or `released` or
+not recorded or the finish is earlier than the start. The outcome is the attempt's progress, or `released` or
 `superseded` for an assignment that ended without its attempt. No failure text
 is stored.
 
@@ -211,7 +222,8 @@ command are not captured.
 Events older than 30 days are deleted, and beyond 500,000 rows the oldest are
 deleted. Pruning runs at recorder start and hourly, oldest first, at most
 5,000 rows per transaction and 20 transactions per pass, only in the
-telemetry file. Each event record is capped at 4 KiB (long strings are cut and
+telemetry file. Readings are most of the rows, so on a busy fleet the row cap
+can be reached before thirty days. Each event record is capped at 4 KiB (long strings are cut and
 `truncated` is set). The header's "retained from" (`store.oldestRetained`)
 makes truncation visible.
 
@@ -232,7 +244,15 @@ committed in the same transaction as the events. A restart therefore replays
 without loss or duplication. A watermark above the coordinator's highest audit
 sequence (a restored database) is reset to it and recorded as a `gap`.
 
+A coordinator row that does not decode, or names an id longer than 256 bytes,
+is skipped and counted in `skippedRecords` rather than failing every tick. A
+reading with no observation time, one before 2000 or more than a day ahead of
+the recorder's clock, or a usage that is not a finite number is skipped and
+counted in `skippedReadings` (on each tick it is seen). The failed span is
+persisted, so a restart in the middle of it still records its gap.
+
 Persistent counters in the meta table: ticks, failures, skipped readings,
-skipped check reports, last error and its time, last success, coverage start
-and the audit watermark. The read command shows them in its header and under
+skipped check reports, skipped records, last error and its time, last
+success, coverage start, the audit watermark and any failed span not yet
+recorded as a gap. The read command shows them in its header and under
 `recorder` in JSON.

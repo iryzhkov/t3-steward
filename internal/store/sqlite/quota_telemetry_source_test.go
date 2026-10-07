@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -223,5 +225,32 @@ func TestQuotaTelemetrySourcePointLoads(t *testing.T) {
 	snapshots, err := source.LoadWorkerSnapshots(ctx)
 	if err != nil || len(snapshots) != 0 {
 		t.Fatalf("worker snapshots = %+v, %v; want none", snapshots, err)
+	}
+
+	// An earlier epoch is read from the binding frozen with its dispatch.
+	first := assignment
+	first.WorkerID, first.Route.Model = "worker-0", "claude-sonnet-5-5"
+	binding, _ := json.Marshal(map[string]any{"CoordinatorID": "c", "Assignment": first})
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO coordinator_assignment_continuations(assignment_id, assignment_epoch, binding, decision)
+		VALUES (?, ?, ?, '{}')`, "assignment-1", 1, string(binding)); err != nil {
+		t.Fatal(err)
+	}
+	frozen, found, err := source.LoadAssignmentEpoch(ctx, "assignment-1", 1)
+	if err != nil || !found || frozen.WorkerID != "worker-0" || frozen.Route.Model != "claude-sonnet-5-5" {
+		t.Fatalf("frozen epoch = %+v found=%v err=%v", frozen, found, err)
+	}
+	if _, found, err := source.LoadAssignmentEpoch(ctx, "assignment-1", 2); err != nil || found {
+		t.Fatalf("unfrozen epoch found=%v err=%v", found, err)
+	}
+
+	// A row that does not decode is reported as malformed, not as an
+	// unreadable database, so a reader can skip it.
+	if _, err := store.db.ExecContext(ctx, `UPDATE coordinator_tasks SET record = '{' WHERE id = 'task-1'`); err != nil {
+		t.Fatal(err)
+	}
+	_, found, err = source.LoadTask(ctx, "task-1")
+	var malformed interface{ Malformed() bool }
+	if found || !errors.As(err, &malformed) || !malformed.Malformed() {
+		t.Fatalf("malformed task found=%v err=%v; want a MalformedRecordError", found, err)
 	}
 }

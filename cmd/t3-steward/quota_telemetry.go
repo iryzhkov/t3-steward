@@ -99,6 +99,9 @@ type quotaTelemetryOptions struct {
 	asJSON bool
 }
 
+// quotaTelemetryMaxAge bounds --since given as an age.
+const quotaTelemetryMaxAge = 3650 * 24 * time.Hour
+
 const quotaTelemetryUsage = "quota telemetry usage: t3-steward quota telemetry [--since DUR|RFC3339] [--route TEXT] [--pool ID] [--kind K[,K]] [--limit N] [--json]"
 
 // parseQuotaTelemetryArgs takes the filters and refuses anything else by name.
@@ -153,12 +156,15 @@ func parseQuotaTelemetryArgs(args []string, now time.Time) (quotaTelemetryOption
 // duration such as 6h or 90m, or a number of days such as 7d.
 func parseQuotaTelemetrySince(value string, now time.Time) (time.Time, error) {
 	if at, err := time.Parse(time.RFC3339, value); err == nil {
+		if at.Year() < 2000 || at.Year() > 2200 {
+			return time.Time{}, fmt.Errorf("--since %q is outside the years 2000 to 2200", value)
+		}
 		return at.UTC(), nil
 	}
 	var age time.Duration
 	if days, found := strings.CutSuffix(value, "d"); found {
 		count, err := strconv.Atoi(days)
-		if err != nil || count < 1 {
+		if err != nil || count < 1 || count > int(quotaTelemetryMaxAge/(24*time.Hour)) {
 			return time.Time{}, fmt.Errorf("--since needs a positive age such as 6h or 7d, or an RFC3339 time, not %q", value)
 		}
 		age = time.Duration(count) * 24 * time.Hour
@@ -168,6 +174,11 @@ func parseQuotaTelemetrySince(value string, now time.Time) (time.Time, error) {
 			return time.Time{}, fmt.Errorf("--since needs a positive age such as 6h or 7d, or an RFC3339 time, not %q", value)
 		}
 		age = parsed
+	}
+	// Retention is thirty days; an age of more than ten years reads nothing
+	// more and would overflow the arithmetic below.
+	if age > quotaTelemetryMaxAge {
+		return time.Time{}, fmt.Errorf("--since %q is longer than %d days", value, int(quotaTelemetryMaxAge/(24*time.Hour)))
 	}
 	return now.Add(-age), nil
 }
@@ -207,6 +218,7 @@ type quotaTelemetryRecorderInfo struct {
 	AuditWatermark  *int64                 `json:"auditWatermark"`
 	SkippedReadings int64                  `json:"skippedReadings"`
 	SkippedChecks   int64                  `json:"skippedChecks"`
+	SkippedRecords  int64                  `json:"skippedRecords"`
 	Gaps            []quotatelemetry.Event `json:"gaps"`
 }
 
@@ -249,7 +261,7 @@ func runQuotaTelemetry(ctx context.Context, options quotaTelemetryOptions, path 
 				Ticks: result.Meta.Ticks, Failures: result.Meta.Failures, LastError: result.Meta.LastError,
 				LastErrorAt: result.Meta.LastErrorAt, LastSuccessAt: result.Meta.LastSuccessAt,
 				CoverageFrom: result.Meta.CoverageFrom, AuditWatermark: result.Meta.AuditWatermark,
-				SkippedReadings: result.Meta.SkippedReadings, SkippedChecks: result.Meta.SkippedChecks, Gaps: result.Gaps,
+				SkippedReadings: result.Meta.SkippedReadings, SkippedChecks: result.Meta.SkippedChecks, SkippedRecords: result.Meta.SkippedRecords, Gaps: result.Gaps,
 			},
 			Filters: quotaTelemetryFilters{Since: options.since, Route: options.route, Pool: options.pool,
 				PoolInstances: poolInstances, Kinds: options.kinds, Limit: options.limit},
@@ -375,9 +387,10 @@ func quotaTelemetryRow(event quotatelemetry.Event) []string {
 			row[7] = terminalText(note.State)
 		}
 	}
-	// A tab inside a value would shift every later column.
+	// A tab inside a value would shift every later column, and a newline
+	// would print a line that looks like another event.
 	for index := range row {
-		row[index] = strings.ReplaceAll(row[index], "\t", " ")
+		row[index] = strings.NewReplacer("\t", " ", "\n", `\n`, "\r", `\r`).Replace(row[index])
 	}
 	return row
 }

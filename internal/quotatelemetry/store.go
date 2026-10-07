@@ -71,6 +71,9 @@ const (
 	metaLastError       = "lastError"
 	metaLastErrorAt     = "lastErrorAt"
 	metaLastSuccessAt   = "lastSuccessAt"
+	metaSkippedRecords  = "skippedRecords"
+	metaFailedTicks     = "failedTicks"
+	metaFailedSince     = "failedSince"
 )
 
 // OpenStore opens or creates the recorder's store: the directory 0700, the
@@ -81,18 +84,36 @@ func OpenStore(path string) (*Store, error) {
 		return nil, fmt.Errorf("quota telemetry store must be a file, not %q", path)
 	}
 	dir := filepath.Dir(path)
-	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+	info, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("create quota telemetry directory: %w", err)
 		}
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if info, err = os.Lstat(dir); err != nil {
+			return nil, fmt.Errorf("inspect quota telemetry directory: %w", err)
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect quota telemetry directory: %w", err)
+	}
+	// A symlink in place of the directory or the file is refused rather than
+	// followed, so the recorder never writes or re-permissions anything else.
+	if !info.IsDir() {
+		return nil, fmt.Errorf("quota telemetry directory %s is not a directory", dir)
+	}
+	// Access for others is removed; the owner's own bits are left alone, so
+	// a directory an operator made read-only stays read-only.
+	if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(dir, info.Mode().Perm()&0o700); err != nil {
 			return nil, fmt.Errorf("protect quota telemetry directory: %w", err)
 		}
+	}
+	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("quota telemetry store %s is not a regular file", path)
 	}
 	// Create the file with its final mode before SQLite opens it, so it is
 	// never readable by others, whatever the umask; SQLite gives the WAL and
 	// shared-memory files the database file's mode.
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|noFollow, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create quota telemetry store: %w", err)
 	}
@@ -129,12 +150,21 @@ func (s *Store) initialize() error {
 // OpenReader opens an existing store read-only for the read command. It never
 // creates the file or its directory, and the connection cannot write.
 func OpenReader(path string) (*Store, error) {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if info, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w at %s", ErrNoStore, path)
 	} else if err != nil {
 		return nil, fmt.Errorf("open quota telemetry store: %w", err)
+	} else if info.Size() == 0 {
+		return nil, fmt.Errorf("quota telemetry store %s is empty: the recorder has created it and not yet written it; try again in a minute", path)
 	}
 	dsn := fileURL(path) + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	if !exists(path+"-wal") && !exists(path+"-shm") {
+		// The recorder is not running and its last close checkpointed
+		// everything into the file. Opening a WAL database read-only would
+		// still create the two sidecar files, so the file is read as
+		// immutable instead, which creates nothing.
+		dsn += "&immutable=1"
+	}
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open quota telemetry store: %w", err)
@@ -146,6 +176,11 @@ func OpenReader(path string) (*Store, error) {
 		return nil, err
 	}
 	return store, nil
+}
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 func (s *Store) checkSchema(ctx context.Context) error {
@@ -315,9 +350,14 @@ type Meta struct {
 	Failures        int64
 	SkippedReadings int64
 	SkippedChecks   int64
+	SkippedRecords  int64
 	LastError       string
 	LastErrorAt     *time.Time
 	LastSuccessAt   *time.Time
+	// FailedTicks and FailedSince describe a failed span no successful tick
+	// has recorded as a gap yet.
+	FailedTicks int64
+	FailedSince *time.Time
 }
 
 // Meta reads the meta table.
@@ -353,6 +393,7 @@ func (s *Store) Meta(ctx context.Context) (Meta, error) {
 		SchemaVersion: int(number(metaSchemaVersion)), OpenCursor: values[metaOpenCursor],
 		CoverageFrom: instant(metaCoverageFrom), Ticks: number(metaTicks), Failures: number(metaFailures),
 		SkippedReadings: number(metaSkippedReadings), SkippedChecks: number(metaSkippedChecks),
+		SkippedRecords: number(metaSkippedRecords), FailedTicks: number(metaFailedTicks), FailedSince: instant(metaFailedSince),
 		LastError: values[metaLastError], LastErrorAt: instant(metaLastErrorAt), LastSuccessAt: instant(metaLastSuccessAt),
 	}
 	if raw, found := values[metaAuditWatermark]; found {
@@ -601,8 +642,14 @@ func (s *Store) Query(ctx context.Context, filter Filter, now time.Time) (QueryR
 	if result.Meta, err = s.Meta(ctx); err != nil {
 		return QueryResult{}, err
 	}
+	// Event times are stored as Unix nanoseconds, which cover the years 1678
+	// to 2262; a since outside them is clamped rather than wrapped.
 	since := int64(math.MinInt64)
-	if !filter.Since.IsZero() {
+	switch {
+	case filter.Since.IsZero() || filter.Since.Year() < 1700:
+	case filter.Since.Year() > 2250:
+		since = math.MaxInt64
+	default:
 		since = filter.Since.UnixNano()
 	}
 	kinds := filter.Kinds

@@ -172,8 +172,12 @@ func TestRecorderReplayIsIdempotent(t *testing.T) {
 	if got := len(eventsOfKind(events, KindStart)); got != 1 {
 		t.Fatalf("start events = %d; want exactly 1", got)
 	}
-	if got := len(eventsOfKind(events, KindRecorder)); got != 1 {
-		t.Fatalf("recorder events = %d; a restart with a stored watermark is not a first start", got)
+	// A restart with a stored watermark is not a first start; the failed
+	// commit before it is recorded as a gap by the restarted process.
+	recorderEvents := eventsOfKind(events, KindRecorder)
+	if len(recorderEvents) != 2 || recorderEvents[0].Recorder.State != RecorderStarted ||
+		recorderEvents[1].Recorder.State != RecorderGap || recorderEvents[1].Recorder.FailedTicks != 1 {
+		t.Fatalf("recorder events = %+v; want started, then the gap of the failed commit", recorderEvents)
 	}
 	if meta := readMeta(t, path); *meta.AuditWatermark != 6 {
 		t.Fatalf("watermark = %d; want 6", *meta.AuditWatermark)
@@ -187,7 +191,7 @@ func TestRecorderReplayIsIdempotent(t *testing.T) {
 	mustTick(t, third)
 	events = allEvents(t, path, clock.Now())
 	gaps := eventsOfKind(events, KindRecorder)
-	if len(gaps) != 2 || gaps[1].Recorder.State != "gap" || gaps[1].Recorder.Reason == "" {
+	if len(gaps) != 3 || gaps[2].Recorder.State != "gap" || gaps[2].Recorder.Reason == "" {
 		t.Fatalf("recorder events after a restored database = %+v; want a gap", gaps)
 	}
 	if meta := readMeta(t, path); *meta.AuditWatermark != 2 {

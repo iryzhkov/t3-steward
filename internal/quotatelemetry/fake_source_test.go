@@ -23,6 +23,7 @@ type fakeSource struct {
 	mu          sync.Mutex
 	audit       []domain.AuditEvent
 	assignments map[string]domain.Assignment
+	frozen      map[string]domain.Assignment
 	attempts    map[string]domain.Attempt
 	tasks       map[string]domain.Task
 	snapshots   []domain.WorkerSnapshot
@@ -37,6 +38,7 @@ type fakeSource struct {
 func newFakeSource() *fakeSource {
 	return &fakeSource{
 		assignments: map[string]domain.Assignment{},
+		frozen:      map[string]domain.Assignment{},
 		attempts:    map[string]domain.Attempt{},
 		tasks:       map[string]domain.Task{},
 		content:     map[string][]byte{},
@@ -81,6 +83,16 @@ func (f *fakeSource) LoadAssignment(_ context.Context, id string) (domain.Assign
 		return domain.Assignment{}, false, err
 	}
 	assignment, found := f.assignments[id]
+	return assignment, found, nil
+}
+
+func (f *fakeSource) LoadAssignmentEpoch(_ context.Context, id string, epoch int64) (domain.Assignment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.check(); err != nil {
+		return domain.Assignment{}, false, err
+	}
+	assignment, found := f.frozen[workKey(id, epoch)]
 	return assignment, found, nil
 }
 

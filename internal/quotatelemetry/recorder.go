@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"strconv"
 	"sync"
@@ -17,10 +18,18 @@ import (
 
 // Source is the coordinator database as the recorder reads it. The production
 // source is a query-only connection; nothing here can write coordinator state.
+//
+// A row that exists and does not decode is reported with an error that has a
+// Malformed() bool method returning true; the recorder skips and counts that
+// row rather than failing every tick on it.
 type Source interface {
 	MaxAuditSequence(context.Context) (int64, error)
 	AuditEventsAfter(ctx context.Context, after int64, limit int) ([]domain.AuditEvent, error)
 	LoadAssignment(context.Context, string) (domain.Assignment, bool, error)
+	// LoadAssignmentEpoch reads the assignment as it was dispatched at one
+	// epoch: an assignment offered again keeps its id and moves to a later
+	// epoch, possibly on another worker and route.
+	LoadAssignmentEpoch(ctx context.Context, id string, epoch int64) (domain.Assignment, bool, error)
 	LoadAttempt(context.Context, string) (domain.Attempt, bool, error)
 	LoadTask(context.Context, string) (domain.Task, bool, error)
 	LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error)
@@ -48,7 +57,19 @@ const (
 	logEvery = 10 * time.Minute
 	// maxErrorBytes caps a stored error text.
 	maxErrorBytes = 512
+	// maxIdentityBytes bounds an id or key an event is named by; a longer one
+	// is skipped and counted, so every record fits in MaxRecordBytes.
+	maxIdentityBytes = 256
+	// readingFutureSlack is how far ahead of the recorder's clock a reading's
+	// observation time may be before it is treated as malformed.
+	readingFutureSlack = 24 * time.Hour
 )
+
+// malformed reports a source error for one bad row.
+func malformed(err error) bool {
+	var row interface{ Malformed() bool }
+	return errors.As(err, &row) && row.Malformed()
+}
 
 // Stats are the recorder's counters.
 type Stats struct {
@@ -56,9 +77,12 @@ type Stats struct {
 	Failures        int64
 	SkippedReadings int64
 	SkippedChecks   int64
-	LastError       string
-	LastErrorAt     *time.Time
-	LastSuccessAt   *time.Time
+	// SkippedRecords counts coordinator rows that did not decode, and ids too
+	// long to record.
+	SkippedRecords int64
+	LastError      string
+	LastErrorAt    *time.Time
+	LastSuccessAt  *time.Time
 }
 
 // Recorder appends telemetry events to its own store, one tick at a time.
@@ -206,10 +230,13 @@ func (r *Recorder) recordFailure(now time.Time, failure error) {
 	r.failedTicks++
 	r.warn("quota telemetry recorder tick failed; the coordinator is unaffected", message)
 	if r.store != nil {
+		// The failed span is persisted too, so a restart before the next
+		// successful tick still records its gap.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		_ = r.store.commit(ctx, nil, map[string]string{
 			metaTicks: strconv.FormatInt(stats.Ticks, 10), metaFailures: strconv.FormatInt(stats.Failures, 10),
 			metaLastError: message, metaLastErrorAt: formatInstant(now),
+			metaFailedTicks: strconv.Itoa(r.failedTicks), metaFailedSince: formatInstant(r.failedSince),
 		}, nil)
 		cancel()
 	}
@@ -245,12 +272,13 @@ func (r *Recorder) ensureStore() error {
 	if err != nil {
 		return err
 	}
-	r.store = store
 	if !r.merged {
 		// Counters persist across restarts: the first open of a process
-		// continues from the stored values.
+		// continues from the stored values. The store is kept only once
+		// they are merged, so a failure here cannot overwrite them.
 		meta, err := store.Meta(context.Background())
 		if err != nil {
+			store.Close()
 			return err
 		}
 		r.mu.Lock()
@@ -258,6 +286,7 @@ func (r *Recorder) ensureStore() error {
 		r.stats.Failures += meta.Failures
 		r.stats.SkippedReadings += meta.SkippedReadings
 		r.stats.SkippedChecks += meta.SkippedChecks
+		r.stats.SkippedRecords += meta.SkippedRecords
 		if r.stats.LastError == "" {
 			r.stats.LastError, r.stats.LastErrorAt = meta.LastError, meta.LastErrorAt
 		}
@@ -265,8 +294,17 @@ func (r *Recorder) ensureStore() error {
 			r.stats.LastSuccessAt = meta.LastSuccessAt
 		}
 		r.mu.Unlock()
+		if meta.FailedTicks > 0 && meta.FailedSince != nil {
+			// A span that failed before this process started: its gap is
+			// recorded by the next successful tick, like one of our own.
+			r.failedTicks += int(meta.FailedTicks)
+			if r.failedSince.IsZero() || meta.FailedSince.Before(r.failedSince) {
+				r.failedSince = *meta.FailedSince
+			}
+		}
 		r.merged = true
 	}
+	r.store = store
 	return nil
 }
 
@@ -291,6 +329,7 @@ type tickResult struct {
 	meta            map[string]string
 	skippedReadings int64
 	skippedChecks   int64
+	skippedRecords  int64
 }
 
 func (r *Recorder) tick(ctx context.Context, now time.Time) error {
@@ -338,7 +377,11 @@ func (r *Recorder) tick(ctx context.Context, now time.Time) error {
 	stats.Ticks++
 	stats.SkippedReadings += result.skippedReadings
 	stats.SkippedChecks += result.skippedChecks
+	stats.SkippedRecords += result.skippedRecords
 	stats.LastSuccessAt = &now
+	result.meta[metaSkippedRecords] = strconv.FormatInt(stats.SkippedRecords, 10)
+	result.meta[metaFailedTicks] = "0"
+	result.meta[metaFailedSince] = ""
 	result.meta[metaTicks] = strconv.FormatInt(stats.Ticks, 10)
 	result.meta[metaFailures] = strconv.FormatInt(stats.Failures, 10)
 	result.meta[metaSkippedReadings] = strconv.FormatInt(stats.SkippedReadings, 10)
@@ -354,7 +397,7 @@ func (r *Recorder) tick(ctx context.Context, now time.Time) error {
 	r.mu.Lock()
 	r.stats = stats
 	r.mu.Unlock()
-	r.failedTicks = 0
+	r.failedTicks, r.failedSince = 0, time.Time{}
 	return nil
 }
 
@@ -368,15 +411,11 @@ func (r *Recorder) collectReadings(ctx context.Context, now time.Time, result *t
 	}
 	for _, snapshot := range snapshots {
 		for _, observation := range snapshot.QuotaObservations {
-			if observation.ObservedAt.IsZero() {
-				result.skippedReadings++
-				continue
-			}
-			result.events = append(result.events, readingEvent("worker:"+snapshot.WorkerID, observation.Key, now, Reading{
+			addReading(result, "worker:"+snapshot.WorkerID, observation.Key, now, Reading{
 				UsedPercent: observation.UsedPercent, ResetsAt: utcPointer(observation.ResetsAt),
 				ObservedAt: observation.ObservedAt.UTC(), Phase: string(observation.Phase), Healthy: observation.Healthy,
 				Epoch: observation.Epoch, LimitName: observation.LimitName,
-			}))
+			})
 		}
 	}
 	buckets, err := r.source.ListBuckets(ctx)
@@ -384,17 +423,31 @@ func (r *Recorder) collectReadings(ctx context.Context, now time.Time, result *t
 		return err
 	}
 	for _, bucket := range buckets {
-		if bucket.ObservedAt.IsZero() {
-			result.skippedReadings++
-			continue
-		}
-		result.events = append(result.events, readingEvent("coordinator-host", bucket.Key, now, Reading{
+		addReading(result, "coordinator-host", bucket.Key, now, Reading{
 			UsedPercent: bucket.UsedPercent, ResetsAt: utcPointer(bucket.ResetsAt),
 			ObservedAt: bucket.ObservedAt.UTC(), Phase: string(bucket.Phase), Healthy: bucket.Healthy,
 			Epoch: bucket.Epoch, LimitName: bucket.LimitName,
-		}))
+		})
 	}
 	return nil
+}
+
+// addReading records one reading, or skips and counts it when it cannot be
+// stored faithfully: no observation time, one implausibly far from the
+// recorder's clock, a usage that is not a finite number, or a source or key
+// too long to name it.
+func addReading(result *tickResult, source string, key domain.BucketKey, now time.Time, reading Reading) {
+	observed := reading.ObservedAt
+	if observed.IsZero() || observed.Year() < 2000 || observed.After(now.Add(readingFutureSlack)) ||
+		math.IsNaN(reading.UsedPercent) || math.IsInf(reading.UsedPercent, 0) ||
+		len(source) > maxIdentityBytes || len(key.String()) > maxIdentityBytes {
+		result.skippedReadings++
+		return
+	}
+	if reading.ResetsAt != nil && (reading.ResetsAt.Year() < 2000 || reading.ResetsAt.Year() > 2200) {
+		reading.ResetsAt = nil
+	}
+	result.events = append(result.events, readingEvent(source, key, now, reading))
 }
 
 func readingEvent(source string, key domain.BucketKey, now time.Time, reading Reading) Event {
@@ -466,9 +519,12 @@ func (r *Recorder) collectLifecycle(ctx context.Context, now time.Time, meta Met
 		default:
 			continue
 		}
-		event, err := r.lifecycleEvent(ctx, kind, row, now)
+		event, ok, err := r.lifecycleEvent(ctx, kind, row, now, result)
 		if err != nil {
 			return err
+		}
+		if !ok {
+			continue
 		}
 		work := event.Work
 		if kind == KindDispatch {
@@ -488,8 +544,9 @@ func (r *Recorder) collectLifecycle(ctx context.Context, now time.Time, meta Met
 			}
 			if found {
 				work.DispatchedAt = &dispatchedAt
-				queued := work.StartedAt.Sub(dispatchedAt).Milliseconds()
-				work.DispatchToStartMs = &queued
+				if queued := work.StartedAt.Sub(dispatchedAt).Milliseconds(); queued >= 0 {
+					work.DispatchToStartMs = &queued
+				}
 			}
 		}
 		result.events = append(result.events, event)
@@ -500,16 +557,47 @@ func (r *Recorder) collectLifecycle(ctx context.Context, now time.Time, meta Met
 
 // lifecycleEvent builds a dispatch or start event from one audit row and the
 // assignment, attempt and task it names, read by id.
-func (r *Recorder) lifecycleEvent(ctx context.Context, kind string, row domain.AuditEvent, now time.Time) (Event, error) {
+//
+// The current assignment record describes its latest epoch. A row for an
+// earlier epoch takes its route and worker from the binding frozen with that
+// epoch's dispatch, or records them as unknown, never as the later epoch's.
+// A row naming an id too long to record is skipped and counted.
+func (r *Recorder) lifecycleEvent(ctx context.Context, kind string, row domain.AuditEvent, now time.Time, result *tickResult) (Event, bool, error) {
+	for _, id := range []string{row.TargetID, row.AttemptID, row.TaskID, row.WorkflowRunID} {
+		if len(id) > maxIdentityBytes {
+			result.skippedRecords++
+			return Event{}, false, nil
+		}
+	}
 	var detail struct {
 		AssignmentEpoch int64 `json:"assignmentEpoch"`
 	}
 	if len(row.Detail) > 0 {
 		_ = json.Unmarshal(row.Detail, &detail)
 	}
-	assignment, _, err := r.source.LoadAssignment(ctx, row.TargetID)
+	assignment, _, err := r.loadAssignment(ctx, row.TargetID, result)
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
+	}
+	epoch := detail.AssignmentEpoch
+	if epoch == 0 {
+		epoch = assignment.Epoch
+	}
+	routeKnown := true
+	if epoch > 0 && epoch < assignment.Epoch {
+		frozen, found, err := r.source.LoadAssignmentEpoch(ctx, row.TargetID, epoch)
+		if err != nil && !malformed(err) {
+			return Event{}, false, err
+		}
+		if err != nil {
+			result.skippedRecords++
+		}
+		if found {
+			assignment = frozen
+		} else {
+			routeKnown = false
+			assignment.Route, assignment.WorkerID, assignment.Project = domain.ProviderRoute{}, "", ""
+		}
 	}
 	if assignment.ID == "" {
 		assignment.ID = row.TargetID
@@ -517,13 +605,12 @@ func (r *Recorder) lifecycleEvent(ctx context.Context, kind string, row domain.A
 	if assignment.AttemptID == "" {
 		assignment.AttemptID = row.AttemptID
 	}
-	epoch := detail.AssignmentEpoch
-	if epoch == 0 {
-		epoch = assignment.Epoch
-	}
-	work, err := r.describeWork(ctx, assignment, epoch, row.WorkflowRunID, row.TaskID)
+	work, err := r.describeWork(ctx, assignment, epoch, row.WorkflowRunID, row.TaskID, result)
 	if err != nil {
-		return Event{}, err
+		return Event{}, false, err
+	}
+	if !routeKnown {
+		work.RouteUnknown, work.Route.EffortAbsent = true, false
 	}
 	at := now
 	if !row.CreatedAt.IsZero() {
@@ -534,14 +621,43 @@ func (r *Recorder) lifecycleEvent(ctx context.Context, kind string, row domain.A
 			work.StartedAt = &at
 		}
 	}
-	return Event{EventID: kind + ":" + work.Key(), Kind: kind, At: at, QuotaPoolID: work.Route.QuotaPoolID, Work: &work}, nil
+	return Event{EventID: kind + ":" + work.Key(), Kind: kind, At: at, QuotaPoolID: work.Route.QuotaPoolID, Work: &work}, true, nil
+}
+
+// loadAssignment, loadAttempt and loadTask read one record by id; a record
+// that does not decode is counted and treated as absent.
+func (r *Recorder) loadAssignment(ctx context.Context, id string, result *tickResult) (domain.Assignment, bool, error) {
+	assignment, found, err := r.source.LoadAssignment(ctx, id)
+	if malformed(err) {
+		result.skippedRecords++
+		return domain.Assignment{}, false, nil
+	}
+	return assignment, found, err
+}
+
+func (r *Recorder) loadAttempt(ctx context.Context, id string, result *tickResult) (domain.Attempt, bool, error) {
+	attempt, found, err := r.source.LoadAttempt(ctx, id)
+	if malformed(err) {
+		result.skippedRecords++
+		return domain.Attempt{}, false, nil
+	}
+	return attempt, found, err
+}
+
+func (r *Recorder) loadTask(ctx context.Context, id string, result *tickResult) (domain.Task, bool, error) {
+	task, found, err := r.source.LoadTask(ctx, id)
+	if malformed(err) {
+		result.skippedRecords++
+		return domain.Task{}, false, nil
+	}
+	return task, found, err
 }
 
 // describeWork fills the identity, route and derived task type of one
 // assignment epoch. Nothing is read from a prompt or any free text, and no
 // token or failure text is copied.
-func (r *Recorder) describeWork(ctx context.Context, assignment domain.Assignment, epoch int64, runID, taskID string) (Work, error) {
-	attempt, _, err := r.source.LoadAttempt(ctx, assignment.AttemptID)
+func (r *Recorder) describeWork(ctx context.Context, assignment domain.Assignment, epoch int64, runID, taskID string, result *tickResult) (Work, error) {
+	attempt, _, err := r.loadAttempt(ctx, assignment.AttemptID, result)
 	if err != nil {
 		return Work{}, err
 	}
@@ -551,7 +667,7 @@ func (r *Recorder) describeWork(ctx context.Context, assignment domain.Assignmen
 	if attempt.WorkflowRunID != "" {
 		runID = attempt.WorkflowRunID
 	}
-	task, _, err := r.source.LoadTask(ctx, taskID)
+	task, _, err := r.loadTask(ctx, taskID, result)
 	if err != nil {
 		return Work{}, err
 	}
@@ -568,6 +684,33 @@ func (r *Recorder) describeWork(ctx context.Context, assignment domain.Assignmen
 		Route: route, ExecutionRole: string(assignment.ExecutionRole),
 		TaskType: DeriveTaskType(task, attempt, assignment.ExecutionRole),
 	}, nil
+}
+
+// supersededAt is when an epoch that was offered again ended: the next
+// epoch's dispatch, from this tick's events, the store or the binding frozen
+// with it, and only failing those the assignment's last update.
+func (r *Recorder) supersededAt(ctx context.Context, work Work, current domain.Assignment, result *tickResult) (time.Time, error) {
+	nextID := KindDispatch + ":" + workKey(work.AssignmentID, work.AssignmentEpoch+1)
+	for _, event := range result.events {
+		if event.EventID == nextID {
+			return event.At, nil
+		}
+	}
+	stored, found, err := r.store.event(ctx, nextID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if found {
+		return stored.At, nil
+	}
+	frozen, found, err := r.source.LoadAssignmentEpoch(ctx, work.AssignmentID, work.AssignmentEpoch+1)
+	if err != nil && !malformed(err) {
+		return time.Time{}, err
+	}
+	if found && !frozen.CreatedAt.IsZero() {
+		return frozen.CreatedAt, nil
+	}
+	return current.UpdatedAt, nil
 }
 
 func workKey(assignmentID string, epoch int64) string {
@@ -588,32 +731,38 @@ func (r *Recorder) collectFinishes(ctx context.Context, now time.Time, meta Meta
 			base = item.dispatch
 		}
 		work := *base.Work
-		assignment, found, err := r.source.LoadAssignment(ctx, work.AssignmentID)
+		assignment, found, err := r.loadAssignment(ctx, work.AssignmentID, result)
 		if err != nil {
 			return err
 		}
 		if !found {
 			continue
 		}
-		attempt, attemptFound, err := r.source.LoadAttempt(ctx, work.AttemptID)
+		attempt, attemptFound, err := r.loadAttempt(ctx, work.AttemptID, result)
 		if err != nil {
 			return err
 		}
 		var finishedAt time.Time
+		// Checks belong to the epoch that ran the attempt to its end; an
+		// epoch that was superseded or released never records them.
+		withChecks := false
 		switch {
 		case assignment.Epoch > work.AssignmentEpoch:
-			// The assignment was offered again at a later epoch; that epoch
-			// is recorded as its own dispatch.
-			work.Outcome, finishedAt = "superseded", assignment.UpdatedAt
+			// The assignment was offered again at a later epoch, which is
+			// recorded as its own dispatch; this epoch ended no later than that.
+			work.Outcome = "superseded"
+			if finishedAt, err = r.supersededAt(ctx, work, assignment, result); err != nil {
+				return err
+			}
 		case attemptFound && attempt.Progress.Terminal():
-			work.Outcome, finishedAt = string(attempt.Progress), attempt.UpdatedAt
+			work.Outcome, finishedAt, withChecks = string(attempt.Progress), attempt.UpdatedAt, true
 			if attempt.CompletedAt != nil {
 				finishedAt = *attempt.CompletedAt
 			}
 		case assignment.State == domain.AssignmentReleased:
 			work.Outcome, finishedAt = string(domain.AssignmentReleased), assignment.UpdatedAt
 		case assignment.State == domain.AssignmentCompleted:
-			work.Outcome, finishedAt = string(domain.AssignmentCompleted), assignment.UpdatedAt
+			work.Outcome, finishedAt, withChecks = string(domain.AssignmentCompleted), assignment.UpdatedAt, attemptFound
 			if attemptFound {
 				work.Outcome = string(attempt.Progress)
 			}
@@ -629,13 +778,15 @@ func (r *Recorder) collectFinishes(ctx context.Context, now time.Time, meta Meta
 		}
 		work.FinishedAt = &finishedAt
 		work.DispatchToStartMs = nil
-		if work.StartedAt != nil {
+		// A finish recorded before its start, by clocks that disagree, has
+		// no duration rather than a negative one.
+		if work.StartedAt != nil && !finishedAt.Before(*work.StartedAt) {
 			duration := finishedAt.Sub(*work.StartedAt).Milliseconds()
 			work.DurationMs = &duration
 		}
 		result.events = append(result.events, Event{EventID: KindFinish + ":" + work.Key(), Kind: KindFinish,
 			At: finishedAt, QuotaPoolID: work.Route.QuotaPoolID, Work: &work})
-		if attemptFound {
+		if withChecks {
 			if err := r.collectChecks(ctx, work, finishedAt, result); err != nil {
 				return err
 			}

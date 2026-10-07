@@ -99,18 +99,22 @@ func (r Route) Name() string {
 // Work identifies the assignment a dispatch, start, finish or check event
 // belongs to.
 type Work struct {
-	RunID           string   `json:"runId"`
-	TaskID          string   `json:"taskId"`
-	TaskName        string   `json:"taskName"`
-	AttemptID       string   `json:"attemptId"`
-	AttemptNumber   int      `json:"attemptNumber"`
-	AssignmentID    string   `json:"assignmentId"`
-	AssignmentEpoch int64    `json:"assignmentEpoch"`
-	WorkerID        string   `json:"workerId"`
-	Project         string   `json:"project"`
-	Route           Route    `json:"route"`
-	ExecutionRole   string   `json:"executionRole"`
-	TaskType        TaskType `json:"taskType"`
+	RunID           string `json:"runId"`
+	TaskID          string `json:"taskId"`
+	TaskName        string `json:"taskName"`
+	AttemptID       string `json:"attemptId"`
+	AttemptNumber   int    `json:"attemptNumber"`
+	AssignmentID    string `json:"assignmentId"`
+	AssignmentEpoch int64  `json:"assignmentEpoch"`
+	WorkerID        string `json:"workerId"`
+	Project         string `json:"project"`
+	Route           Route  `json:"route"`
+	// RouteUnknown is set on an earlier epoch of an assignment offered again
+	// when no binding was frozen for that epoch: its route, worker and project
+	// are left empty rather than taken from the later epoch.
+	RouteUnknown  bool     `json:"routeUnknown,omitempty"`
+	ExecutionRole string   `json:"executionRole"`
+	TaskType      TaskType `json:"taskType"`
 	// DispatchedAt, StartedAt and FinishedAt are the times this record knows;
 	// the rest are null.
 	DispatchedAt *time.Time `json:"dispatchedAt"`

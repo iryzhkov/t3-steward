@@ -186,7 +186,9 @@ func attribute(delta *Delta, work *Work, spans []WorkSpan, from, to time.Time) {
 	seen := map[string]bool{}
 	attempts := map[string]bool{}
 	for _, span := range spans {
-		if span.Key == self || span.Pool != pool || seen[span.Key] {
+		// The same attempt's other epochs are its own work, not concurrent
+		// work: a released epoch is followed by its re-offer.
+		if span.Key == self || span.AttemptID == work.AttemptID || span.Pool != pool || seen[span.Key] {
 			continue
 		}
 		if span.Start.Before(from.Add(-overlapLookback)) || span.Start.After(to) {

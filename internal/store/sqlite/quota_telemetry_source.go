@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -125,6 +126,55 @@ func (q *QueryOnlyStore) LoadTask(ctx context.Context, id string) (domain.Task, 
 	return task, found, err
 }
 
+// LoadAssignmentEpoch reads the assignment as it was frozen when it was
+// dispatched at one epoch, from the continuation binding recorded with that
+// dispatch. An assignment offered again keeps its id and moves to a later
+// epoch, possibly on another worker and route, so the current record no
+// longer describes an earlier epoch. found is false when no binding was
+// frozen for the epoch.
+func (q *QueryOnlyStore) LoadAssignmentEpoch(ctx context.Context, id string, epoch int64) (domain.Assignment, bool, error) {
+	var raw string
+	err := q.db.QueryRowContext(ctx,
+		`SELECT binding FROM coordinator_assignment_continuations WHERE assignment_id = ? AND assignment_epoch = ?`,
+		id, epoch).Scan(&raw)
+	// A database from before the continuation table has no frozen epochs.
+	if errors.Is(err, sql.ErrNoRows) || (err != nil && strings.Contains(err.Error(), "no such table")) {
+		return domain.Assignment{}, false, nil
+	}
+	if err != nil {
+		return domain.Assignment{}, false, fmt.Errorf("load assignment %q at epoch %d: %w", id, epoch, err)
+	}
+	var frozen struct {
+		Assignment domain.Assignment
+	}
+	if err := json.Unmarshal([]byte(raw), &frozen); err != nil {
+		return domain.Assignment{}, false, &MalformedRecordError{Label: "assignment binding", ID: id, Err: err}
+	}
+	if frozen.Assignment.ID != id || frozen.Assignment.Epoch != epoch {
+		return domain.Assignment{}, false, &MalformedRecordError{Label: "assignment binding", ID: id,
+			Err: errors.New("binding does not describe this epoch")}
+	}
+	return frozen.Assignment, true, nil
+}
+
+// MalformedRecordError is a coordinator row that exists and does not decode.
+// A reader that skips one bad row rather than stopping recognises it by its
+// Malformed method.
+type MalformedRecordError struct {
+	Label string
+	ID    string
+	Err   error
+}
+
+func (e *MalformedRecordError) Error() string {
+	return fmt.Sprintf("decode %s %q: %v", e.Label, e.ID, e.Err)
+}
+
+func (e *MalformedRecordError) Unwrap() error { return e.Err }
+
+// Malformed marks the error as one bad row rather than an unreadable database.
+func (e *MalformedRecordError) Malformed() bool { return true }
+
 func (q *QueryOnlyStore) loadRecord(ctx context.Context, label, query, id string, target any) (bool, error) {
 	var raw string
 	err := q.db.QueryRowContext(ctx, query, id).Scan(&raw)
@@ -135,7 +185,7 @@ func (q *QueryOnlyStore) loadRecord(ctx context.Context, label, query, id string
 		return false, fmt.Errorf("load %s %q: %w", label, id, err)
 	}
 	if err := json.Unmarshal([]byte(raw), target); err != nil {
-		return false, fmt.Errorf("decode %s %q: %w", label, id, err)
+		return false, &MalformedRecordError{Label: label, ID: id, Err: err}
 	}
 	return true, nil
 }
@@ -209,7 +259,7 @@ func (q *QueryOnlyStore) ListCheckArtifacts(ctx context.Context, taskID, attempt
 		}
 		var artifact domain.Artifact
 		if err := json.Unmarshal([]byte(raw), &artifact); err != nil {
-			return nil, fmt.Errorf("decode artifact %q: %w", id, err)
+			return nil, &MalformedRecordError{Label: "artifact", ID: id, Err: err}
 		}
 		artifacts = append(artifacts, artifact)
 	}

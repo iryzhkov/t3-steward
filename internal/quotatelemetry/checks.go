@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,10 @@ const gateReportName = "gate"
 // malformed is skipped and counted.
 func (r *Recorder) collectChecks(ctx context.Context, work Work, finishedAt time.Time, result *tickResult) error {
 	artifacts, err := r.source.ListCheckArtifacts(ctx, work.TaskID, work.AttemptID)
+	if malformed(err) {
+		result.skippedChecks++
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -87,6 +92,37 @@ func (r *Recorder) collectChecks(ctx context.Context, work Work, finishedAt time
 	return nil
 }
 
+// commandSecretPatterns are credential shapes cut out of a stored command
+// line: provider and forge tokens, and the password of a URL. A command is
+// declared configuration rather than output, but one can still carry a token
+// inline, and the store must never hold one.
+var commandSecretPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255})`),
+	regexp.MustCompile(`sk-[A-Za-z0-9_-]{20,255}`),
+	regexp.MustCompile(`AKIA[A-Z0-9]{16}`),
+	regexp.MustCompile(`(?i)(?:bearer|token|basic)\s+[A-Za-z0-9._~+/=-]{16,}`),
+	regexp.MustCompile(`(?i)((?:password|passwd|secret|token|api[_-]?key)[=:])[^\s'"&]+`),
+	regexp.MustCompile(`(://[^/\s:@]+:)[^@\s/]+@`),
+}
+
+// redactCommand replaces credential-shaped parts of a command with
+// [redacted].
+func redactCommand(command string) string {
+	for _, pattern := range commandSecretPatterns {
+		command = pattern.ReplaceAllStringFunc(command, func(match string) string {
+			if groups := pattern.FindStringSubmatch(match); len(groups) > 1 {
+				suffix := ""
+				if strings.HasSuffix(match, "@") {
+					suffix = "@"
+				}
+				return groups[1] + "[redacted]" + suffix
+			}
+			return "[redacted]"
+		})
+	}
+	return command
+}
+
 // verificationIndex reads NNN from "verification/NNN.json".
 func verificationIndex(name string) (int, bool) {
 	digits, ok := strings.CutPrefix(name, "verification/")
@@ -143,8 +179,9 @@ func (c reportCommand) check(stage string) (Check, error) {
 		return Check{}, errors.New("report has no command or exit code")
 	}
 	check := Check{Stage: stage, ExitCode: *c.ExitCode, StartedAt: utcPointer(c.StartedAt), CompletedAt: utcPointer(c.CompletedAt)}
-	check.Command = truncateUTF8(*c.Command, MaxCommandBytes)
-	check.CommandTruncated = len(check.Command) < len(*c.Command)
+	command := redactCommand(*c.Command)
+	check.Command = truncateUTF8(command, MaxCommandBytes)
+	check.CommandTruncated = len(check.Command) < len(command)
 	switch {
 	case c.Duration != nil && *c.Duration > 0:
 		duration := time.Duration(*c.Duration).Milliseconds()
@@ -167,18 +204,23 @@ func parseVerificationReport(raw []byte) (Check, error) {
 // parseGateReport returns one check per gate command, from 1, and how many
 // commands it skipped as malformed.
 func parseGateReport(raw []byte) ([]Check, int, error) {
-	var report struct {
-		Commands *[]reportCommand `json:"commands"`
-	}
-	if err := json.Unmarshal(raw, &report); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
 		return nil, 0, err
 	}
-	if report.Commands == nil {
+	listed, found := fields["commands"]
+	if !found {
 		return nil, 0, errors.New("gate report has no commands")
+	}
+	// A gate that failed before running a command reports "commands": null,
+	// which is a valid report with nothing to record.
+	var commands []reportCommand
+	if err := json.Unmarshal(listed, &commands); err != nil {
+		return nil, 0, err
 	}
 	var checks []Check
 	skipped := 0
-	for index, command := range *report.Commands {
+	for index, command := range commands {
 		check, err := command.check(StageGate)
 		if err != nil {
 			skipped++

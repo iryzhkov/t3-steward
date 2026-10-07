@@ -274,6 +274,34 @@ func TestQuotaTelemetryCommandFiltersTextAndJSON(t *testing.T) {
 	}
 }
 
+// Regression (self-review): a newline in a stored value printed a line that
+// looked like another event, and a large --since overflowed into the future.
+func TestQuotaTelemetryRowsCannotForgeLinesAndSinceIsBounded(t *testing.T) {
+	duration := int64(1000)
+	event := quotatelemetry.Event{Kind: quotatelemetry.KindCheck, At: time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC),
+		Work:  &quotatelemetry.Work{RunID: "run-1", TaskName: "a\nFAKE\tROW\x1b[31m", Route: quotatelemetry.Route{Model: "m\nx"}},
+		Check: &quotatelemetry.Check{Stage: "verification", Index: 1, DurationMs: &duration, Command: "make\n2026-10-07T09:00:00Z  finish"}}
+	var out bytes.Buffer
+	if err := renderQuotaTelemetry(&out, quotaTelemetryOptions{since: event.At}, quotatelemetry.QueryResult{Events: []quotatelemetry.Event{event}}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Count(out.String(), "\n"); lines != 3 {
+		t.Fatalf("one event printed %d lines; want header, columns and one row:\n%s", lines, out.String())
+	}
+	if strings.Contains(out.String(), "\x1b") {
+		t.Fatal("a terminal escape reached the output")
+	}
+	now := time.Date(2026, 10, 7, 14, 0, 0, 0, time.UTC)
+	for _, bad := range []string{"106752d", "9999999999d", "3651d", "2562047h", "9999-12-31T00:00:00Z", "1000-01-01T00:00:00Z"} {
+		if since, err := parseQuotaTelemetrySince(bad, now); err == nil {
+			t.Fatalf("--since %s = %s; want a refusal", bad, since)
+		}
+	}
+	if since, err := parseQuotaTelemetrySince("3650d", now); err != nil || !since.Before(now) {
+		t.Fatalf("--since 3650d = %s, %v", since, err)
+	}
+}
+
 func lineWith(t *testing.T, lines []string, needle string) string {
 	t.Helper()
 	for _, line := range lines {
