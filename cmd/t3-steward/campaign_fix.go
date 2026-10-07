@@ -244,6 +244,9 @@ type fixCommitCandidate struct {
 func fixTask(d backlogadmin.WorkflowDetail, name string) (backlogadmin.TaskDetail, error) {
 	for _, t := range d.Tasks {
 		if t.Task.Name == name || t.Task.ID == name {
+			if t.Task.RunID == "" {
+				t.Task.RunID = d.Summary.Run.ID
+			}
 			return t, nil
 		}
 	}
@@ -264,13 +267,21 @@ func fixDeclaredCommit(t domain.Task, name string) bool {
 	return false
 }
 func fixArtifact(t backlogadmin.TaskDetail, name string) (backlogadmin.ArtifactMetadata, error) {
-	for _, a := range t.Artifacts {
-		m := a.Metadata
-		if m.Name == name && (m.AttemptID == "" || t.Attempt != nil && m.AttemptID == t.Attempt.ID) {
-			return m, nil
+	var found backlogadmin.ArtifactMetadata
+	count := 0
+	if t.Attempt != nil && t.Attempt.ID != "" && t.Task.ID != "" && t.Task.RunID != "" {
+		for _, a := range t.Artifacts {
+			m := a.Metadata
+			if m.ID != "" && m.Name == name && m.Kind == domain.ArtifactOutput && m.AttemptID == t.Attempt.ID && m.TaskID == t.Task.ID && m.WorkflowRunID == t.Task.RunID {
+				found = m
+				count++
+			}
 		}
 	}
-	return backlogadmin.ArtifactMetadata{}, fmt.Errorf("task %s has no retained artifact %q for latest attempt", t.Task.Name, name)
+	if count != 1 {
+		return backlogadmin.ArtifactMetadata{}, fmt.Errorf("task %s has %d retained output artifacts %q bound to latest attempt; want exactly one", t.Task.Name, count, name)
+	}
+	return found, nil
 }
 func (c campaignFixCLI) readArtifact(ctx context.Context, m backlogadmin.ArtifactMetadata) ([]byte, error) {
 	if c.open == nil {
@@ -340,10 +351,75 @@ func (c campaignFixCLI) verdict(ctx context.Context, t backlogadmin.TaskDetail) 
 	}
 	return nil, "", errors.New("no recorded verdict: declare review_output, or the coordinator predates rc.116")
 }
-func fixRounds(used, limit int, v *domain.ReviewVerdict, root string) (int, error) {
+
+// decodeFixLineage accepts exactly the generated v1 document. In particular,
+// omitted/null counters cannot inherit defaults and duplicate keys cannot
+// replace earlier authority while leaving otherwise valid JSON.
+func decodeFixLineage(raw []byte) (campaign.FixLineage, error) {
+	var out campaign.FixLineage
+	fields := map[string]json.RawMessage{}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	token, err := dec.Token()
+	if err != nil || token != json.Delim('{') {
+		return out, errors.New("invalid fix lineage: expected an object")
+	}
+	for dec.More() {
+		token, err := dec.Token()
+		if err != nil {
+			return out, fmt.Errorf("invalid fix lineage: %w", err)
+		}
+		key := token.(string)
+		if _, exists := fields[key]; exists {
+			return out, fmt.Errorf("invalid fix lineage: duplicate field %s", key)
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return out, fmt.Errorf("invalid fix lineage: %w", err)
+		}
+		fields[key] = value
+	}
+	if _, err := dec.Token(); err != nil {
+		return out, fmt.Errorf("invalid fix lineage: %w", err)
+	}
+	var extra any
+	if dec.Decode(&extra) != io.EOF {
+		return out, errors.New("invalid fix lineage: trailing JSON")
+	}
+	required := []string{"schema", "rootRun", "rootProducingTask", "rootReviewTask", "round_limit", "roundsUsedBefore", "roundsDeclared", "gate", "history"}
+	for _, key := range required {
+		value, exists := fields[key]
+		if !exists {
+			return out, fmt.Errorf("invalid fix lineage: missing field %s", key)
+		}
+		if key != "gate" && key != "history" && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return out, fmt.Errorf("invalid fix lineage: null field %s", key)
+		}
+	}
+	typed := json.NewDecoder(bytes.NewReader(raw))
+	typed.DisallowUnknownFields()
+	if err := typed.Decode(&out); err != nil {
+		return out, fmt.Errorf("invalid fix lineage: %w", err)
+	}
+	if out.Gate != nil {
+		if err := out.Gate.Validate(); err != nil {
+			return out, fmt.Errorf("invalid fix lineage gate: %w", err)
+		}
+	}
+	if len(out.History) > 8 {
+		return out, errors.New("invalid fix lineage: history exceeds round limit ceiling")
+	}
+	for _, entry := range out.History {
+		if !safeFixComponent(entry.Run) || !safeFixComponent(entry.ReviewTask) || entry.ReviewedCommit == "" || (entry.Verdict != "accept" && entry.Verdict != "changes-requested") || entry.BlockingFindings < 0 {
+			return out, errors.New("invalid fix lineage history entry")
+		}
+	}
+	return out, nil
+}
+
+func fixRounds(used, limit int, v *domain.ReviewVerdict, root, latest string) (int, error) {
 	remaining := limit - used
 	if remaining <= 0 {
-		return 0, fmt.Errorf("review-round-limit-exhausted: lineage %s used %d of round_limit %d fix rounds; latest review requested changes (blocking %d): %s; the lead decides: a design pass, or campaign fix ... --round-limit N to allow more rounds", root, used, limit, v.BlockingFindings, strings.Join(v.FindingTitles, ", "))
+		return 0, fmt.Errorf("review-round-limit-exhausted: lineage %s used %d of round_limit %d fix rounds; latest review %s requested changes (blocking %d): %s; the lead decides: a design pass, or campaign fix ... --round-limit N to allow more rounds", root, used, limit, latest, v.BlockingFindings, strings.Join(v.FindingTitles, ", "))
 	}
 	if remaining > 2 {
 		return 2, nil
@@ -432,6 +508,28 @@ func (c campaignFixCLI) resolve(ctx context.Context, a campaignFixArgs) (resolve
 			if e = add(carried.SourceRunID, carried.ProducerTaskID, carried.Name); e != nil {
 				return out, e
 			}
+			pd, e := get(carried.SourceRunID)
+			if e != nil {
+				return out, e
+			}
+			producer, e := fixTask(pd, carried.ProducerTaskID)
+			if e != nil {
+				return out, e
+			}
+			if fixDeclaredCommit(producer.Task, carried.Name) {
+				if carried.SourceAttemptID != "" && (producer.Attempt == nil || producer.Attempt.ID != carried.SourceAttemptID) {
+					return out, fmt.Errorf("reviewed commit source changed: %s/%s consumed attempt %s; refusing to bind a newer output", carried.SourceRunID, producer.Task.Name, carried.SourceAttemptID)
+				}
+				if carried.SourceArtifactID != "" {
+					metadata, e := fixArtifact(producer, carried.Name)
+					if e != nil {
+						return out, e
+					}
+					if metadata.ID != carried.SourceArtifactID {
+						return out, fmt.Errorf("reviewed commit source changed: %s/%s/%s no longer names consumed artifact %s", carried.SourceRunID, producer.Task.Name, carried.Name, carried.SourceArtifactID)
+					}
+				}
+			}
 		}
 	}
 	if len(candidates) == 0 {
@@ -498,14 +596,9 @@ func (c campaignFixCLI) resolve(ctx context.Context, a campaignFixArgs) (resolve
 		if e != nil {
 			return out, e
 		}
-		dec := json.NewDecoder(bytes.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if e = dec.Decode(&lineage); e != nil {
-			return out, fmt.Errorf("invalid fix lineage: %w", e)
-		}
-		var extra any
-		if dec.Decode(&extra) != io.EOF {
-			return out, errors.New("invalid fix lineage: trailing JSON")
+		lineage, e = decodeFixLineage(raw)
+		if e != nil {
+			return out, e
 		}
 		if lineage.Schema != "steward.fix-lineage/v1" || !safeFixComponent(lineage.RootRun) || !safeFixComponent(lineage.RootProducingTask) || !safeFixComponent(lineage.RootReviewTask) || lineage.RoundLimit < 1 || lineage.RoundLimit > 8 || lineage.RoundsUsedBefore < 0 || lineage.RoundsUsedBefore > 8 || lineage.RoundsDeclared < 1 || lineage.RoundsDeclared > 2 || lineage.RoundsUsedBefore+lineage.RoundsDeclared > lineage.RoundLimit {
 			return out, errors.New("invalid fix lineage counters or root")
@@ -555,7 +648,7 @@ func (c campaignFixCLI) resolve(ctx context.Context, a campaignFixArgs) (resolve
 	if a.roundLimit != 0 {
 		limit = a.roundLimit
 	}
-	declared, e := fixRounds(used, limit, v, lineage.RootRun+"/"+lineage.RootReviewTask)
+	declared, e := fixRounds(used, limit, v, lineage.RootRun+"/"+lineage.RootReviewTask, a.node.RunID+"/"+r.Task.Name)
 	if e != nil {
 		return out, e
 	}
@@ -780,12 +873,24 @@ func (c campaignFixCLI) run(ctx context.Context, args []string) error {
 	if a.asJSON {
 		return encodeCampaignJSON(c.stdout, document)
 	}
-	if _, e = fmt.Fprintf(c.stdout, "run %s\nfix %s/%s: verdict %s (blocking %d, %s) on commit %s (%s/%s)\n  rounds %d-%d of round_limit %d (lineage root %s/%s); gate: %s, %s\n", document.RunID, a.node.RunID, document.ReviewTask, document.Verdict.Verdict, document.Verdict.BlockingFindings, document.Verdict.Source, document.Commit.Commit, document.Commit.Task, document.Commit.Name, document.Lineage.FirstRound, document.Lineage.RoundsUsed+document.Lineage.RoundsDeclared, document.Lineage.RoundLimit, document.Lineage.RootRun, document.Lineage.RootReviewTask, strings.Join(document.Gate.Commands, "; "), document.Gate.Timeout); e != nil {
+	gateSummary := "none"
+	if len(document.Gate.Commands) > 0 {
+		gateSummary = strings.Join(document.Gate.Commands, "; ") + ", " + document.Gate.Timeout
+	}
+	if _, e = fmt.Fprintf(c.stdout, "run %s\nfix %s/%s: verdict %s (blocking %d, %s) on commit %s (%s/%s)\n  rounds %d-%d of round_limit %d (lineage root %s/%s); gate: %s\n", document.RunID, a.node.RunID, document.ReviewTask, document.Verdict.Verdict, document.Verdict.BlockingFindings, document.Verdict.Source, document.Commit.Commit, document.Commit.Task, document.Commit.Name, document.Lineage.FirstRound, document.Lineage.RoundsUsed+document.Lineage.RoundsDeclared, document.Lineage.RoundLimit, document.Lineage.RootRun, document.Lineage.RootReviewTask, gateSummary); e != nil {
 		return e
 	}
-	tasks := "fix1 -> review2"
+	tasks := "fix1"
+	if document.Lineage.RoundsDeclared == 1 && len(document.Gate.Commands) > 0 {
+		tasks += " (gate)"
+	}
+	tasks += " -> review2"
 	if document.Lineage.RoundsDeclared == 2 {
-		tasks += " -> fix2 (gate) -> review3"
+		tasks += " -> fix2"
+		if len(document.Gate.Commands) > 0 {
+			tasks += " (gate)"
+		}
+		tasks += " -> review3"
 	}
 	if _, e = fmt.Fprintf(c.stdout, "  tasks: %s\n", tasks); e != nil {
 		return e

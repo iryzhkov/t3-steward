@@ -3,7 +3,7 @@
   "rootRun": "run-source",
   "rootProducingTask": "implement",
   "rootReviewTask": "review",
-  "roundLimit": 4,
+  "round_limit": 4,
   "roundsUsedBefore": 0,
   "roundsDeclared": 2,
   "gate": {

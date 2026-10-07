@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"text/template"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -20,8 +21,9 @@ import (
 const FixLineageSchema = "steward.fix-lineage/v1"
 
 // WriteFixChain publishes a fully validated private staging directory.
-// The sibling reservation serializes writers of this output path; existing
-// output paths are refused, including empty directories and symbolic links.
+// A parent directory descriptor serializes publication without a persistent
+// reservation. The kernel releases its advisory lock even if a writer is killed.
+// Existing output paths are refused, including empty directories and symlinks.
 func WriteFixChain(out string, unit CompiledUnit, callerLimits ...Limits) (string, error) {
 	limits := DefaultLimits
 	if len(callerLimits) > 1 {
@@ -57,11 +59,6 @@ func WriteFixChain(out string, unit CompiledUnit, callerLimits ...Limits) (strin
 	if err = os.MkdirAll(parent, 0700); err != nil {
 		return target, err
 	}
-	reservation := target + ".fix-lock"
-	if err = os.Mkdir(reservation, 0700); err != nil {
-		return target, fmt.Errorf("reserve fix output: %w", err)
-	}
-	defer os.Remove(reservation)
 	staging, err := os.MkdirTemp(parent, ".fix-staging-")
 	if err != nil {
 		return target, err
@@ -79,6 +76,15 @@ func WriteFixChain(out string, unit CompiledUnit, callerLimits ...Limits) (strin
 	if _, err = Prepare(staging, limits); err != nil {
 		return target, err
 	}
+	publication, err := os.Open(parent)
+	if err != nil {
+		return target, err
+	}
+	defer publication.Close()
+	if err = syscall.Flock(int(publication.Fd()), syscall.LOCK_EX); err != nil {
+		return target, fmt.Errorf("lock fix publication: %w", err)
+	}
+	defer syscall.Flock(int(publication.Fd()), syscall.LOCK_UN)
 	if _, err = os.Lstat(target); err == nil {
 		return target, fmt.Errorf("fix output %s already exists", target)
 	} else if !os.IsNotExist(err) {
@@ -99,7 +105,7 @@ type FixLineage struct {
 	RootRun           string            `json:"rootRun"`
 	RootProducingTask string            `json:"rootProducingTask"`
 	RootReviewTask    string            `json:"rootReviewTask"`
-	RoundLimit        int               `json:"roundLimit"`
+	RoundLimit        int               `json:"round_limit"`
 	RoundsUsedBefore  int               `json:"roundsUsedBefore"`
 	RoundsDeclared    int               `json:"roundsDeclared"`
 	Gate              *domain.TaskGate  `json:"gate"`

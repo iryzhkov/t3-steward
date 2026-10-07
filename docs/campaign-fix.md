@@ -20,7 +20,7 @@ The source is the review task's latest terminal, succeeded attempt. Its recorded
 
 An accepted review refuses with “nothing to fix”. A missing verdict names `review_output` and older coordinators; an unsucceeded review is refused. No run is created.
 
-The reviewed commit is the single declared commit consumed by the review through local dependency inputs or carried inputs. Carried inputs require source-run provenance. `--commit RUN/TASK/NAME` explicitly selects a declared commit of a succeeded producer when automatic selection is absent or ambiguous. Zero candidates and multiple candidates are refused with recovery instructions. The commit provenance supplies the commit and base; a `type: fresh` environment is refused.
+The reviewed commit is the single declared commit consumed by the review through local dependency inputs or carried inputs. Carried inputs require source-run provenance. Modern attempt and artifact pins must still match the producer; a stale reviewed source is refused rather than rebound to newer work. Retained outputs must belong to the latest succeeded attempt. `--commit RUN/TASK/NAME` explicitly selects a declared commit of a succeeded producer when automatic selection is absent or ambiguous. Zero candidates and multiple candidates are refused with recovery instructions. The commit provenance supplies the commit and base; a `type: fresh` environment is refused.
 
 ## Generated template
 
@@ -43,7 +43,7 @@ The original producer prompt is retained at `inputs/fix/brief/prompt.md`, with i
 
 No agent gate task is generated. H2's worker-owned `gate:` runs on the final fix task after verification, outside the agent turn. Every attempt executes its gate afresh, including a no-op fix. Gate resolution is explicit repeatable `--gate CMD` commands (timeout `--gate-timeout DUR`, default 30m), then `--no-gate`, then recorded lineage gate, then producer gate. If no gate resolves, pass `--gate` or `--no-gate`. Coordinator verification timeout limits still apply.
 
-`inputs/fix/lineage.json` uses schema `steward.fix-lineage/v1` and records root run, root producing and review tasks, `round_limit`, rounds used before the run, rounds declared, gate and prior fix-run review evidence. A fix task with work counts as one round: `fix1` always counts; `fix2` counts unless `review2`'s recorded verdict accepts.
+`inputs/fix/lineage.json` uses schema `steward.fix-lineage/v1` and records root run, root producing and review tasks, `round_limit`, rounds used before the run, rounds declared, gate and prior fix-run review evidence. Malformed, incomplete, null or duplicate lineage authority fields are refused. A fix task with work counts as one round: `fix1` always counts; `fix2` counts unless `review2`'s recorded verdict accepts.
 
 The default limit is 4, inherited from lineage thereafter. `--round-limit N` overrides it and accepts 1 through 8. Each new campaign declares at most two remaining rounds. At exhaustion the command submits nothing and reports `review-round-limit-exhausted`, `roundsUsed`, `roundLimit`, the latest verdict and finding titles. Recovery is a design pass or an explicit higher limit.
 

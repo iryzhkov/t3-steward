@@ -135,6 +135,17 @@ func TestCampaignFixReplayPrintsSameRun(t *testing.T) {
 		t.Fatal("replay changed archive")
 	}
 }
+func TestCampaignFixNoGateReceipt(t *testing.T) {
+	cli, out := fixCommandFixture(t)
+	armFixSubmission(t, &cli)
+	if err := cli.run(context.Background(), []string{"run/review", "--idempotency-key", "key", "--no-notify", "--no-gate"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "gate: none") || strings.Contains(out.String(), "(gate)") {
+		t.Fatalf("no-gate receipt claims a gate: %s", out.String())
+	}
+}
+
 func TestCampaignFixJSONDocument(t *testing.T) {
 	cli, out := fixCommandFixture(t)
 	armFixSubmission(t, &cli)

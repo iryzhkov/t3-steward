@@ -47,8 +47,8 @@ func fixCommandFixture(t *testing.T) (campaignFixCLI, *bytes.Buffer) {
 	producer := domain.Task{ID: "p", Name: "implement", PromptArtifactID: "prompt", Outputs: []domain.ArtifactDeclaration{{Name: "implementation", Commit: &domain.CommitOutput{}}, {Name: "handoff.md"}}, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", Model: "gpt-6.1-sol"}}, MaxTurns: 10, Gate: &domain.TaskGate{Commands: []string{"true"}}}
 	review := domain.Task{ID: "r", Name: "review", DependencyInputs: map[string][]string{"implement": {"implementation", "handoff.md"}}, Outputs: []domain.ArtifactDeclaration{{Name: "review.md"}}, Routes: []domain.ProviderRoute{{ProviderInstanceID: "claudeAgent", Model: "claude-opus-5-5"}}, MaxTurns: 10}
 	detail := backlogadmin.WorkflowDetail{Summary: backlogadmin.WorkflowSummary{Run: domain.WorkflowRun{ID: "run"}, Workflow: domain.Workflow{Name: "source", Project: "project", Class: domain.TaskClassRequired, Environment: domain.ExecutionEnvironment{Type: "git", Scope: "task", Ref: "main"}}}, Tasks: []backlogadmin.TaskDetail{
-		{Task: producer, Attempt: &domain.Attempt{ID: "pa", Progress: domain.ProgressSucceeded}, Artifacts: []backlogadmin.Artifact{{Metadata: backlogadmin.ArtifactMetadata{ID: "commit", Name: "implementation", AttemptID: "pa"}}, {Metadata: backlogadmin.ArtifactMetadata{ID: "handoff", Name: "handoff.md", AttemptID: "pa"}}}},
-		{Task: review, Attempt: &domain.Attempt{ID: "ra", Progress: domain.ProgressSucceeded, ReviewVerdict: &domain.ReviewVerdict{Verdict: "changes-requested", BlockingFindings: 1}}, Artifacts: []backlogadmin.Artifact{{Metadata: backlogadmin.ArtifactMetadata{ID: "review", Name: "review.md", AttemptID: "ra"}}}},
+		{Task: producer, Attempt: &domain.Attempt{ID: "pa", Progress: domain.ProgressSucceeded}, Artifacts: []backlogadmin.Artifact{{Metadata: backlogadmin.ArtifactMetadata{ID: "commit", Name: "implementation", WorkflowRunID: "run", TaskID: "p", AttemptID: "pa", Kind: domain.ArtifactOutput}}, {Metadata: backlogadmin.ArtifactMetadata{ID: "handoff", Name: "handoff.md", WorkflowRunID: "run", TaskID: "p", AttemptID: "pa", Kind: domain.ArtifactOutput}}}},
+		{Task: review, Attempt: &domain.Attempt{ID: "ra", Progress: domain.ProgressSucceeded, ReviewVerdict: &domain.ReviewVerdict{Verdict: "changes-requested", BlockingFindings: 1}}, Artifacts: []backlogadmin.Artifact{{Metadata: backlogadmin.ArtifactMetadata{ID: "review", Name: "review.md", WorkflowRunID: "run", TaskID: "r", AttemptID: "ra", Kind: domain.ArtifactOutput}}}},
 	}}
 	provenance := backlog.CommitProvenance{Version: backlog.CampaignCommitRecordVersion, WorkflowRunID: "run", TaskID: "p", Name: "implementation", Repository: "project", Base: strings.Repeat("a", 40), Commit: strings.Repeat("b", 40), Ref: "refs/campaign/test"}
 	raw, _ := json.Marshal(provenance)
@@ -194,7 +194,7 @@ func TestCampaignFixCountsRoundsAndEscalates(t *testing.T) {
 		used, limit, want int
 		fail              bool
 	}{{0, 4, 2, false}, {2, 4, 2, false}, {3, 4, 1, false}, {4, 4, 0, true}, {4, 6, 2, false}} {
-		declared, e := fixRounds(tc.used, tc.limit, &domain.ReviewVerdict{Verdict: "changes-requested", FindingTitles: []string{"repair"}}, "run/review")
+		declared, e := fixRounds(tc.used, tc.limit, &domain.ReviewVerdict{Verdict: "changes-requested", FindingTitles: []string{"repair"}}, "run/review", "run/review")
 		if (e != nil) != tc.fail || declared != tc.want {
 			t.Fatalf("%+v got %d %v", tc, declared, e)
 		}
