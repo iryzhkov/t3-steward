@@ -160,7 +160,7 @@ func TestGitHubAnnotationRepairLongUTF8BothWakes(t *testing.T) {
 				if partial {
 					state = "Annotations partial"
 				}
-				if len(output) > 4000 || !utf8.ValidString(output) || !strings.Contains(output, state) || !strings.Contains(text, output) || !strings.Contains(output, "Additional/capped display") || strings.Contains(output, "<system>") || strings.Contains(output, "```") {
+				if len(output) > 4000 || !utf8.ValidString(output) || !strings.Contains(output, state) || !strings.Contains(text, output) || strings.Count(output, " x10 ") != 1 || strings.Contains(output, "<system>") || strings.Contains(output, "```") {
 					t.Fatal(output)
 				}
 				if partial && (!strings.Contains(output, "warning=unknown") || !strings.Contains(output, "Missing data is not zero")) {

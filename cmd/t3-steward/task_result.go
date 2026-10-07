@@ -151,15 +151,7 @@ func cmdTaskResult(g globalFlags, args []string) error {
 		return err
 	}
 	cli := taskResultCLI{stdout: os.Stdout, stderr: os.Stderr, workdir: workdir, results: results}
-	cli.query = func(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
-		transport, err := newCoordinatorTransport(cfg)
-		if err != nil {
-			return backlogadmin.Response{}, err
-		}
-		query.Version = backlogadmin.Version
-		query.Principal = transport.principal
-		return transport.client.Query(ctx, query)
-	}
+	cli.query = coordinatorWorkflowQuery(cfg)
 	cli.open = func(ctx context.Context, id string) (backlogadmin.ArtifactContent, error) {
 		return openTaskResultArtifact(ctx, cfg, id)
 	}

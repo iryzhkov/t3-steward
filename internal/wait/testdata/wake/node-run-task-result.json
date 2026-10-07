@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "run": "run-8c2bcc2de8960f8b92f0a68567b9b46e",
+  "outcome": "failed",
+  "tasks": [
+    {
+      "task": "fix1",
+      "taskId": "task-e2802c9328921a584406e3e88abe76d3",
+      "attemptId": "attempt-14ef4847aa1d6283bce4ad43af7e712b",
+      "progress": "succeeded",
+      "failure": null,
+      "files": [
+        {
+          "name": "fix.bundle",
+          "kind": "output",
+          "size": 116709
+        },
+        {
+          "name": "handoff.md",
+          "kind": "output",
+          "size": 8202
+        },
+        {
+          "name": "verification.log",
+          "kind": "output",
+          "size": 15307
+        },
+        {
+          "name": "continuation.md",
+          "kind": "output",
+          "size": 407
+        },
+        {
+          "name": "final-message.md",
+          "kind": "summary",
+          "size": 3123
+        }
+      ]
+    },
+    {
+      "task": "fix2",
+      "taskId": "task-0b1d7669abad2232b25d97c17a05083e",
+      "attemptId": "attempt-a9805d0bc804cf9f3e4f3bc590cebb54",
+      "progress": "succeeded",
+      "failure": null,
+      "files": [
+        {
+          "name": "handoff.md",
+          "kind": "output",
+          "size": 8536
+        },
+        {
+          "name": "fix.bundle",
+          "kind": "output",
+          "size": 125712
+        },
+        {
+          "name": "verification.log",
+          "kind": "output",
+          "size": 5654
+        },
+        {
+          "name": "continuation.md",
+          "kind": "output",
+          "size": 382
+        },
+        {
+          "name": "final-message.md",
+          "kind": "summary",
+          "size": 2584
+        }
+      ]
+    },
+    {
+      "task": "gate",
+      "taskId": "task-a79b419bf0a99876db9a85ad631b09b9",
+      "attemptId": "attempt-728ece4a79dcc36017a6c4383b1fa56c",
+      "progress": "failed",
+      "failure": "verification command failed (1): tail -1 gate.log | grep -Eq '^RESULT EXIT 0$'",
+      "files": [
+        {
+          "name": "continuation.md",
+          "kind": "output",
+          "size": 193
+        },
+        {
+          "name": "gate.log",
+          "kind": "output",
+          "size": 1629737
+        },
+        {
+          "name": "final-message.md",
+          "kind": "summary",
+          "size": 984
+        }
+      ]
+    },
+    {
+      "task": "review2",
+      "taskId": "task-f97bba408f297a42d96eac37f8ebcb7d",
+      "attemptId": "attempt-8f3d76116ebd4d4e3105fa6794d1f71b",
+      "progress": "succeeded",
+      "failure": null,
+      "files": [
+        {
+          "name": "review.md",
+          "kind": "output",
+          "size": 10343
+        },
+        {
+          "name": "final-message.md",
+          "kind": "summary",
+          "size": 306
+        }
+      ]
+    },
+    {
+      "task": "review3",
+      "taskId": "task-45a7992c72422a75f84ea4312afb676c",
+      "attemptId": "attempt-b74fbc5136b3958f6ea61ea33f44b1d8",
+      "progress": "skipped",
+      "failure": "terminal dependency prevented execution: [gate]",
+      "files": []
+    }
+  ]
+}

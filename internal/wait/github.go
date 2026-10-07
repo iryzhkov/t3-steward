@@ -311,7 +311,9 @@ func (r *Runner) runGitHubOnce(ctx context.Context, w *Wait, now time.Time) {
 	w.Errors = 0
 	w.LastOutput = reading.Reason
 	if (reading.Status == StatusMet || reading.Status == StatusFailed) && (w.GitHub.Kind == "run" || w.GitHub.State == "checks-passed") {
-		w.LastOutput = r.gitHubAnnotations(ctx, *w.GitHub, w.Dir, reading)
+		var summary WakeSummary
+		w.LastOutput, summary = r.gitHubAnnotations(ctx, *w.GitHub, w.Dir, reading)
+		w.Summary = &summary
 	}
 	switch reading.Status {
 	case StatusMet:

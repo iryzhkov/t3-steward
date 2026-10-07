@@ -1,0 +1,19 @@
+# First and last lines of the retained outputs of run-8c2bcc2de8960f8b92f0a68567b9b46e (upkeeper-fresh-host-fixchain3), collected 2026-10-07 with t3-steward task result
+
+review2/review.md line 1: VERDICT: CHANGES_REQUESTED
+gate/gate.log line 1: commit: af7528678d82175d108e11f9aab391a7e74032e6
+gate/gate.log last line: RESULT EXIT 2
+fix1/fix.bundle ref lines:
+e2029aac860e24857f39812341269a975420a1a1 refs/heads/fix/fresh-host
+fix1/fix.bundle prerequisite lines:
+-22c7f60bec2d217c03fc3bc1260d09ba66d25718 Capture the fleet release from omarchy-pc
+fix2/fix.bundle ref lines:
+af7528678d82175d108e11f9aab391a7e74032e6 refs/heads/fix/fresh-host
+fix2/fix.bundle prerequisite lines:
+-22c7f60bec2d217c03fc3bc1260d09ba66d25718 Capture the fleet release from omarchy-pc
+gate/gate.log first failing test lines:
+--- FAIL: TestCatalogBaselineGitNoLazyFetchLocalPromisor (0.26s)
+--- FAIL: TestCatalogBaselineMetadataBarrier (1.00s)
+    --- FAIL: TestCatalogBaselineMetadataBarrier/include (0.06s)
+    --- FAIL: TestCatalogBaselineMetadataBarrier/promisor (0.05s)
+    --- FAIL: TestCatalogBaselineMetadataBarrier/unknown (0.09s)
