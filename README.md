@@ -879,7 +879,7 @@ t3-steward report [--days 14] [--peak "Mon-Fri 09:00-17:00"] [--bucket TEXT] [--
 t3-steward export [--days 14] [--from-logs]
 t3-steward forecast [--days 56] [--bucket TEXT] [--from-logs] [--remotes a,b] [--json]
 t3-steward task run [--project NAME] [--ref REF | --fresh] [--model [INSTANCE/]MODEL] [--worker W]
-                    [--name TEXT] [--outputs a.md,b.md] [--verify CMD]... [--class surplus|required]
+                    [--name TEXT] [--output FILE]... [--verify CMD]... [--class surplus|required]
                     [--max-turns N] [--idempotency-key KEY] [--no-notify] [--json]
                     (-- PROMPT | --prompt-file FILE | --fan-out GLOB | stdin)
 t3-steward task result RUN[/TASK] [--output DIR] [--json]

@@ -66,7 +66,10 @@ Flags:
   --role ROLE          --effort low|medium|high       --policy-file PATH
   --model [INSTANCE/]MODEL                     --worker WORKER
   --name TEXT           --idempotency-key KEY
-  --outputs a.md,b.md   --verify "CMD" (repeatable)
+  --output FILE        repeatable; a file the task writes, kept beside
+                       final-message.md (see Outputs below)
+  --outputs a.md,b.md  the same list as one comma-separated value
+  --verify "CMD"       repeatable
   --input FILE         repeatable; pinned files under .t3/inputs/<basename>
                        1 MiB/file, 3 MiB total, 100 files; final symlinks and .. refused
   --class surplus|required (default surplus)   --max-turns N (default 3)
@@ -81,7 +84,20 @@ Flags:
 research and spike work that produces findings rather than commits. It needs
 no Git checkout, derives no ref, and needs a catalog project of type fresh
 ("t3-steward backlog projects" shows TYPE). Collect what it writes by naming
-the files with --outputs. Campaigns: t3-steward campaign help fresh.
+the files with --output. Campaigns: t3-steward campaign help fresh.
+
+Outputs: only the files named with --output (or --outputs) are kept when the
+task ends, and every other file it writes is discarded with its workspace.
+final-message.md is always kept: it is the task's last message and needs no
+name.
+Each name follows the rules of a campaign task's outputs: a relative path
+inside the workspace, no .. escape, no glob characters, none repeated; a bad
+name is refused before the coordinator is contacted. Every task of a fan-out
+declares the same names. A declared file that does not exist when the turn
+ends fails the task with "missing declared output", and whatever does exist is
+still kept. The record and --dry-run print the declared outputs after the
+route; "t3-steward task result <run>" writes them beside final-message.md and
+names any that were not retained.
 
 The prompt is exactly one of: an inline argument after --, --prompt-file FILE,
 --prompt-file - or stdin. --fan-out GLOB starts one run with one task per file,
@@ -117,14 +133,18 @@ const taskRunSchemaVersion = 1
 // otherwise. Every derived value is in it, because the caller did not choose
 // them and has to be able to see what was chosen for it.
 type taskRunRecord struct {
-	Selection      *policySelection      `json:"selection,omitempty"`
-	SchemaVersion  int                   `json:"schemaVersion"`
-	Run            string                `json:"run"`
-	Tasks          []string              `json:"tasks"`
-	Project        string                `json:"project"`
-	Ref            string                `json:"ref,omitempty"`
-	Fresh          bool                  `json:"fresh,omitempty"`
-	Route          taskRunRoute          `json:"route"`
+	Selection     *policySelection `json:"selection,omitempty"`
+	SchemaVersion int              `json:"schemaVersion"`
+	Run           string           `json:"run"`
+	Tasks         []string         `json:"tasks"`
+	Project       string           `json:"project"`
+	Ref           string           `json:"ref,omitempty"`
+	Fresh         bool             `json:"fresh,omitempty"`
+	Route         taskRunRoute     `json:"route"`
+	// Outputs are the files every task of the run declared, which is what
+	// "task result" collects beside final-message.md. On a replay they are what
+	// this call declared, which the key covers, so they match the run's own.
+	Outputs        []string              `json:"outputs,omitempty"`
 	IdempotencyKey string                `json:"idempotencyKey"`
 	Replayed       bool                  `json:"replayed"`
 	Notify         *campaignNotification `json:"notify,omitempty"`
@@ -354,6 +374,11 @@ func parseTaskRunArgs(args []string) (taskRunArgs, error) {
 			if raw, err = value(i, "--input"); err == nil {
 				parsed.inputs = append(parsed.inputs, raw)
 			}
+		case "--output":
+			var raw string
+			if raw, err = value(i, "--output"); err == nil {
+				parsed.outputs = append(parsed.outputs, raw)
+			}
 		case "--outputs":
 			var raw string
 			if raw, err = value(i, "--outputs"); err == nil {
@@ -411,6 +436,13 @@ type taskRunPrompt struct {
 func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	parsed, err := parseTaskRunArgs(args)
 	if err != nil {
+		return err
+	}
+	// The campaign validator's own rule, before anything is read or asked of
+	// the coordinator: a bad or repeated name is refused offline and under the
+	// flag's name, rather than after the catalog query and under the path of a
+	// temporary directory the caller never saw.
+	if err := backlog.ValidateOutputPaths("--output", parsed.outputs); err != nil {
 		return err
 	}
 	prompts, err := c.prompts(parsed)
@@ -586,6 +618,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		Ref:            ref,
 		Fresh:          parsed.fresh,
 		Route:          printedRoute(route),
+		Outputs:        parsed.outputs,
 		IdempotencyKey: response.Key,
 		Replayed:       response.Replay,
 		Check:          string(matrix.Outcome),
@@ -1256,6 +1289,7 @@ func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
 	fmt.Fprintf(out, "project %s\n", record.Project)
 	fmt.Fprintf(out, "ref %s\n", ref)
 	fmt.Fprintf(out, "route %s\n", route)
+	fmt.Fprintln(out, taskRunOutputsLine(record.Outputs))
 	fmt.Fprintf(out, "idempotency-key %s (replayed: %t)\n", record.IdempotencyKey, record.Replayed)
 	if record.InputManifest != nil {
 		fmt.Fprintf(out, "input-manifest %s\n", record.InputManifest.Digest)

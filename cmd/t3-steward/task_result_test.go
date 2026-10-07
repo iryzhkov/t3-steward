@@ -340,6 +340,90 @@ func TestTaskResultReportsAMissingFinalMessage(t *testing.T) {
 	}
 }
 
+// declareOutputs makes the fixture's task declare a written report, a notes
+// file it never retained, and a commit, which is not a file and is not checked.
+func (f *taskResultFixture) declareOutputs() {
+	f.detail.Tasks[0].Task.Outputs = []domain.ArtifactDeclaration{
+		{Name: "reports/./report.md"},
+		{Name: "notes.md"},
+		{Name: "branch", Commit: &domain.CommitOutput{}},
+	}
+}
+
+// A declared output the task did not leave behind is named at collection, so a
+// caller does not have to know which files to look for to see that one is gone.
+func TestTaskResultReportsDeclaredOutputsThatWereNotRetained(t *testing.T) {
+	f := newTaskResultFixture(t)
+	f.declareOutputs()
+	f.detail.Tasks[0].Attempt.Progress = domain.ProgressFailed
+	f.detail.Summary.Run.Progress = domain.ProgressFailed
+	if code := exitCodeFor(f.run("run-1")); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	text := f.stdout.String()
+	if !strings.Contains(text, "    notes.md is not there: declared output was not retained\n") {
+		t.Fatalf("the text form does not name the missing output:\n%s", text)
+	}
+	if strings.Contains(text, "report.md is not there") || strings.Contains(text, "branch is not there") {
+		t.Fatalf("a retained output or a declared commit was reported missing:\n%s", text)
+	}
+
+	f = newTaskResultFixture(t)
+	f.declareOutputs()
+	f.detail.Tasks[0].Attempt.Progress = domain.ProgressFailed
+	if code := exitCodeFor(f.run("run-1", "--json")); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	task := f.document(t).Tasks[0]
+	if strings.Join(task.MissingOutputs, ",") != "notes.md" {
+		t.Fatalf("missingOutputs = %v, want [notes.md]", task.MissingOutputs)
+	}
+	if len(task.Missing) != 0 {
+		t.Fatalf("missing = %v: the final message was collected", task.Missing)
+	}
+
+	// Everything declared is there: nothing is reported, and the key is absent.
+	f = newTaskResultFixture(t)
+	f.declareOutputs()
+	f.detail.Tasks[0].Task.Outputs = f.detail.Tasks[0].Task.Outputs[:1]
+	if err := f.run("run-1", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.stdout.String(), "missingOutputs") {
+		t.Fatalf("a task with every output retained reported some missing:\n%s", f.stdout.String())
+	}
+}
+
+// Before the task ends its outputs may still arrive, and a skipped task never
+// ran, so neither is reported as missing anything it declared.
+func TestTaskResultDoesNotReportMissingOutputsBeforeTheTaskEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		progress  domain.ProgressState
+		noAttempt bool
+	}{
+		{name: "running", progress: domain.ProgressActive},
+		{name: "queued", progress: domain.ProgressQueued},
+		{name: "skipped", progress: domain.ProgressSkipped},
+		{name: "no attempt", noAttempt: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTaskResultFixture(t)
+			f.declareOutputs()
+			f.detail.Artifacts = f.detail.Artifacts[:1]
+			if tc.noAttempt {
+				f.detail.Tasks[0].Attempt = nil
+			} else {
+				f.detail.Tasks[0].Attempt.Progress = tc.progress
+			}
+			_ = f.run("run-1/task", "--json")
+			if task := f.document(t).Tasks[0]; len(task.MissingOutputs) != 0 {
+				t.Fatalf("missingOutputs = %v for a %s task", task.MissingOutputs, tc.name)
+			}
+		})
+	}
+}
+
 func TestTaskResultRefusesAnUnknownSelector(t *testing.T) {
 	f := newTaskResultFixture(t)
 	if err := f.run("run-1/nope"); err == nil || !strings.Contains(err.Error(), "nope") {
