@@ -13,7 +13,10 @@ import (
 )
 
 // LiveCommand is one command an attempt started that was still running when
-// its turn ended.
+// its turn ended. Command is the whole command line, its arguments joined by
+// single spaces and neither shortened nor otherwise changed, so that the
+// secret scan sees every credential it holds whole; displayCommand bounds it
+// for the nudge, the note and the failure.
 type LiveCommand struct {
 	PID     int    `json:"pid"`
 	Command string `json:"command"`
@@ -29,9 +32,17 @@ type LiveCommandReport struct {
 	Commands    []LiveCommand
 }
 
-// maxLiveCommandText bounds the command line kept for one live command, so a
+// maxLiveCommandText bounds the command line shown for one live command, so a
 // long gate invocation cannot crowd the nudge, the note or the failure.
 const maxLiveCommandText = 200
+
+// displayCommand is a command line as the nudge, the note and the failure show
+// it: runs of white space collapsed and the text bounded. A command line that
+// leaves the worker is redacted before it is shown, since shortening first
+// could cut a credential so that the scanner no longer matches it.
+func displayCommand(command string) string {
+	return truncateText(strings.Join(strings.Fields(command), " "), maxLiveCommandText)
+}
 
 // scanLiveCommands looks for the commands an attempt left running in its
 // workspace on this host.
@@ -169,8 +180,8 @@ func scanLiveCommandsIn(goos, procRoot string, self int, workspace string) (Live
 	sort.Ints(pids)
 	var report LiveCommandReport
 	for _, pid := range pids {
-		command := truncateText(strings.Join(strings.Fields(strings.Join(table.args(pid), " ")), " "), maxLiveCommandText)
-		if command == "" {
+		command := strings.Join(table.args(pid), " ")
+		if strings.TrimSpace(command) == "" {
 			// The command line reads empty while a process is replacing its
 			// program; the process still runs, under its command name.
 			name, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "comm"))

@@ -106,9 +106,9 @@ func (r *Runtime) holdForLiveCommands(ctx context.Context, id string, record Att
 		return false, nil
 	}
 	// The note and the failure shorten command lines, and a credential cut in
-	// half no longer matches the scanner, so whole command lines are redacted
-	// first. The nudge goes to the session that started them and names them
-	// as they are.
+	// half no longer matches the scanner, so whole command lines, as the scan
+	// read them, are redacted first. The nudge goes to the session that
+	// started them and names them as they are.
 	checked := r.checkedCommands(ctx, id, pkg, report.Commands)
 	if check.Nudges >= MaxLiveCommandNudges {
 		return true, r.failLiveCommands(ctx, id, record, inspector, checked, check.Nudges)
@@ -146,9 +146,10 @@ func (r *Runtime) checkedTurnEndNote(ctx context.Context, id string, pkg workerp
 }
 
 // checkedCommands is commands with the attempt's credentials removed from each
-// whole command line, or every line replaced by a fixed notice when the
-// scanner cannot run. The lines are redacted in one pass, joined by NUL,
-// which neither a credential nor the redaction marker contains.
+// whole command line and only then bounded for display, or every line
+// replaced by a fixed notice when the scanner cannot run. The lines are
+// redacted in one pass, joined by NUL, which neither a credential, nor the
+// redaction marker, nor a command line read from /proc contains.
 func (r *Runtime) checkedCommands(ctx context.Context, id string, pkg workerproto.ExecutionPackage, commands []LiveCommand) []LiveCommand {
 	lines := make([]string, len(commands))
 	for index, command := range commands {
@@ -165,7 +166,7 @@ func (r *Runtime) checkedCommands(ctx context.Context, id string, pkg workerprot
 		return checked
 	}
 	for index := range checked {
-		checked[index].Command = parts[index]
+		checked[index].Command = displayCommand(parts[index])
 	}
 	return checked
 }
@@ -272,7 +273,7 @@ func liveCommandNudgeText(commands []LiveCommand, nudge int) string {
 			fmt.Fprintf(&text, "- and %d more\n", len(commands)-index)
 			break
 		}
-		fmt.Fprintf(&text, "- pid %d: %s\n", command.PID, command.Command)
+		fmt.Fprintf(&text, "- pid %d: %s\n", command.PID, displayCommand(command.Command))
 	}
 	fmt.Fprintf(&text, "Ending a turn completes the task, and the task cannot complete while these run. "+
 		"Wait for each of them to exit in the foreground: poll until it has exited, and do not start another background command. "+
