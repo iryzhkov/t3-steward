@@ -75,6 +75,10 @@ func (d *LocalDriver) NudgeLiveCommands(ctx context.Context, pkg workerproto.Exe
 // alone. The runtime's .t3 directory is never part of it. A clean tree, or a
 // task with no declared commit, is not snapshotted, and neither is a
 // workspace that never became a Git work tree.
+//
+// Git runs here on the worker host, outside any containment the attempt had,
+// so it runs in a private repository (see snapshotRepository) and reads
+// nothing the task wrote under .git as configuration.
 func (d *LocalDriver) SnapshotWorkInProgress(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) (string, error) {
 	if d.Config.DryRun || workspace == "" || !backlog.DeclaresAnyCommit(pkg.Outputs) {
 		return "", nil
@@ -82,60 +86,61 @@ func (d *LocalDriver) SnapshotWorkInProgress(ctx context.Context, pkg workerprot
 	if _, err := os.Lstat(filepath.Join(workspace, ".git")); err != nil {
 		return "", nil
 	}
-	ref := workInProgressRefPrefix + pkg.Identity.AttemptID
-	if _, err := workspaceGit(ctx, workspace, nil, "check-ref-format", ref); err != nil {
-		return "", fmt.Errorf("work-in-progress ref %q is not valid: %w", ref, err)
-	}
-	status, err := workspaceGit(ctx, workspace, nil, "status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).t3")
-	if err != nil {
-		return "", fmt.Errorf("read working tree status: %w", err)
-	}
-	if status == "" {
-		return "working tree clean; no wip.bundle", nil
-	}
-	head, err := workspaceGit(ctx, workspace, nil, "rev-parse", "--verify", "HEAD^{commit}")
-	if err != nil {
-		return "", fmt.Errorf("resolve HEAD: %w", err)
-	}
 	attemptDir := d.workspacePath(pkg)
 	scratch, err := os.MkdirTemp(attemptDir, ".wip-")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(scratch)
+	git, err := newSnapshotRepository(ctx, workspace, filepath.Join(scratch, "git"))
+	if err != nil {
+		return "", fmt.Errorf("prepare snapshot repository: %w", err)
+	}
+	ref := workInProgressRefPrefix + pkg.Identity.AttemptID
+	if _, err := git.run(ctx, nil, "check-ref-format", ref); err != nil {
+		return "", fmt.Errorf("work-in-progress ref %q is not valid: %w", ref, err)
+	}
+	head := git.head
 	index := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
-	if _, err := workspaceGit(ctx, workspace, index, "read-tree", head); err != nil {
+	if _, err := git.run(ctx, index, "read-tree", head); err != nil {
 		return "", fmt.Errorf("seed snapshot index: %w", err)
 	}
-	if _, err := workspaceGit(ctx, workspace, index, "add", "-A", "--", ".", ":(exclude).t3"); err != nil {
+	if _, err := git.run(ctx, index, "add", "-A", "--", ".", ":(exclude).t3"); err != nil {
 		return "", fmt.Errorf("stage snapshot: %w", err)
 	}
-	tree, err := workspaceGit(ctx, workspace, index, "write-tree")
+	tree, err := git.run(ctx, index, "write-tree")
 	if err != nil {
 		return "", fmt.Errorf("write snapshot tree: %w", err)
+	}
+	headTree, err := git.run(ctx, nil, "rev-parse", "--verify", head+"^{tree}")
+	if err != nil {
+		return "", fmt.Errorf("resolve HEAD tree: %w", err)
+	}
+	if tree == headTree {
+		return "working tree clean; no wip.bundle", nil
 	}
 	identity := []string{
 		"GIT_AUTHOR_NAME=t3-steward", "GIT_AUTHOR_EMAIL=t3-steward@localhost",
 		"GIT_COMMITTER_NAME=t3-steward", "GIT_COMMITTER_EMAIL=t3-steward@localhost",
 	}
 	message := fmt.Sprintf("t3-steward: uncommitted work of attempt %s when it failed", pkg.Identity.AttemptID)
-	commit, err := workspaceGit(ctx, workspace, identity, "commit-tree", tree, "-p", head, "-m", message)
+	commit, err := git.run(ctx, identity, "commit-tree", tree, "-p", head, "-m", message)
 	if err != nil {
 		return "", fmt.Errorf("write snapshot commit: %w", err)
 	}
-	if _, err := workspaceGit(ctx, workspace, nil, "update-ref", ref, commit); err != nil {
+	if _, err := git.run(ctx, nil, "update-ref", ref, commit); err != nil {
 		return "", fmt.Errorf("record snapshot ref: %w", err)
 	}
 	bundleArgs := []string{"bundle", "create", filepath.Join(scratch, WorkInProgressBundleFile), ref}
 	if base, err := backlog.WorkspaceBaseCommit(workspace); err == nil && base != "" {
-		if _, err := workspaceGit(ctx, workspace, nil, "merge-base", "--is-ancestor", base, commit); err == nil {
+		if _, err := git.run(ctx, nil, "merge-base", "--is-ancestor", base, commit); err == nil {
 			bundleArgs = append(bundleArgs, "^"+base)
 		}
 	}
-	if _, err := workspaceGit(ctx, workspace, nil, bundleArgs...); err != nil {
+	if _, err := git.run(ctx, nil, bundleArgs...); err != nil {
 		return "", fmt.Errorf("create wip.bundle: %w", err)
 	}
-	if _, err := workspaceGit(ctx, workspace, nil, "bundle", "verify", filepath.Join(scratch, WorkInProgressBundleFile)); err != nil {
+	if _, err := git.run(ctx, nil, "bundle", "verify", filepath.Join(scratch, WorkInProgressBundleFile)); err != nil {
 		return "", fmt.Errorf("verify wip.bundle: %w", err)
 	}
 	path := filepath.Join(attemptDir, WorkInProgressBundleFile)
@@ -227,13 +232,111 @@ func (d *LocalDriver) workInProgressBundle(pkg workerproto.ExecutionPackage, res
 	return raw
 }
 
-// workspaceGit runs one git command in workspace with hooks and the file
-// system monitor disabled, and returns its trimmed standard output.
-func workspaceGit(ctx context.Context, workspace string, env []string, args ...string) (string, error) {
+// snapshotRepository is the private Git directory a snapshot runs in, so that
+// the task's repository configuration never runs with the worker's authority.
+//
+// Git takes commands from configuration: clean filters run while files are
+// staged, signing programs while commits are written, and hooks and the file
+// system monitor around both. The task can write its repository's
+// configuration, attributes and hooks, and a snapshot runs on the worker host,
+// outside any containment the attempt had, so a filter the task named would
+// run there and could read what the attempt was never given. Overriding the
+// settings one by one cannot keep up with a configuration the task may still
+// be changing. The snapshot therefore runs with GIT_DIR naming a directory
+// the worker wrote, with no configuration beyond the object format, no hooks
+// and no attributes, borrowing the workspace's objects through an alternate
+// and keeping its own objects and the snapshot ref. The working tree is the
+// workspace, read as plain files. System and global configuration are not
+// read either, and the worker's environment is not passed on.
+//
+// Filters the workspace's attributes name are undefined here, so files are
+// staged as they are on disk. A workspace whose .git is not a directory of its
+// own, or whose objects come from another repository, is not snapshotted: the
+// worker would read objects the task chose from outside the workspace.
+type snapshotRepository struct {
+	workspace string
+	gitDir    string
+	// home is the worker's scratch directory, given to Git as its home so
+	// that no per-user file is read either.
+	home string
+	// head is the workspace's HEAD commit when the snapshot started.
+	head string
+}
+
+func newSnapshotRepository(ctx context.Context, workspace, gitDir string) (snapshotRepository, error) {
+	source := filepath.Join(workspace, ".git")
+	objects := filepath.Join(source, "objects")
+	for _, dir := range []string{source, objects} {
+		info, err := os.Lstat(dir)
+		if err != nil {
+			return snapshotRepository{}, err
+		}
+		if !info.IsDir() {
+			return snapshotRepository{}, fmt.Errorf("%s is not a directory of the workspace's own", dir)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(objects, "info", "alternates")); !errors.Is(err, os.ErrNotExist) {
+		return snapshotRepository{}, errors.New("the workspace borrows objects from another repository")
+	}
+	// HEAD and the object format are read from the workspace's repository;
+	// neither runs anything the configuration names.
+	home := filepath.Dir(gitDir)
+	sourceRepository := snapshotRepository{workspace: workspace, gitDir: source, home: home}
+	head, err := sourceRepository.run(ctx, nil, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return snapshotRepository{}, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	format, err := sourceRepository.run(ctx, nil, "rev-parse", "--show-object-format")
+	if err != nil {
+		return snapshotRepository{}, fmt.Errorf("read object format: %w", err)
+	}
+	config := "[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
+	switch format {
+	case "sha1":
+	case "sha256":
+		config = "[core]\n\trepositoryformatversion = 1\n\tbare = false\n[extensions]\n\tobjectformat = sha256\n"
+	default:
+		return snapshotRepository{}, fmt.Errorf("unknown object format %q", format)
+	}
+	for _, dir := range []string{"objects/info", "refs/heads", "refs/tags", "info"} {
+		if err := os.MkdirAll(filepath.Join(gitDir, filepath.FromSlash(dir)), 0o700); err != nil {
+			return snapshotRepository{}, err
+		}
+	}
+	files := map[string]string{
+		"HEAD":                    "ref: refs/heads/snapshot\n",
+		"config":                  config,
+		"objects/info/alternates": objects + "\n",
+	}
+	// The task's ignore rules and a shallow history are data, not commands,
+	// and the snapshot keeps honouring them.
+	for _, name := range []string{"info/exclude", "shallow"} {
+		raw, err := readBoundedRegularFile(filepath.Join(source, filepath.FromSlash(name)), 4<<20)
+		if err == nil {
+			files[name] = string(raw)
+		}
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(gitDir, filepath.FromSlash(name)), []byte(content), 0o600); err != nil {
+			return snapshotRepository{}, err
+		}
+	}
+	return snapshotRepository{workspace: workspace, gitDir: gitDir, home: home, head: head}, nil
+}
+
+// run runs one git command with a minimal environment and returns its
+// trimmed standard output. Hooks, the file system monitor and commit signing
+// are also turned off on the command line, where they outrank every file.
+func (r snapshotRepository) run(ctx context.Context, env []string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", append([]string{
-		"-C", workspace, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "gc.auto=0",
+		"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "gc.auto=0", "-c", "commit.gpgSign=false",
 	}, args...)...)
-	command.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), env...)
+	command.Dir = r.workspace
+	command.Env = append([]string{
+		"PATH=" + os.Getenv("PATH"), "HOME=" + r.home, "XDG_CONFIG_HOME=" + r.home, "LC_ALL=C",
+		"GIT_DIR=" + r.gitDir, "GIT_WORK_TREE=" + r.workspace,
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ATTR_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0",
+	}, env...)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {

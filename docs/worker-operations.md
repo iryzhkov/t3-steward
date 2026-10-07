@@ -237,6 +237,17 @@ stays in the attempt directory on the worker too. A failed attempt does not
 publish its declared commit, so this is how its work is recovered. A clean tree
 is not snapshotted.
 
+The snapshot runs Git on the worker host, outside any containment the attempt
+had, so it never reads the task's repository configuration: it runs in a
+private Git directory the worker writes, with no hooks, attributes, system or
+global configuration, and a minimal environment, borrowing the workspace's
+objects. Filters the task's attributes name are therefore not applied, and
+files are kept as they are on disk (a Git LFS file is kept whole rather than
+as a pointer). The private ref lives only in the bundle, not in the
+workspace. A workspace whose `.git` is not its own directory, or whose objects
+come from another repository through alternates, is not snapshotted; the
+failure says so.
+
 `backlog explain` (as a `turn end:` detail) and `backlog task show` (as a
 `turn end:` line) show the state, for example `waiting for 2 background
 commands: sh -c make check-review ..., sleep 300 (nudge 1 of 2)`, once the worker

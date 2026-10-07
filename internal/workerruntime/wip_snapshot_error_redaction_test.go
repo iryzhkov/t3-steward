@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +37,18 @@ func TestFailedResultSnapshotErrorIsRedactedBeforeItIsLogged(t *testing.T) {
 			// A work tree Git cannot open makes status fail with the path in
 			// its standard error.
 			runGitForTest(t, f.workspace, "config", "core.worktree", filepath.Join(t.TempDir(), secret, "child"))
+			// The snapshot no longer reads the task's repository configuration,
+			// core.worktree included, so a file it cannot read, named with the
+			// credential, is what makes staging fail with the path in Git's
+			// standard error.
+			unreadable := filepath.Join(f.workspace, secret+".txt")
+			writeTestFile(t, unreadable, "x\n")
+			if err := os.Chmod(unreadable, 0); err != nil {
+				t.Fatal(err)
+			}
+			if raw, err := os.ReadFile(unreadable); err == nil {
+				t.Skipf("a file without permissions is still readable here (%d bytes); running as root?", len(raw))
+			}
 			if _, err := f.driver.SnapshotWorkInProgress(context.Background(), f.pkg, f.workspace); err == nil || !strings.Contains(err.Error(), secret) {
 				t.Fatalf("snapshot error = %v, want one quoting the credential", err)
 			}
