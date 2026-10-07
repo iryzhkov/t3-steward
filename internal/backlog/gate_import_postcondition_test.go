@@ -152,6 +152,65 @@ func TestChangedOutputAfterGateFailsThroughImport(t *testing.T) {
 	requireFailedWithRetainedGateLog(t, result, store, importer, response, data, `gate command failed (1): git hash-object: declared output "source.txt" changed after the gate`)
 }
 
+// finalizeWithBackgroundRewrite passes a gate whose leftover child runs rewrite
+// once the gate has finished, and requires both the worker and the
+// coordinator to fail an attempt whose captured output is no longer "source".
+func finalizeWithBackgroundRewrite(t *testing.T, dir, output, rewrite string) {
+	t.Helper()
+	storage := t.TempDir()
+	done := filepath.Join(t.TempDir(), "done")
+	req := h2GateRequest(dir, "attempt-1")
+	req.WorkerID = "worker-a"
+	req.Task.Gate.Commands = []string{gateBackgroundChild(filepath.Join(storage, "gate-cache"), rewrite, done)}
+	req.Task.Gate.Timeout = 5 * time.Second
+	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: output}}
+	finalized, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, done)
+	cleanupImmutable(t, finalized.StorageDir)
+	for _, artifact := range finalized.Artifacts {
+		if artifact.Name != output {
+			continue
+		}
+		if got := strings.TrimSpace(string(readStoredArtifact(t, storage, artifact))); got == "source" {
+			t.Skip("the child lost the race to rewrite the output before capture")
+		}
+		if finalized.Completion.VerificationPassed {
+			t.Fatalf("worker passed with a captured %s that the gate never saw", output)
+		}
+		result, store, importer, response, data := importFinalizedGate(t, req.Task, storage, finalized)
+		requireFailedWithRetainedGateLog(t, result, store, importer, response, data, fmt.Sprintf("gate command failed (1): git hash-object: declared output %q changed after the gate", output))
+		return
+	}
+	t.Fatalf("no output captured: %+v", finalized.Completion)
+}
+
+// A leftover child replaced a tracked output with a symlink to another
+// tracked, unchanged file. The capture check followed the symlink and
+// compared the other file with its own blob, so the swap passed.
+func TestGateSymlinkSwapOfTrackedOutputFails(t *testing.T) {
+	dir := h2GateRepository(t)
+	writeTestFile(t, dir, "other.txt", "bad")
+	gateBindingGit(t, dir, "add", "other.txt")
+	gateBindingGit(t, dir, "commit", "-qm", "other")
+	finalizeWithBackgroundRewrite(t, dir, "source.txt",
+		`i=0; while [ $i -lt 400 ]; do ln -sfn other.txt .l && mv -T .l source.txt; i=$((i+1)); done`)
+}
+
+// A leftover child rewrote a declared output that Git ignores. Only tracked
+// outputs were compared with the gated commit, so the rewrite passed.
+func TestGateRewriteOfIgnoredOutputFails(t *testing.T) {
+	dir := h2GateRepository(t)
+	writeTestFile(t, dir, ".gitignore", "out.txt\n")
+	gateBindingGit(t, dir, "add", ".gitignore")
+	gateBindingGit(t, dir, "commit", "-qm", "ignore")
+	writeTestFile(t, dir, "out.txt", "source")
+	finalizeWithBackgroundRewrite(t, dir, "out.txt",
+		`i=0; while [ $i -lt 400 ]; do echo bad > .o.tmp && mv .o.tmp out.txt; i=$((i+1)); done`)
+}
+
 // The amended report must remain valid evidence in both of its shapes: a fresh
 // report, and a cached one whose original attempt passed elsewhere.
 func TestAmendedGateReportIsValidEvidence(t *testing.T) {

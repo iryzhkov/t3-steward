@@ -237,11 +237,12 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", output.declaration.Name, copyErr)
 		}
 		if gatedCommit != "" {
-			// A process left behind by a gate command can rewrite a tracked
-			// output after the gate's checks, so what was captured must be the
-			// gated commit's content.
-			if reason, checkErr := gatedOutputMatches(ctx, request.WorkspaceDir, gatedCommit, output.relative,
-				filepath.Join(stageDir, "artifacts", "outputs", output.declaration.Name)); checkErr != nil {
+			// A process left behind by a gate command can rewrite an output
+			// after the gate's checks, so what was captured must be what the
+			// gate saw and, for a tracked file, the gated commit's content.
+			if reason, checkErr := gatedOutputMatches(ctx, request.WorkspaceDir, gatedCommit, gateReport.outputDigests,
+				output.declaration.Name, output.relative,
+				filepath.Join(stageDir, "artifacts", "outputs", output.declaration.Name), file.sha256); checkErr != nil {
 				return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", output.declaration.Name, checkErr)
 			} else if reason != "" {
 				changed := fmt.Sprintf("declared output %q %s", output.declaration.Name, reason)

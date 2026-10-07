@@ -44,6 +44,10 @@ type GateReport struct {
 	// commit with the same tree. Finalize publishes a declared commit only if
 	// it still resolves to this one.
 	attestedCommit string
+	// outputDigests holds the SHA-256 of each declared file output as the
+	// gate saw it, by declared name; an output absent then has no entry.
+	// Finalize refuses a capture that differs, tracked in Git or not.
+	outputDigests map[string]string
 }
 type GateCommandResult struct {
 	Command     string        `json:"command"`
@@ -152,6 +156,7 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 		if ok && !cached.Report.Cached && cached.Report.OriginalAttempt != req.Attempt.ID && slices.Contains(f.GateCacheOrigins, cached.Report.OriginalAttempt) {
 			// Recheck after taking the cross-process lock: another finalizer could have
 			// waited while the workspace was changed.
+			digests := gateOutputDigests(req)
 			clean, err = gateCleanTree(ctx, req)
 			current, treeErr := gateGit(ctx, req.WorkspaceDir, "rev-parse", "HEAD^{tree}")
 			currentHead, moved, headErr := gateDeclaredCommitsAtHead(ctx, req)
@@ -159,6 +164,7 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 				cached.Report.Cached = true
 				cached.Report.Worker = report.Worker
 				cached.Report.attestedCommit = head
+				cached.Report.outputDigests = digests
 				return cached.Report, cached.Log, nil
 			}
 			return fail("git status", 1, "workspace changed while waiting for gate cache")
@@ -218,6 +224,9 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	}
 	report.CompletedAt = f.now()
 	if report.Failure == nil {
+		// Taken before the final checks, so a tracked output that changes in
+		// between fails them and one that changes afterwards differs at capture.
+		report.outputDigests = gateOutputDigests(req)
 		clean, err = gateCleanTree(ctx, req)
 		finalTree, treeErr := gateGit(ctx, req.WorkspaceDir, "rev-parse", "HEAD^{tree}")
 		finalHead, moved, headErr := gateDeclaredCommitsAtHead(ctx, req)
@@ -289,11 +298,47 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	return report, rawLog, nil
 }
 
-// gatedOutputMatches reports why a captured declared output that is a regular
-// file tracked in the gated commit differs from that commit's content, or ""
-// when it matches or is not tracked there.
-func gatedOutputMatches(ctx context.Context, workspace, commit, relative, captured string) (string, error) {
-	entry, err := gateGit(ctx, workspace, "ls-tree", "-z", commit, "--", filepath.ToSlash(relative))
+// gateOutputDigests hashes each declared file output as Finalize would capture
+// it. An output that cannot be read now has no entry, so a capture of it
+// differs.
+func gateOutputDigests(req AttemptFinalization) map[string]string {
+	digests := make(map[string]string)
+	for _, declaration := range req.Task.Outputs {
+		if declaration.Commit != nil {
+			continue
+		}
+		resolved, err := safeBundleFile(req.WorkspaceDir, declaration.Name)
+		if err != nil {
+			continue
+		}
+		file, err := os.Open(resolved)
+		if err != nil {
+			continue
+		}
+		h := sha256.New()
+		info, err := file.Stat()
+		if err == nil && info.Mode().IsRegular() {
+			_, err = io.Copy(h, file)
+		} else if err == nil {
+			err = errors.New("not a regular file")
+		}
+		if file.Close() == nil && err == nil {
+			digests[declaration.Name] = fmt.Sprintf("%x", h.Sum(nil))
+		}
+	}
+	return digests
+}
+
+// gatedOutputMatches reports why a captured declared output differs from what
+// the gate attested, or "" when it matches. digests are the gate's
+// outputDigests. A declared path tracked as a regular file in the gated commit
+// must also still be that file, not a symlink to another, with the commit's
+// content.
+func gatedOutputMatches(ctx context.Context, workspace, commit string, digests map[string]string, declared, relative, captured, capturedDigest string) (string, error) {
+	if want, ok := digests[declared]; !ok || want != capturedDigest {
+		return "changed after the gate: its content differs from what the gate saw", nil
+	}
+	entry, err := gateGit(ctx, workspace, "ls-tree", "-z", commit, "--", filepath.ToSlash(filepath.Clean(declared)))
 	if err != nil {
 		return "", err
 	}
@@ -301,6 +346,9 @@ func gatedOutputMatches(ctx context.Context, workspace, commit, relative, captur
 	fields := strings.Fields(meta)
 	if !found || len(fields) != 3 || fields[1] != "blob" || (fields[0] != "100644" && fields[0] != "100755") {
 		return "", nil
+	}
+	if filepath.Clean(relative) != filepath.Clean(declared) {
+		return "changed after the gate: it no longer is the tracked file the gate attested", nil
 	}
 	got, err := gateGit(ctx, workspace, "hash-object", "--no-filters", "--", captured)
 	if err != nil {
