@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -68,6 +69,9 @@ type LocalDriverConfig struct {
 	ArtifactRoot    string
 	RunsRoot        string
 	StopTimeout     time.Duration
+	// SnapshotTimeout bounds a work-in-progress snapshot of a failing
+	// attempt. Zero uses DefaultSnapshotTimeout.
+	SnapshotTimeout time.Duration
 	// PreflightFreshness bounds how long a preflight receipt may be reused for
 	// an unchanged identity. Zero uses DefaultPreflightFreshness.
 	PreflightFreshness time.Duration
@@ -1739,11 +1743,16 @@ func readBoundedRegularFile(path string, maxBytes int64) ([]byte, error) {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxBytes {
 		return nil, errors.New("file is not a bounded regular file")
 	}
-	file, err := os.Open(path)
+	// The file may have been replaced since the check: the open does not
+	// wait on a FIFO, and the opened file is checked again.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() {
+		return nil, errors.New("file is not a bounded regular file")
+	}
 	return io.ReadAll(io.LimitReader(file, maxBytes+1))
 }
 

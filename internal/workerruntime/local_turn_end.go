@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -80,6 +82,11 @@ func (d *LocalDriver) NudgeLiveCommands(ctx context.Context, pkg workerproto.Exe
 // Git runs here on the worker host, outside any containment the attempt had,
 // so it runs in a private repository (see snapshotRepository) and reads
 // nothing the task wrote under .git as configuration.
+//
+// The snapshot runs while a failure waits to publish, sometimes under the
+// worker's lock, so it is bounded by the driver's SnapshotTimeout whatever
+// its caller's context: the Git it runs reads the work tree, and Git waits on
+// a FIFO the task named .gitignore until it is stopped.
 func (d *LocalDriver) SnapshotWorkInProgress(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) (string, error) {
 	if d.Config.DryRun || workspace == "" || !backlog.DeclaresAnyCommit(pkg.Outputs) {
 		return "", nil
@@ -87,6 +94,25 @@ func (d *LocalDriver) SnapshotWorkInProgress(ctx context.Context, pkg workerprot
 	if _, err := os.Lstat(filepath.Join(workspace, ".git")); err != nil {
 		return "", nil
 	}
+	limit := d.Config.SnapshotTimeout
+	if limit <= 0 {
+		limit = DefaultSnapshotTimeout
+	}
+	bounded, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	summary, err := d.snapshotWorkInProgress(bounded, pkg, workspace)
+	if err != nil && ctx.Err() == nil && errors.Is(bounded.Err(), context.DeadlineExceeded) {
+		return "", fmt.Errorf("snapshot did not finish within %s: %w", limit, err)
+	}
+	return summary, err
+}
+
+// DefaultSnapshotTimeout bounds a work-in-progress snapshot when the driver
+// sets no SnapshotTimeout. A snapshot copies the workspace's object store and
+// stages its work tree once.
+const DefaultSnapshotTimeout = 5 * time.Minute
+
+func (d *LocalDriver) snapshotWorkInProgress(ctx context.Context, pkg workerproto.ExecutionPackage, workspace string) (string, error) {
 	attemptDir := d.workspacePath(pkg)
 	scratch, err := os.MkdirTemp(attemptDir, ".wip-")
 	if err != nil {
@@ -296,7 +322,7 @@ func newSnapshotRepository(ctx context.Context, workspace, gitDir string) (snaps
 	}
 	// The object format follows from the length of the object name.
 	home := filepath.Dir(gitDir)
-	head, err := readWorkspaceHead(root)
+	head, err := readWorkspaceHead(ctx, root)
 	if err != nil {
 		if errors.Is(err, errUnbornHead) {
 			return snapshotRepository{}, err
@@ -320,7 +346,7 @@ func newSnapshotRepository(ctx context.Context, workspace, gitDir string) (snaps
 	// and the snapshot keeps honouring them; one it cannot read fails the
 	// snapshot rather than letting ignored files into it.
 	for _, name := range []string{"info/exclude", "shallow"} {
-		raw, err := readRootFile(root, ".git/"+name, 16<<20)
+		raw, err := readRootFile(ctx, root, ".git/"+name, 16<<20)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -332,9 +358,13 @@ func newSnapshotRepository(ctx context.Context, workspace, gitDir string) (snaps
 	// The task's index is data too. Seeding the snapshot from it keeps what
 	// Git already knows about the work tree: files whose recorded state still
 	// matches are not read again, so a file a filter checked out is kept as
-	// the task's index has it, and paths outside a sparse checkout stay.
-	if raw, err := readRootFile(root, ".git/index", 1<<30); err == nil {
+	// the task's index has it, and paths outside a sparse checkout stay. One
+	// it cannot read gives way to HEAD's tree, but an index that is not a
+	// file at all fails the snapshot like any other special file.
+	if raw, err := readRootFile(ctx, root, ".git/index", 1<<30); err == nil {
 		files["task-index"] = string(raw)
+	} else if errors.Is(err, errFileType) || ctx.Err() != nil {
+		return snapshotRepository{}, fmt.Errorf("read .git/index: %w", err)
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(gitDir, filepath.FromSlash(name)), []byte(content), 0o600); err != nil {
@@ -382,7 +412,7 @@ func copyWorkspaceObjects(ctx context.Context, root *os.Root, objects string) er
 			if ext := filepath.Ext(file.Name()); name == "pack" && ext != ".pack" && ext != ".idx" && ext != ".rev" {
 				continue
 			}
-			if err := copyRootFile(root, ".git/objects/"+name+"/"+file.Name(), filepath.Join(objects, name, file.Name())); err != nil {
+			if err := copyRootFile(ctx, root, ".git/objects/"+name+"/"+file.Name(), filepath.Join(objects, name, file.Name())); err != nil {
 				return err
 			}
 		}
@@ -390,9 +420,57 @@ func copyWorkspaceObjects(ctx context.Context, root *os.Root, objects string) er
 	return nil
 }
 
+// errFileType is a path the snapshot reads that is not the regular file or
+// directory it expects, such as a FIFO or a device the task put there.
+var errFileType = errors.New("not a regular file or directory")
+
+// openRootFile opens the regular file name in root for reading. Opening a
+// FIFO for reading waits for a writer the task need never provide, and os.Root
+// confines the path but does not change that, so a special file is refused
+// before it is opened, and the open does not wait either, so one swapped in
+// after that check is refused from the opened descriptor. A symbolic link is
+// followed inside root and its target checked the same way.
+func openRootFile(root *os.Root, name string) (*os.File, os.FileInfo, error) {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
+		return nil, nil, fmt.Errorf("%s: %w", name, errFileType)
+	}
+	return openRootNonblocking(root, name, false)
+}
+
+// openRootNonblocking opens name in root for reading without waiting on a
+// FIFO, and keeps it only if the opened file is a regular file, or a
+// directory when dir is set.
+func openRootNonblocking(root *os.Root, name string, dir bool) (*os.File, os.FileInfo, error) {
+	flags := os.O_RDONLY | syscall.O_NONBLOCK | syscall.O_NOCTTY
+	if dir {
+		flags |= syscall.O_DIRECTORY
+	}
+	f, err := root.OpenFile(name, flags, 0)
+	if dir && errors.Is(err, syscall.ENOTDIR) {
+		return nil, nil, fmt.Errorf("%s: %w", name, errFileType)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
+	}
+	if (dir && !info.IsDir()) || (!dir && !info.Mode().IsRegular()) {
+		f.Close()
+		return nil, nil, fmt.Errorf("%s: %w", name, errFileType)
+	}
+	return f, info, nil
+}
+
 // readRootDir lists dir in root.
 func readRootDir(root *os.Root, dir string) ([]os.DirEntry, error) {
-	f, err := root.Open(dir)
+	f, _, err := openRootNonblocking(root, dir, true)
 	if err != nil {
 		return nil, err
 	}
@@ -401,20 +479,17 @@ func readRootDir(root *os.Root, dir string) ([]os.DirEntry, error) {
 }
 
 // copyRootFile copies the regular file name in root to destination.
-func copyRootFile(root *os.Root, name, destination string) error {
-	source, err := root.Open(name)
+func copyRootFile(ctx context.Context, root *os.Root, name, destination string) error {
+	source, _, err := openRootFile(root, name)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
-	if info, err := source.Stat(); err != nil || !info.Mode().IsRegular() {
-		return fmt.Errorf("%s is not a regular file", name)
-	}
 	target, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(target, source); err != nil {
+	if err := copyChunks(ctx, target, source); err != nil {
 		target.Close()
 		return err
 	}
@@ -422,31 +497,51 @@ func copyRootFile(root *os.Root, name, destination string) error {
 }
 
 // readRootFile reads the regular file name in root, of at most limit bytes.
-func readRootFile(root *os.Root, name string, limit int64) ([]byte, error) {
-	f, err := root.Open(name)
+func readRootFile(ctx context.Context, root *os.Root, name string, limit int64) ([]byte, error) {
+	f, info, err := openRootFile(root, name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() || info.Size() > limit {
-		return nil, fmt.Errorf("%s is not a regular file of at most %d bytes", name, limit)
+	if info.Size() > limit {
+		return nil, fmt.Errorf("%s is larger than %d bytes", name, limit)
 	}
 	// The file may grow after the check; the limit still holds.
-	return io.ReadAll(io.LimitReader(f, limit))
+	var raw bytes.Buffer
+	if err := copyChunks(ctx, &raw, io.LimitReader(f, limit)); err != nil {
+		return nil, err
+	}
+	return raw.Bytes(), nil
+}
+
+// copyChunks copies src to dst a few megabytes at a time, so that a long
+// copy stops once ctx ends.
+func copyChunks(ctx context.Context, dst io.Writer, src io.Reader) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if _, err := io.CopyN(dst, src, 8<<20); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 // readWorkspaceHead is the object name HEAD names in the workspace's
 // repository, read from HEAD, the loose ref files and packed-refs, following
 // symbolic refs a few levels.
-func readWorkspaceHead(root *os.Root) (string, error) {
+func readWorkspaceHead(ctx context.Context, root *os.Root) (string, error) {
 	name := "HEAD"
 	for range 5 {
 		var value string
-		if raw, err := readRootFile(root, ".git/"+name, 4096); err == nil {
+		if raw, err := readRootFile(ctx, root, ".git/"+name, 4096); err == nil {
 			value = strings.TrimSpace(string(raw))
 		} else if !errors.Is(err, os.ErrNotExist) || name == "HEAD" {
 			return "", err
-		} else if value, err = packedRef(root, name); err != nil {
+		} else if value, err = packedRef(ctx, root, name); err != nil {
 			if name != "HEAD" && errors.Is(err, os.ErrNotExist) {
 				return "", fmt.Errorf("%w: %s", errUnbornHead, name)
 			}
@@ -473,8 +568,8 @@ var errUnbornHead = errors.New("HEAD names a branch with no commit")
 
 // packedRef is ref's object name in the workspace repository's packed-refs,
 // or an error wrapping os.ErrNotExist when the ref is not there.
-func packedRef(root *os.Root, ref string) (string, error) {
-	raw, err := readRootFile(root, ".git/packed-refs", 64<<20)
+func packedRef(ctx context.Context, root *os.Root, ref string) (string, error) {
+	raw, err := readRootFile(ctx, root, ".git/packed-refs", 64<<20)
 	if err != nil {
 		return "", err
 	}
@@ -544,6 +639,9 @@ func (r snapshotRepository) run(ctx context.Context, env []string, args ...strin
 		"-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=", "-c", "gc.auto=0", "-c", "commit.gpgSign=false",
 	}, args...)...)
 	command.Dir = r.workspace
+	// Git is stopped when ctx ends; nothing it started may keep the snapshot
+	// waiting on its output after that.
+	command.WaitDelay = 5 * time.Second
 	command.Env = append([]string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + r.home, "XDG_CONFIG_HOME=" + r.home, "LC_ALL=C",
 		"GIT_DIR=" + r.gitDir, "GIT_WORK_TREE=" + r.workspace,
@@ -552,6 +650,9 @@ func (r snapshotRepository) run(ctx context.Context, env []string, args ...strin
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return "", fmt.Errorf("git %s stopped: %w", args[0], ctxErr)
+		}
 		return "", fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
 	}
 	return strings.TrimSpace(stdout.String()), nil
