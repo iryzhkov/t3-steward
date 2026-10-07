@@ -460,7 +460,7 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 	// staged ref. The fetch that follows publishes it for an accepted
 	// consumer or reads it from staging for inspection; importing a bundle
 	// here would publish it without the coordinator's acceptance.
-	if _, _, staged, err := s.findStaged(provenance); err != nil || staged {
+	if staged, err := s.stagedHeld(ctx, gitDir, provenance, log); err != nil || staged {
 		return err
 	}
 	if !s.hasCommit(ctx, workspaceDir, provenance.Base, log) {
@@ -483,16 +483,20 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 		return err
 	}
 	if provenance.StagedAttempt != "" {
-		if _, _, staged, err := s.findStaged(provenance); err != nil || staged {
+		if staged, err := s.stagedHeld(ctx, gitDir, provenance, log); err != nil || staged {
 			return err
 		}
 		// The record is written first, as Stage writes it, so that release
-		// finds the staged ref.
-		if err := writeCommitRecord(s.stagedPath(provenance.WorkflowRunID, provenance.TaskID, provenance.StagedAttempt, provenance.Name), provenance); err != nil {
+		// finds the staged ref. A record whose push failed is taken back, and
+		// one that outlived a crash is not taken for the staging, because
+		// stagedHeld also reads the ref.
+		record := s.stagedPath(provenance.WorkflowRunID, provenance.TaskID, provenance.StagedAttempt, provenance.Name)
+		if err := writeCommitRecord(record, provenance); err != nil {
 			return err
 		}
 		if err := runLoggedCommand(ctx, log, "", s.git(), "-C", workspaceDir,
 			"push", "--", gitDir, "+"+provenance.Commit+":"+source); err != nil {
+			_ = os.Remove(record)
 			return fmt.Errorf("import staged campaign ref %s: %w", source, err)
 		}
 		return nil
@@ -502,6 +506,22 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 		return fmt.Errorf("import campaign ref %s: %w", ref, err)
 	}
 	return s.writeProvenance(provenance)
+}
+
+// stagedHeld reports whether the store holds the declared commit as staged
+// work: a staging record of exactly this commit, and that attempt's staged ref
+// naming it. A record alone is what a staging or an import that stopped before
+// its ref leaves, and the commit may then be missing from the store.
+func (s CampaignRefStore) stagedHeld(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) (bool, error) {
+	staged, attemptID, found, err := s.findStaged(provenance)
+	if err != nil || !found {
+		return false, err
+	}
+	head, found, err := s.head(ctx, gitDir, StagedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, attemptID, provenance.Name), log)
+	if err != nil {
+		return false, err
+	}
+	return found && head == staged.Commit, nil
 }
 
 // heldCommit reports whether the store already holds the declared commit. A
@@ -747,6 +767,18 @@ func consumesReviewedCommit(manifest Manifest, task ManifestTask) bool {
 func RequireCommitBundleCapability(task *domain.Task) {
 	if !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityCommitBundle) {
 		task.Placement.Capabilities = append(task.Placement.Capabilities, workerproto.PackageCapabilityCommitBundle)
+	}
+}
+
+// RequireCarriedCommitCapabilities adds what a worker needs to obtain a
+// declared commit of producer that a task carries outside manifest ingest: the
+// commit bundle capability, and for a review-declared producer, whose record
+// names staged work, the capability of a worker that holds staged work, which
+// a consumer in the producer's own run is placed with too.
+func RequireCarriedCommitCapabilities(task *domain.Task, producer domain.Task) {
+	RequireCommitBundleCapability(task)
+	if producer.ReviewRequirements != nil && !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityAcceptedDependencies) {
+		task.Placement.Capabilities = append(task.Placement.Capabilities, workerproto.PackageCapabilityAcceptedDependencies)
 	}
 }
 

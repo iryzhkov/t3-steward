@@ -129,7 +129,7 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 					Name: name, ArtifactID: reference.ID,
 				})
 				if DeclaresCommit(producerTask, name) {
-					RequireCommitBundleCapability(consumer)
+					RequireCarriedCommitCapabilities(consumer, producerTask)
 				}
 			}
 			delete(consumer.DependencyInputs, producer)

@@ -498,6 +498,10 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 			// An ordinary dependency file is not a commit reference.
 			return nil
 		}
+		if relative, relErr := filepath.Rel(dependenciesDir, path); relErr != nil || !IsDependencyCommitRecord(relative, provenance) {
+			// A record in any other file is the content of an ordinary output.
+			return nil
+		}
 		if provenance.WorkflowRunID != request.WorkflowRunID {
 			// A record of another run arrives only as a carried input, and only
 			// the source binding of the dependency it arrived in can vouch for
@@ -535,6 +539,19 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		}
 		return p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log)
 	})
+}
+
+// IsDependencyCommitRecord reports whether a provenance record found at
+// relative, its path in the dependency view, is a commit reference: the file
+// of the declared commit output it names, directly in its producer's
+// directory, which is the record the producer's worker wrote. A record in any
+// other file is the content of an ordinary output, which the producer's
+// executor wrote, and is never resolved: it could name the base, which needs
+// no bundle, as the commit of a review-declared task's output, and have the
+// consuming worker publish it without the coordinator's acceptance.
+func IsDependencyCommitRecord(relative string, provenance CommitProvenance) bool {
+	_, name, nested := strings.Cut(filepath.ToSlash(relative), "/")
+	return nested && name == provenance.Name
 }
 
 // acceptedDependencyCommit reports whether a commit reference found in the

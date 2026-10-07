@@ -177,7 +177,7 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 			}
 			task.CarriedInputs = append(task.CarriedInputs, carried)
 			if backlog.DeclaresCommit(ancestor, name) {
-				backlog.RequireCommitBundleCapability(task)
+				backlog.RequireCarriedCommitCapabilities(task, ancestor)
 			}
 		}
 	}

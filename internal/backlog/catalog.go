@@ -323,7 +323,10 @@ func validateGitRef(ref string) error {
 		}
 	}
 	for _, component := range strings.Split(ref, "/") {
-		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, ".") {
+		// Git refuses a component ending in .lock anywhere in a ref, not only at
+		// its end.
+		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, ".") ||
+			strings.HasSuffix(component, ".lock") {
 			return fmt.Errorf("%q is not a safe Git ref", ref)
 		}
 	}

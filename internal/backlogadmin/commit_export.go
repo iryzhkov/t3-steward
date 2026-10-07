@@ -125,7 +125,9 @@ func (s *Service) ExportCommit(ctx context.Context, principal Principal, request
 	// A review-declared task's commit is staged work until the coordinator
 	// accepts the attempt that staged it, the same acceptance that lets a
 	// consumer publish it, so only that accepted attempt's commit is exported.
-	if provenance.StagedAttempt != "" || task.ReviewRequirements != nil {
+	// A record naming no staging is a published commit, such as an rc.116
+	// review-declared task published directly, and exports as one.
+	if provenance.StagedAttempt != "" {
 		if provenance.StagedAttempt != attempt.ID {
 			return ArtifactContent{}, fmt.Errorf("commit export: the provenance record names the staging of attempt %q, not of attempt %s that declared it",
 				provenance.StagedAttempt, attempt.ID)

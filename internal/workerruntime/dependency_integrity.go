@@ -86,7 +86,7 @@ func (d *LocalDriver) ensureDependencyIntegrity(ctx context.Context, pkg workerp
 			if closeErr != nil {
 				return dependencyFailure(dependency, object, closeErr)
 			}
-			if err = d.restoreDependencyCommit(ctx, pkg, dependency, destination, workspace); err != nil {
+			if err = d.restoreDependencyCommit(ctx, pkg, dependency, relative, destination, workspace); err != nil {
 				return dependencyFailure(dependency, object, err)
 			}
 		}
@@ -229,7 +229,7 @@ func (d *LocalDriver) verifyDependencyIntegrity(ctx context.Context, pkg workerp
 			if len(data) > 1<<20 {
 				continue
 			}
-			if provenance, err := backlog.ParseCommitProvenance(data); err == nil {
+			if provenance, err := backlog.ParseCommitProvenance(data); err == nil && backlog.IsDependencyCommitRecord(relative, provenance) {
 				if err := validateDependencyProvenance(pkg, dependency, provenance); err != nil {
 					return dependencyFailure(dependency, object, err)
 				}
@@ -253,7 +253,7 @@ func (d *LocalDriver) verifyDependencyIntegrity(ctx context.Context, pkg workerp
 	return nil
 }
 
-func (d *LocalDriver) restoreDependencyCommit(ctx context.Context, pkg workerproto.ExecutionPackage, dependency workerproto.DependencyInput, path, workspace string) error {
+func (d *LocalDriver) restoreDependencyCommit(ctx context.Context, pkg workerproto.ExecutionPackage, dependency workerproto.DependencyInput, relative, path, workspace string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -274,7 +274,7 @@ func (d *LocalDriver) restoreDependencyCommit(ctx context.Context, pkg workerpro
 		return nil
 	}
 	provenance, err := backlog.ParseCommitProvenance(data)
-	if err != nil {
+	if err != nil || !backlog.IsDependencyCommitRecord(relative, provenance) {
 		return nil
 	}
 	if err := validateDependencyProvenance(pkg, dependency, provenance); err != nil {

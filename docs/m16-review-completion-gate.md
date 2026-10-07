@@ -191,7 +191,13 @@ ref. A consumer on another worker imports that bundle as staged work of the
 same attempt, into its own store's staging, so the same rule applies there: an
 accepted consumer's fetch publishes it on that worker, and any other consumer
 reads it from the staging. When a staging is promoted, its published record no
-longer names the attempt.
+longer names the attempt. A worker resolves a commit record only from the file
+of the declared commit output it names, in its producer's directory of the
+dependency view. A copy in any other output is the executor's content and is
+not resolved, so it cannot publish a campaign ref, such as one naming the base,
+which needs no bundle. A rerun or an external input that carries a
+review-declared producer's commit is placed only on a worker with
+`accepted-dependencies-v1`, like a consumer in the producer's own run.
 
 `campaign commit export` of a review-declared task's commit exports the staged
 work of the task's latest attempt only once the coordinator accepted that
