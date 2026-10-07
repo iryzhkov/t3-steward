@@ -116,7 +116,7 @@ func TestExplanationStrictParentAndNewLocalClient(t *testing.T) {
 
 	// Sensitivity: the extended projection really is incompatible with the
 	// frozen strict shape, rather than a permissive test hiding the defect.
-	extended, err := service.Query(context.Background(), Query{Version: ExplanationPlacementVersion, Kind: QueryExplanation, WorkflowRunID: "r", TaskID: "t"})
+	extended, err := service.Query(context.Background(), Query{Version: ExtendedReadVersion, Kind: QueryExplanation, WorkflowRunID: "r", TaskID: "t"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestExplanationOlderLocalCoordinatorAndFailures(t *testing.T) {
 			service := explanationService(t)
 			q := func(ctx context.Context, query Query) (Response, error) {
 				calls.Add(1)
-				if query.Version == ExplanationPlacementVersion {
+				if query.Version == ExtendedReadVersion {
 					switch mode {
 					case "older":
 						return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
@@ -203,16 +203,17 @@ func TestExplanationSSHProjectionAndOlderCoordinator(t *testing.T) {
 	}
 }
 
-// The extended version is a read of one explanation and nothing else.
-func TestExplanationVersionIsOnlyForExplanations(t *testing.T) {
+// The extended version is a read of anything but status, which has its own,
+// and never a mutation; v1 keeps the explanation's frozen shape.
+func TestExtendedReadVersionIsOnlyForReads(t *testing.T) {
 	s := explanationService(t)
-	if _, err := s.Query(context.Background(), Query{Version: ExplanationPlacementVersion, Kind: QueryStatus}); !errors.Is(err, ErrUnsupportedVersion) {
+	if _, err := s.Query(context.Background(), Query{Version: ExtendedReadVersion, Kind: QueryStatus}); !errors.Is(err, ErrUnsupportedVersion) {
 		t.Fatalf("status: %v", err)
 	}
 	if _, err := s.Query(context.Background(), Query{Version: StatusIntakeVersion, Kind: QueryExplanation, WorkflowRunID: "r", TaskID: "t"}); !errors.Is(err, ErrUnsupportedVersion) {
 		t.Fatalf("explanation under the status version: %v", err)
 	}
-	if _, err := s.Mutate(context.Background(), Mutation{Version: ExplanationPlacementVersion}); !errors.Is(err, ErrUnsupportedVersion) {
+	if _, err := s.Mutate(context.Background(), Mutation{Version: ExtendedReadVersion}); !errors.Is(err, ErrUnsupportedVersion) {
 		t.Fatalf("mutation: %v", err)
 	}
 	legacy, err := s.Query(context.Background(), explanationQuery)

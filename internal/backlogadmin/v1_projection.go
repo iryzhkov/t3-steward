@@ -1,0 +1,129 @@
+package backlogadmin
+
+import (
+	"bytes"
+	_ "embed"
+	"encoding/json"
+	"strings"
+)
+
+// The v1_*_schema.txt files are every JSON key path an admin answer had in
+// v0.11.0-rc.115, whose admin clients decode answers strictly and refuse a
+// key they do not know. TestWriteV1ResponseSchema wrote them, run on that
+// release. Each line is a path from the answer's root, "*" stands for the
+// keys of a map, and a trailing "!" marks a value the decoder took whole,
+// such as a time or a custom type, whose inside is not checked.
+var (
+	//go:embed v1_response_schema.txt
+	v1ResponseSchemaText string
+	//go:embed v1_graph_amendment_schema.txt
+	v1GraphAmendmentSchemaText string
+	//go:embed v1_unknown_recovery_schema.txt
+	v1UnknownRecoverySchemaText string
+)
+
+var (
+	v1ResponseSchema        = parseKeySchema(v1ResponseSchemaText)
+	v1GraphAmendmentSchema  = parseKeySchema(v1GraphAmendmentSchemaText)
+	v1UnknownRecoverySchema = parseKeySchema(v1UnknownRecoverySchemaText)
+)
+
+// keySchema is a parsed key path list: the paths a decoder accepts, and the
+// paths it takes whole.
+type keySchema struct {
+	paths map[string]bool
+	whole map[string]bool
+}
+
+func parseKeySchema(text string) keySchema {
+	schema := keySchema{paths: map[string]bool{}, whole: map[string]bool{}}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if path, ok := strings.CutSuffix(line, "!"); ok {
+			schema.whole[path] = true
+			continue
+		}
+		schema.paths[line] = true
+	}
+	return schema
+}
+
+// prune removes from value, the JSON at path, every key the schema does not
+// accept.
+func (s keySchema) prune(value any, path string) {
+	switch value := value.(type) {
+	case []any:
+		for _, item := range value {
+			s.prune(item, path)
+		}
+	case map[string]any:
+		if s.whole[path] {
+			return
+		}
+		for key, item := range value {
+			switch {
+			case s.paths[path+"."+key]:
+				s.prune(item, path+"."+key)
+			case s.paths[path+".*"]:
+				s.prune(item, path+".*")
+			default:
+				delete(value, key)
+			}
+		}
+	}
+}
+
+// projectV1Response gives response the v1 shape: every field added since
+// v0.11.0-rc.115, at any depth, such as the review verdict of a task's
+// attempt or the placement of an explanation that diagnose embeds, is left
+// out, so a strict client of that release reads it.
+func projectV1Response(response *Response) error {
+	return projectToSchema(response, v1ResponseSchema)
+}
+
+// projectV1Answers gives the graph amendment and unknown recovery answers of
+// the local and SSH transports the rc.115 shape. Neither request carries a
+// version to negotiate with, and no client of this release reads the fields
+// added since, beyond printing them, so every client is answered that way;
+// the task and workflow reads carry the fields to a client that asks.
+func projectV1Answers(response *localResponse) error {
+	if response.GraphAmendment != nil {
+		if err := projectToSchema(response.GraphAmendment, v1GraphAmendmentSchema); err != nil {
+			return err
+		}
+	}
+	if response.UnknownRecoveryResponse != nil {
+		return projectToSchema(response.UnknownRecoveryResponse, v1UnknownRecoverySchema)
+	}
+	return nil
+}
+
+// projectToSchema leaves out of value every key the schema does not accept.
+// The value is projected through its JSON, which is what a client receives,
+// and decoded afresh, so nothing it shares with the coordinator's state is
+// changed.
+func projectToSchema[T any](value *T, schema keySchema) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var tree any
+	if err := decoder.Decode(&tree); err != nil {
+		return err
+	}
+	schema.prune(tree, "")
+	if raw, err = json.Marshal(tree); err != nil {
+		return err
+	}
+	var projected T
+	if err := json.Unmarshal(raw, &projected); err != nil {
+		return err
+	}
+	*value = projected
+	return nil
+}

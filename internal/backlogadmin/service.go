@@ -271,9 +271,25 @@ func (s *Service) RecoverUnknown(ctx context.Context, principal Principal, reque
 }
 
 func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
+	response, err := s.query(ctx, query)
+	// A progress mirror is asked for only by a client of this release, which
+	// reads the whole response.
+	if err != nil || query.Version != Version || query.ProgressMirror != nil {
+		return response, err
+	}
+	// A strict older client rejects every field its release did not declare,
+	// so a v1 read keeps the shape v1 had; this release's clients ask for
+	// ExtendedReadVersion.
+	if err := projectV1Response(&response); err != nil {
+		return Response{}, fmt.Errorf("project the v1 %s response: %w", query.Kind, err)
+	}
+	return response, nil
+}
+
+func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	extendedExplanation := query.Version == ExplanationPlacementVersion && query.Kind == QueryExplanation
-	if query.Version != Version && !intakeStatus && !extendedExplanation {
+	extendedRead := query.Version == ExtendedReadVersion && query.Kind != QueryStatus
+	if query.Version != Version && !intakeStatus && !extendedRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}
 	if query.ProgressMirror != nil && query.Kind != QueryWorkflows {
@@ -349,10 +365,6 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		explanation, ok := view.explanation(query.WorkflowRunID, query.TaskID)
 		if !ok {
 			return Response{}, notFound("task", query.WorkflowRunID+"/"+query.TaskID)
-		}
-		if !extendedExplanation {
-			// A strict older client rejects the fields it does not declare.
-			explanation.ReviewVerdict, explanation.Placement = nil, nil
 		}
 		response.Explanation = &explanation
 	case QueryEvents:

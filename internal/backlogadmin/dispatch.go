@@ -201,8 +201,12 @@ func (d adminDispatch) handle(
 		value, recoveryErr := d.service.RecoverUnknown(ctx, principal, *request.UnknownRecovery)
 		if recoveryErr != nil {
 			response.Error = recoveryErr.Error()
-		} else {
-			response.UnknownRecoveryResponse = &value
+			break
+		}
+		response.UnknownRecoveryResponse = &value
+		if err := projectV1Answers(&response); err != nil {
+			response.UnknownRecoveryResponse = nil
+			response.Error = "project the unknown recovery answer: " + err.Error()
 		}
 	case localOperationQuarantineRelease:
 		if request.QuarantineRelease == nil || request.Query != nil || request.Mutation != nil ||
@@ -262,6 +266,10 @@ func (d adminDispatch) amendGraph(ctx context.Context, principal Principal, requ
 		return
 	}
 	response.GraphAmendment = &value
+	if err := projectV1Answers(response); err != nil {
+		response.GraphAmendment = nil
+		response.Error = "project the graph amendment answer: " + err.Error()
+	}
 }
 
 func (d adminDispatch) nodeWait(ctx context.Context, principal Principal, request localRequest, response *localResponse) {
