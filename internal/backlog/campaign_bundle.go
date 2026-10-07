@@ -53,6 +53,9 @@ const (
 	// BundleOmittedNotDescendant: the commit does not descend from its base, so
 	// there is no base..commit to bundle.
 	BundleOmittedNotDescendant = "bundle-omitted:not-descendant"
+	// BundleOmittedStaged: the commit is a review-gated task's staged work,
+	// which becomes a campaign output only on the worker that staged it.
+	BundleOmittedStaged = "bundle-omitted:staged"
 )
 
 // describeBundleOmission explains a recorded omission reason code.
@@ -65,6 +68,9 @@ func describeBundleOmission(code string) string {
 		return "its bundle did not fit within the total limit of its result upload together with the producing attempt's other results"
 	case BundleOmittedNotDescendant:
 		return "the commit does not descend from its base, so no bundle of base..commit exists"
+	case BundleOmittedStaged:
+		return "the commit was staged by a task that declares review, and a staged commit is published, once its review gate accepts it, " +
+			"only on the worker that staged it; run the consumer on that worker"
 	default:
 		const maxShown = 256
 		if len(code) > maxShown {
