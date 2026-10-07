@@ -415,6 +415,14 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 	if held, err := s.heldCommit(ctx, gitDir, provenance, log); err != nil || held {
 		return err
 	}
+	// A review-gated producer on this worker staged its commit rather than
+	// publishing it, so the store holds it under the producing attempt's
+	// staged ref. The fetch that follows publishes it for an accepted
+	// consumer or reads it from staging for inspection; importing a bundle
+	// here would publish it without the coordinator's acceptance.
+	if _, _, staged, err := s.findStaged(provenance); err != nil || staged {
+		return err
+	}
 	if !s.hasCommit(ctx, workspaceDir, provenance.Base, log) {
 		return fmt.Errorf("campaign commit %s: missing prerequisite: its base %s is not present in this worker's repository cache for %s, "+
 			"and the commit can only be imported on top of it", ref, provenance.Base, provenance.Repository)
