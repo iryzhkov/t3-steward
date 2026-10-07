@@ -59,6 +59,23 @@ copied. Artifacts produced by the failed subtree are not carried over; they are 
 source run as evidence and are not visible as inputs in the new run. If an ancestor's artifact is
 no longer retrievable, the rerun refuses rather than silently starting a task with a missing input.
 
+With `--use-commit`, a review can explicitly reuse a declared commit from an ancestor
+whose latest attempt failed only verification. The commit must have a retained
+quarantined record and bundle, separate from ordinary published outputs. Missing
+commit records or required file outputs refuse with their names. Non-verification
+failures remain ineligible. The option requires coordinator 0.11.0-rc.117 or newer.
+
+```sh
+t3-steward campaign rerun run-abc --from review --use-commit \
+  --idempotency-key reuse-1 --reason "review the commit despite failed verify"
+```
+
+The new run's provenance, text and JSON rerun receipts, consumer commit provenance,
+and `campaign explain` record the reused commit, failed source attempt and first
+verification failure. Rerun receipt JSON stores these under
+`provenance.reusedCommits`. Without the flag, ancestor eligibility and receipts
+retain their existing behavior.
+
 The idempotency key behaves as it does everywhere else: the same key with the same content returns
 the same run, the same key with different content is refused.
 

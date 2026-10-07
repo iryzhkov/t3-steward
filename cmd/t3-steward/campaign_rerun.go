@@ -42,18 +42,24 @@ type campaignCarried struct {
 // parser would mean teaching it that its one positional is sometimes not a
 // path at all.
 type campaignRerunArgs struct {
-	run    string
-	from   string
-	key    string
-	reason string
-	prompt string
-	asJSON bool
+	run       string
+	from      string
+	key       string
+	reason    string
+	prompt    string
+	asJSON    bool
+	useCommit bool
 }
 
 func parseCampaignRerunArgs(args []string) (campaignRerunArgs, error) {
 	var parsed campaignRerunArgs
 	for index := 0; index < len(args); index++ {
 		switch argument := args[index]; argument {
+		case "--use-commit":
+			if parsed.useCommit {
+				return campaignRerunArgs{}, errors.New("--use-commit may be supplied only once")
+			}
+			parsed.useCommit = true
 		case "--json":
 			if parsed.asJSON {
 				return campaignRerunArgs{}, errors.New("--json may be supplied only once")
@@ -109,6 +115,18 @@ func (c campaignCLI) runRerun(ctx context.Context, args []string) error {
 	if c.amend == nil || c.describe == nil {
 		return errors.New("coordinator admin transport is unavailable")
 	}
+	if parsed.useCommit {
+		if c.release == nil {
+			return errors.New("coordinator support for --use-commit is unavailable (needs 0.11.0-rc.117 or later)")
+		}
+		release, err := c.release(ctx)
+		if err != nil {
+			return err
+		}
+		if supported, known := releaseAtLeast(release, "0.11.0-rc.117"); !known || !supported {
+			return errors.New("coordinator does not support --use-commit (needs 0.11.0-rc.117 or later)")
+		}
+	}
 	// The source run is read before the amendment so the request can name the
 	// graph revision it was computed against. A run that changed in between is
 	// refused rather than reran from a scope nobody looked at.
@@ -128,6 +146,7 @@ func (c campaignCLI) runRerun(ctx context.Context, args []string) error {
 		TaskID:           parsed.from,
 		Reason:           reason,
 		Prompt:           parsed.prompt,
+		UseCommit:        parsed.useCommit,
 	})
 	if err != nil {
 		return err
@@ -172,6 +191,18 @@ func renderCampaignRerun(out interface{ Write([]byte) (int, error) }, document c
 		document.RunID, document.Provenance.IdempotencyKey, document.RunID, document.WorkflowID, document.Replay,
 		document.SourceRunID, document.SourceTaskID, campaignList(document.Rerun)); err != nil {
 		return err
+	}
+	if document.Provenance.ReusedCommits != nil {
+		for _, commit := range *document.Provenance.ReusedCommits {
+			failure := ""
+			if len(commit.VerificationFailures) > 0 {
+				failure = commit.VerificationFailures[0]
+			}
+			if _, err := fmt.Fprintf(out, "  reusing %s/%s %s from failed attempt %s (verification failed: %s)\n",
+				commit.Producer, commit.Name, commit.Commit, commit.SourceAttemptID, failure); err != nil {
+				return err
+			}
+		}
 	}
 	for _, carried := range document.Carried {
 		if _, err := fmt.Fprintf(out, "  carried %s <- %s/%s by reference\n",

@@ -48,7 +48,7 @@ Mutating (coordinator):
     --register-only retains a definition without starting a run.
     Registration refuses supervision/gates and needs an upgraded coordinator.
   rerun <run> --from TASK --idempotency-key KEY
-    [--prompt TEXT] [--reason TEXT] [--json]
+    [--prompt TEXT] [--reason TEXT] [--use-commit] [--json]
   cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]
   supervision <show|decide|hold|release|escalate|resolve> <run> [flags]
   recovery retry <run> [flags]
