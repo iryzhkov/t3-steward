@@ -51,6 +51,10 @@ Mutating (coordinator):
     Checks readiness first. Creates one run; this thread is notified by default.
     --register-only retains a definition without starting a run.
     Registration refuses supervision/gates and needs an upgraded coordinator.
+  fix <run>/<review-task> --idempotency-key KEY [--round-limit N]
+    [--gate CMD] [--gate-timeout DUR] [--no-gate] [--commit RUN/TASK/NAME]
+    [--context FILE] [--out DIR] [--dry-run] [--json]
+    [--notify-thread current|ID | --no-notify]
   rerun <run> --from TASK --idempotency-key KEY
     [--prompt TEXT] [--reason TEXT] [--json]
   cancel <run>[/<task>] --reason TEXT [--command-id ID] [--json]
@@ -365,6 +369,8 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		return c.runCheck(ctx, args[1:])
 	case "submit":
 		return c.runSubmit(ctx, args[1:])
+	case "fix":
+		return c.runFix(ctx, args[1:])
 	case "rerun":
 		return c.runRerun(ctx, args[1:])
 	case "supervision":
@@ -457,7 +463,7 @@ func (c campaignCLI) explainNamesATask(ctx context.Context, args []string) error
 
 // campaignCommands are the subcommands run dispatches, in the order a
 // did-you-mean suggestion prefers them.
-var campaignCommands = []string{"validate", "plan", "compile", "check", "submit", "list", "progress", "show", "status", "explain", "graph", "cancel", "rerun", "supervision", "recovery", "commit", "help"}
+var campaignCommands = []string{"validate", "plan", "compile", "check", "submit", "list", "progress", "show", "status", "explain", "graph", "cancel", "fix", "rerun", "supervision", "recovery", "commit", "help"}
 
 // nearestCampaignCommand returns the campaign subcommand within two edits of
 // name, or "" when none is that close.
