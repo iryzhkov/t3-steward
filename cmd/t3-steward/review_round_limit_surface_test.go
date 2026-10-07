@@ -104,7 +104,7 @@ func TestReviewRoundLimitExplainTextAndJSON(t *testing.T) {
 	if err := h.db.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: []domain.Attempt{parent}}); err != nil {
 		t.Fatal(err)
 	}
-	response, err := h.admin.Query(ctx, backlogadmin.Query{Version: backlogadmin.Version, Kind: backlogadmin.QueryExplanation, Principal: checkpointPrincipal, WorkflowRunID: h.request.WorkflowRunID, TaskID: h.request.TaskID})
+	response, err := h.admin.Query(ctx, backlogadmin.Query{Version: backlogadmin.CurrentReadVersion, Kind: backlogadmin.QueryExplanation, Principal: checkpointPrincipal, WorkflowRunID: h.request.WorkflowRunID, TaskID: h.request.TaskID})
 	if err != nil {
 		t.Fatal(err)
 	}
