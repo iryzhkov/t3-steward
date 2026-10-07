@@ -45,6 +45,12 @@ func TaskQuotaEstimate(task domain.Task) float64 {
 	return SeedCost(task.Difficulty)
 }
 
+// dispatchableQuotaRoot is the one eligibility rule for new reservations and
+// durable ready demand. Future work does not consume current admission headroom.
+func dispatchableQuotaRoot(attempt domain.Attempt, task domain.Task, now time.Time) bool {
+	return attempt.Progress == domain.ProgressReady && (task.NotBefore == nil || !now.Before(*task.NotBefore))
+}
+
 func (a SubmissionQuotaAdmission) evaluate(records sqlite.CoordinatorRecords, snapshot sqlite.QuotaAdmissionSnapshot) (*domain.QuotaAdmissionReceipt, error) {
 	now := time.Now().UTC()
 	if a.Now != nil {
@@ -98,6 +104,9 @@ func (a SubmissionQuotaAdmission) evaluate(records sqlite.CoordinatorRecords, sn
 		task, found := domain.TaskForAttempt(attempt, snapshot.Records.WorkflowRuns, snapshot.Records.Tasks)
 		if !found {
 			return receipt, fmt.Errorf("quota admission: pending attempt %s has no task", attempt.ID)
+		}
+		if !dispatchableQuotaRoot(attempt, task, now) {
+			continue
 		}
 		routes := task.Routes
 		if route, ok := chosen[attempt.WorkflowRunID+"\x00"+task.ID]; ok {
@@ -224,7 +233,7 @@ func (a SubmissionQuotaAdmission) evaluate(records sqlite.CoordinatorRecords, sn
 		if !ok {
 			return receipt, fmt.Errorf("quota admission: attempt %s has no built task", attempt.ID)
 		}
-		if attempt.Progress != domain.ProgressReady || (task.NotBefore != nil && now.Before(*task.NotBefore)) {
+		if !dispatchableQuotaRoot(attempt, task, now) {
 			continue
 		}
 		cost := TaskQuotaEstimate(task)

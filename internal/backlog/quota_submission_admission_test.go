@@ -14,7 +14,26 @@ func quotaSubmissionFixture() (SubmissionQuotaAdmission, sqlite.QuotaAdmissionSn
 	state := domain.BucketState{Key: key, ObservedAt: now, UsedPercent: 70}
 	cost := 20.0
 	records := sqlite.CoordinatorRecords{Tasks: []domain.Task{{ID: "task", Name: "root", EstimatedCost: &cost, Routes: []domain.ProviderRoute{{ProviderInstanceID: "codex", QuotaPoolID: "pool"}}}}, Attempts: []domain.Attempt{{TaskID: "task", Progress: domain.ProgressReady, Control: domain.ControlUnassigned}}}
-	return SubmissionQuotaAdmission{Bridge: QuotaBridge{SafetyMargin: 5, LongWindowCap: 100}, Now: func() time.Time { return now }}, sqlite.QuotaAdmissionSnapshot{Records: sqlite.CoordinatorRecords{QuotaPools: []domain.QuotaPool{pool}}, States: []domain.BucketState{state}, StaleAfter: time.Hour}, records
+	return SubmissionQuotaAdmission{Bridge: QuotaBridge{SafetyMargin: 5, LongWindowCap: 100}, Now: func() time.Time { return now }}, sqlite.QuotaAdmissionSnapshot{Records: sqlite.CoordinatorRecords{QuotaPools: []domain.QuotaPool{pool}, WorkflowRuns: []domain.WorkflowRun{{}}}, States: []domain.BucketState{state}, StaleAfter: time.Hour}, records
+}
+
+func TestSubmissionQuotaFuturePendingDemandDoesNotReserveHeadroom(t *testing.T) {
+	admission, snapshot, records := quotaSubmissionFixture()
+	task := records.Tasks[0]
+	future := admission.Now().Add(time.Hour)
+	cost := 10.0
+	task.ID = "pending"
+	task.NotBefore = &future
+	task.EstimatedCost = &cost
+	snapshot.Records.Tasks = []domain.Task{task}
+	snapshot.Records.Attempts = []domain.Attempt{{TaskID: task.ID, Progress: domain.ProgressReady, Control: domain.ControlUnassigned}}
+	receipt, err := admission.evaluate(records, snapshot)
+	if err != nil {
+		t.Fatalf("future pending work reserved current headroom: %v", err)
+	}
+	if receipt.Pools[0].AlreadyAdmittedDemand != 0 || receipt.Pools[0].RootCost != 20 {
+		t.Fatalf("future demand receipt: %#v", receipt)
+	}
 }
 
 func TestSubmissionQuotaSharedHeadroomAndTruth(t *testing.T) {

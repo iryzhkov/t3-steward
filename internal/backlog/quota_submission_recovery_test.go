@@ -25,6 +25,14 @@ func (s *quotaCompletionFailureStore) CompleteSubmission(ctx context.Context, ke
 	return s.Store.CompleteSubmission(ctx, key, digest, at)
 }
 func TestQuotaSubmissionRecoversDurableAdmissionAfterCompletionFailure(t *testing.T) {
+	testQuotaSubmissionRecovery(t, true)
+}
+
+func TestQuotaSubmissionRecoveryPreservesAdvancedProgress(t *testing.T) {
+	testQuotaSubmissionRecovery(t, false)
+}
+
+func testQuotaSubmissionRecovery(t *testing.T, exhaust bool) {
 	store, gate, now, state := quotaSubmissionIntegrationFixture(t)
 	service := quotaSubmissionService(t, store, gate, now)
 	service.Store = &quotaCompletionFailureStore{Store: store, fail: true}
@@ -46,7 +54,9 @@ func TestQuotaSubmissionRecoversDurableAdmissionAfterCompletionFailure(t *testin
 	if err := store.SaveCoordinatorRecords(context.Background(), sqlite.CoordinatorRecords{Attempts: before.Attempts}); err != nil {
 		t.Fatal(err)
 	}
-	state.UsedPercent = 100
+	if exhaust {
+		state.UsedPercent = 100
+	}
 	if err := store.SaveBucket(context.Background(), state); err != nil {
 		t.Fatal(err)
 	}
