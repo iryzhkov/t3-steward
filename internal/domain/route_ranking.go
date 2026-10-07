@@ -110,6 +110,13 @@ func rankBand(band string) int {
 func rankRoutePool(pool RouteRankPool, now time.Time) RouteRankEntry {
 	e := RouteRankEntry{Pool: pool.ID, Band: "healthy"}
 	reason := func(text string) RouteRankEntry { e.Reason = RouteRankingV1 + ": " + pool.ID + " " + text; return e }
+	// Window usage is a tie-break in every band, including admission gates
+	// and exhaustion; those early returns must not erase the metric.
+	for _, w := range pool.Windows.Windows {
+		if !math.IsNaN(w.UsedPercent) && !math.IsInf(w.UsedPercent, 0) && w.UsedPercent >= 0 && w.UsedPercent <= 100 && w.UsedPercent > e.MaxUsedPercent {
+			e.MaxUsedPercent = w.UsedPercent
+		}
+	}
 	if pool.Admission == AdmissionDraining || pool.Admission == AdmissionClosed {
 		e.Band = "gated"
 		return reason("admission " + string(pool.Admission) + " (gated)")

@@ -77,9 +77,8 @@ func selectPolicyRouteRanked(p *routePolicy, role, model, effort, worker string,
 	receipt := make([]policyRankCandidate, 0, len(verdicts))
 	eligible := map[string]policyCandidateVerdict{}
 	for _, v := range verdicts {
-		if v.err != nil {
-			return policySelection{}, v.err
-		}
+		// Candidate-local errors remain in the verdict; they cannot prevent
+		// another eligible route from ranking.
 		receipt = append(receipt, policyRankCandidate{Route: v.Route, Ordinal: v.Ordinal, Eligible: v.Eligible, Reason: v.Reason})
 		if !v.Eligible {
 			continue
