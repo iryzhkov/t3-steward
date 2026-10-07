@@ -40,6 +40,9 @@ type PublishedResult struct {
 	// WorkInProgressBundle is the snapshot of uncommitted work a failed
 	// attempt uploads when its commands were still running at turn end.
 	WorkInProgressBundle []byte
+	// Continuation is the attempt's latest continuation.md snapshot, carried
+	// only when the package declares that the coordinator accepts it.
+	Continuation *ContinuationSnapshot
 }
 
 type ArtifactPublisher interface {
@@ -842,6 +845,9 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 			prompt += "\nReview retained checkpoint `" + checkpoint + "`."
 		}
 	}
+	if pkg.Continuation != nil {
+		prompt += "\n\n## Previous checkpoint\n" + continuationPromptSentence(*pkg.Continuation)
+	}
 	// T3 refuses an over-long input only when the turn starts, after the
 	// thread exists. Refused here, the dispatch fails before any provider
 	// effect and the attempt's failure names the size and the limit.
@@ -1058,6 +1064,9 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 			return err
 		}
 	}
+	// The continuation checkpoint is taken before verification runs in the
+	// workspace, keyed by the turn this collection binds to.
+	continuation := d.continuationForResult(ctx, pkg, workspace, identity)
 	task, attempt := packageRecords(pkg, d.Now().UTC())
 	// Preflight logs are captured with the attempt's own outputs, in the same
 	// pass, because the capture tree is sealed before it is published.
@@ -1083,7 +1092,7 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		// The whole result, including the final message and the thread
 		// archive published with it below, is one upload, so bundle metadata
 		// is kept only where that upload would still be accepted.
-		AdmitResult: d.resultAdmission(pkg, message, archive),
+		AdmitResult: d.resultAdmission(pkg, message, archive, nil),
 		// A package that requires the workspace HEAD is review-declared: the
 		// finalizer reports its HEAD after verification and stages, rather
 		// than publishes, its declared commits.
@@ -1092,7 +1101,10 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
-	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace}
+	continuation = d.admitContinuation(pkg, message, archive, finalized.Artifacts, continuation)
+	result := PublishedResult{
+		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace, Continuation: continuation,
+	}
 	if finalized.Completion.Failure != "" {
 		// A failed attempt does not publish its declared commit, so its
 		// uncommitted work travels with the failure as a bundle. The
@@ -1123,6 +1135,22 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return fmt.Errorf("%w: %v", ErrSettleUnproven, err)
 	}
 	return nil
+}
+
+// admitContinuation returns the checkpoint a result may carry: the checkpoint
+// is optional evidence and goes only where the upload, by object and in
+// total, would still be accepted with it. It never costs a result, failed or
+// not, its publication.
+func (d *LocalDriver) admitContinuation(pkg workerproto.ExecutionPackage, message string, archive []byte, artifacts []domain.Artifact, continuation *ContinuationSnapshot) *ContinuationSnapshot {
+	if continuation == nil {
+		return nil
+	}
+	if err := d.resultAdmission(pkg, message, archive, continuation)(artifacts); err != nil {
+		d.logger().Warn("the continuation checkpoint does not fit the result upload; the result goes without it",
+			"attempt", pkg.Identity.AttemptID, "error", err)
+		return nil
+	}
+	return continuation
 }
 
 // collectedTurn retains the first terminal observation, including failed raw
@@ -1287,17 +1315,27 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		}
 	}
 	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
+	// A failed attempt hands on its latest checkpoint too; that is when the
+	// next attempt needs it most. A failure that is about the result's size
+	// publishes the bounded envelope alone.
+	var continuation *ContinuationSnapshot
+	if !permanentCollectionIntent(failure) {
+		continuation = d.admitContinuation(pkg, message, archive, nil, d.continuationForResult(ctx, pkg, workspace, ""))
+	}
 	// The workspace lends the secret scan the objects a work-in-progress
 	// bundle's prerequisites need; without it the scan cannot decode the bundle
 	// and refuses it.
-	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace}
+	result := PublishedResult{
+		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace, Continuation: continuation,
+	}
 	result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	publishErr := d.Publisher.PublishResult(ctx, pkg, result)
 	var secret *SecretScanError
 	if errors.As(publishErr, &secret) && !secret.retryable() {
-		// The thread or the failure text carries a credential. Publish the
-		// redacted finding with an empty archive instead, so the failed result
-		// still reaches the coordinator; the raw text stays on the worker.
+		// The thread, the failure text or the continuation snapshot carries a
+		// credential. Publish the redacted finding with an empty archive and
+		// no snapshot instead, so the failed result still reaches the
+		// coordinator; the raw text stays on the worker.
 		failure = permanentSecretFailurePrefix + secret.Error() +
 			"; the failure reason and thread archive were withheld and remain on the worker for this assignment"
 		d.logger().Warn("failed result withheld by secret scan; publishing redacted failure",

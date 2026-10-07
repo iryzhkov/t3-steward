@@ -3,6 +3,7 @@ package backlog
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +51,9 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 	if err := workerproto.ValidateArtifactTransferManifest(manifest, i.MaxArtifactBytes, i.MaxTotalBytes, now); err != nil {
 		return domain.Artifact{}, err
 	}
+	if IsContinuationUpload(manifest) {
+		return i.importContinuation(ctx, response, opener, now)
+	}
 	// A checkpoint announced under an earlier coordinator epoch is still this
 	// worker's own execution, exactly as a result is (ResultImporter). Requiring
 	// the current epoch made every checkpoint pending across a coordinator
@@ -91,22 +95,8 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 		}
 		return domain.Artifact{}, err
 	}
-	reader, err := opener.OpenWorkerUpload(ctx, object)
+	data, err := i.readCheckpointObject(ctx, opener, object)
 	if err != nil {
-		return domain.Artifact{}, fmt.Errorf("open worker checkpoint %q: %w", object.ID, err)
-	}
-	data, readErr := io.ReadAll(io.LimitReader(reader, object.Size+1))
-	closeErr := reader.Close()
-	if readErr != nil {
-		return domain.Artifact{}, readErr
-	}
-	if closeErr != nil {
-		return domain.Artifact{}, closeErr
-	}
-	if int64(len(data)) != object.Size {
-		return domain.Artifact{}, errors.New("worker checkpoint size changed")
-	}
-	if err := workerproto.VerifyArtifact(bytes.NewReader(data), object, i.MaxArtifactBytes); err != nil {
 		return domain.Artifact{}, err
 	}
 	artifact := domain.Artifact{
@@ -120,6 +110,194 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
 		AttemptRevision: attempt.Revision, Artifact: artifact,
 	}, bytes.NewReader(data))
+}
+
+// readCheckpointObject reads one announced object and verifies it against
+// the manifest's size and digest.
+func (i CoordinatorCheckpointImporter) readCheckpointObject(ctx context.Context, opener WorkerUploadOpener, object workerproto.ArtifactObject) ([]byte, error) {
+	reader, err := opener.OpenWorkerUpload(ctx, object)
+	if err != nil {
+		return nil, fmt.Errorf("open worker checkpoint %q: %w", object.ID, err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(reader, object.Size+1))
+	closeErr := reader.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if int64(len(data)) != object.Size {
+		return nil, errors.New("worker checkpoint size changed")
+	}
+	if err := workerproto.VerifyArtifact(bytes.NewReader(data), object, i.MaxArtifactBytes); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+// IsContinuationUpload reports whether a checkpoint-channel upload is a
+// continuation.md snapshot a running attempt handed on: the snapshot and the
+// metadata describing it, in that order.
+func IsContinuationUpload(manifest workerproto.ArtifactTransferManifest) bool {
+	return len(manifest.Objects) == 2 &&
+		strings.HasPrefix(manifest.Objects[0].ID, "continuation-") &&
+		strings.HasPrefix(manifest.Objects[1].ID, "continuation-meta-")
+}
+
+// importContinuation imports a continuation.md snapshot a worker took at a
+// turn end or a pause. It is what lets a superseded attempt, which never
+// publishes a result, hand its latest checkpoint to the task's next attempt.
+//
+// It binds under the authority of the dispatch that took it, not the
+// assignment's current state (see continuationImportBinding): a snapshot the
+// worker queued before the attempt's lease expired, or before it was released,
+// superseded or offered again at a later epoch, is still imported when the
+// worker is next polled. No throttle evidence names it: the metadata
+// travelling with the snapshot is checked against it instead, and the
+// snapshot must be under its attempt's own identity and sequence. An upload
+// that names no dispatch of its worker process, or whose metadata does not
+// describe it, is refused for good. Only
+// the snapshot is kept, dated by its capture; an exact replay returns the same
+// immutable artifact. Importing it grants the old attempt nothing else: its
+// results and lifecycle stay fenced as before.
+func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, response workerproto.ArtifactUploadResponse, opener WorkerUploadOpener, now time.Time) (domain.Artifact, error) {
+	manifest := response.Manifest
+	if manifest.Direction != "upload" || manifest.CoordinatorEpoch < 1 || manifest.CoordinatorEpoch > i.CoordinatorEpoch {
+		return domain.Artifact{}, errors.New("continuation import manifest authority mismatch")
+	}
+	if err := validateWorkerUploadCustody(response, i.CoordinatorID); err != nil {
+		return domain.Artifact{}, err
+	}
+	records, err := i.Store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		return domain.Artifact{}, err
+	}
+	dispatches, _ := i.Store.(continuationDispatchStore)
+	assignment, attempt, task, final, err := continuationImportBinding(ctx, records, manifest, dispatches)
+	if err != nil {
+		if final {
+			return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
+		}
+		return domain.Artifact{}, err
+	}
+	snapshot, metadata := manifest.Objects[0], manifest.Objects[1]
+	payloads := make([][]byte, len(manifest.Objects))
+	for index, object := range manifest.Objects {
+		if payloads[index], err = i.readCheckpointObject(ctx, opener, object); err != nil {
+			return domain.Artifact{}, err
+		}
+	}
+	var checkpoint domain.ContinuationCheckpoint
+	reason := ""
+	switch {
+	case json.Unmarshal(payloads[1], &checkpoint) != nil:
+		reason = "the metadata is not a checkpoint description"
+	case checkpoint.AttemptID != attempt.ID || checkpoint.Sequence < 1 ||
+		snapshot.ID != domain.ContinuationLiveArtifactID(attempt.ID, assignment.Epoch, checkpoint.Sequence) ||
+		metadata.ID != domain.ContinuationLiveMetadataArtifactID(attempt.ID, assignment.Epoch, checkpoint.Sequence):
+		reason = "the snapshot is not under its attempt's own identity and sequence"
+	case snapshot.Kind != string(domain.ArtifactCheckpoint) || snapshot.MediaType != "text/markdown" || !strings.HasPrefix(snapshot.Path, "checkpoints/") ||
+		metadata.Kind != string(domain.ArtifactCheckpoint) || metadata.MediaType != "application/json" || !strings.HasPrefix(metadata.Path, "checkpoints/"):
+		reason = "the objects are not a snapshot and its metadata"
+	case !strings.EqualFold(checkpoint.SHA256, snapshot.SHA256) || checkpoint.Size != snapshot.Size || checkpoint.Size > domain.ContinuationSnapshotLimit:
+		reason = "the metadata does not describe the snapshot"
+	case checkpoint.CapturedAt.IsZero() || checkpoint.CapturedAt.After(manifest.CreatedAt):
+		reason = "the capture time is missing or later than the upload"
+	}
+	if reason != "" {
+		return domain.Artifact{}, i.reject(ctx, records, manifest, now, errors.New("continuation checkpoint: "+reason))
+	}
+	artifact := domain.Artifact{
+		ID: snapshot.ID, WorkflowRunID: attempt.WorkflowRunID, TaskID: task.ID, AttemptID: attempt.ID,
+		Kind: domain.ArtifactCheckpoint, Name: domain.ContinuationArtifactName, MediaType: snapshot.MediaType,
+		Size: snapshot.Size, SHA256: strings.ToLower(snapshot.SHA256), Producer: "worker:" + manifest.WorkerID,
+		CreatedAt: checkpoint.CapturedAt.UTC(),
+	}
+	published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
+		CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,
+		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+		AttemptRevision: attempt.Revision, Artifact: artifact, LiveContinuation: true,
+	}, bytes.NewReader(payloads[0]))
+	if errors.Is(err, sqlite.ErrArtifactConflict) {
+		// The attempt already handed on different bytes under this sequence;
+		// the first stands and this one can never be imported.
+		return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
+	}
+	return published, err
+}
+
+// continuationDispatchStore reads the dispatch an assignment's earlier epoch
+// was first offered as; see sqlite.Store.AssignmentContinuationBinding. A
+// store without it refuses every snapshot of an earlier epoch.
+type continuationDispatchStore interface {
+	AssignmentContinuationBinding(context.Context, string, int64) (sqlite.ContinuationDispatch, bool, error)
+}
+
+// continuationImportBinding binds a continuation upload to the dispatch that
+// took it: the assignment it names, at the epoch it names, claimed at some
+// point by the same worker process (claimed, lease lost, released or
+// completed), for an attempt that has not moved to another assignment. Any
+// progress and control are accepted, because the snapshot records what the
+// attempt already did.
+//
+// When the assignment has since been offered again at a later epoch, the
+// current row names only the new dispatch, so the upload is authenticated
+// against the V39 row frozen at its own epoch's first offer instead: that
+// offer must have gone to the manifest's worker process, with the
+// continuation capability, for the attempt the assignment still runs. The
+// returned assignment is then that earlier dispatch. The publication fence
+// applies the same rule; see sqlite.Store.CommitArtifactPublication.
+//
+// A refusal is final unless only the task is missing, which a later
+// projection may still supply, or the V39 row could not be read.
+func continuationImportBinding(ctx context.Context, records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest, dispatches continuationDispatchStore) (domain.Assignment, domain.Attempt, domain.Task, bool, error) {
+	var assignment domain.Assignment
+	for _, candidate := range records.Assignments {
+		if candidate.ID == manifest.AssignmentID {
+			assignment = candidate
+			break
+		}
+	}
+	noDispatch := errors.New("continuation import names no dispatch of this worker process")
+	switch {
+	case assignment.ID == "":
+		return assignment, domain.Attempt{}, domain.Task{}, true, noDispatch
+	case assignment.Epoch == manifest.AssignmentEpoch:
+		if assignment.State == domain.AssignmentOffered || assignment.WorkerID != manifest.WorkerID || assignment.WorkerEpoch != manifest.WorkerEpoch {
+			return assignment, domain.Attempt{}, domain.Task{}, true, noDispatch
+		}
+	case assignment.Epoch > manifest.AssignmentEpoch && manifest.AssignmentEpoch > 0 && dispatches != nil:
+		dispatch, found, err := dispatches.AssignmentContinuationBinding(ctx, manifest.AssignmentID, manifest.AssignmentEpoch)
+		if err != nil {
+			return assignment, domain.Attempt{}, domain.Task{}, false, err
+		}
+		if !found || !dispatch.Offered || dispatch.Assignment.WorkerID != manifest.WorkerID ||
+			dispatch.Assignment.WorkerEpoch != manifest.WorkerEpoch || dispatch.Assignment.AttemptID != assignment.AttemptID {
+			return assignment, domain.Attempt{}, domain.Task{}, true, noDispatch
+		}
+		assignment = dispatch.Assignment
+	default:
+		return assignment, domain.Attempt{}, domain.Task{}, true, noDispatch
+	}
+	var attempt domain.Attempt
+	for _, candidate := range records.Attempts {
+		if candidate.ID == assignment.AttemptID {
+			attempt = candidate
+			break
+		}
+	}
+	if attempt.ID == "" || (attempt.AssignmentID != assignment.ID && attempt.AssignmentID != "") {
+		return assignment, attempt, domain.Task{}, true, errors.New("continuation import attempt binding is stale")
+	}
+	if attempt.IsSupervisionActivation() {
+		return assignment, attempt, domain.Task{}, true, errors.New("continuation import names a supervision activation")
+	}
+	task, _ := domain.TaskForAttempt(attempt, records.WorkflowRuns, records.Tasks)
+	if task.ID == "" {
+		return assignment, attempt, task, false, errors.New("continuation import task is missing")
+	}
+	return assignment, attempt, task, false, nil
 }
 
 // ErrCheckpointImportRejected marks a checkpoint upload that can never be

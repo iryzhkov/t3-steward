@@ -144,6 +144,17 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
+	identity := workerproto.ExecutionIdentity{
+		WorkflowID: state.workflow.ID, WorkflowRunID: state.run.ID, TaskID: state.task.ID,
+		AttemptID: assignment.AttemptID, AttemptRevision: state.attempt.Revision,
+		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+		DispatchToken: assignment.DispatchToken, ThreadID: assignment.ThreadID,
+	}
+	// The continuation input is budgeted with the other static inputs below.
+	staticInputs, continuation, continuationOffered, err := b.continuationInputs(ctx, state, assignment, identity, staticInputs)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
 	dependencies, err := packageDependencies(state.task, state.tasks, state.artifacts, state.run.ID)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
@@ -173,20 +184,16 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		CoordinatorEpoch: b.CoordinatorEpoch,
 		WorkerID:         assignment.WorkerID,
 		WorkerEpoch:      assignment.WorkerEpoch,
-		Identity: workerproto.ExecutionIdentity{
-			WorkflowID: state.workflow.ID, WorkflowRunID: state.run.ID, TaskID: state.task.ID,
-			AttemptID: assignment.AttemptID, AttemptRevision: state.attempt.Revision,
-			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
-			DispatchToken: assignment.DispatchToken, ThreadID: assignment.ThreadID,
-		},
-		Class:         state.task.Class,
-		Prompt:        prompt,
-		StaticInputs:  staticInputs,
-		Recovery:      recovery,
-		Dependencies:  dependencies,
-		CommitBundles: commitBundles,
-		Context:       reviewJudgeInputs(state.task, state.tasks, state.artifacts, state.run.ID, assignment.CreatedAt),
-		Route:         cloneProviderRoute(assignment.Route),
+		Identity:         identity,
+		Class:            state.task.Class,
+		Prompt:           prompt,
+		StaticInputs:     staticInputs,
+		Recovery:         recovery,
+		Continuation:     continuation,
+		Dependencies:     dependencies,
+		CommitBundles:    commitBundles,
+		Context:          reviewJudgeInputs(state.task, state.tasks, state.artifacts, state.run.ID, assignment.CreatedAt),
+		Route:            cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
 			DirectoryBindings: directoryresource.CloneBindings(state.task.DirectoryBindings),
 			Type:              environment.Type, CatalogRevision: b.CatalogRevision, Project: environment.ProjectName,
@@ -210,6 +217,12 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	}
 	if err := b.declarePackageCapabilities(ctx, &pkg, state.task.ReviewRequirements != nil); err != nil {
 		return workerproto.AssignmentOffer{}, err
+	}
+	// Declared after negotiation, as the frozen session display is: the
+	// decision was frozen against the worker's inventory, which a replay may
+	// no longer be able to read.
+	if continuationOffered {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityContinuationCheckpoint)
 	}
 	if err := b.freezeSessionDisplay(ctx, assignment, &pkg, state.workflow.Name, state.task.Name, state.task.ReviewJudge); err != nil {
 		return workerproto.AssignmentOffer{}, err
@@ -402,6 +415,9 @@ type executionPackageState struct {
 	attempt   domain.Attempt
 	tasks     []domain.Task
 	artifacts map[string]domain.Artifact
+	// attempts holds every attempt, so continuation snapshots are ordered by
+	// the task's execution order rather than by a worker's clock.
+	attempts []domain.Attempt
 	// definitionRuns holds every run of this workflow. A task's prompt and its
 	// static inputs are the workflow's definition, retained under the run that
 	// submitted them, and every later run of that workflow executes those same
@@ -512,6 +528,7 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 		}
 		state.artifacts[artifact.ID] = artifact
 	}
+	state.attempts = records.Attempts
 	return state, nil
 }
 

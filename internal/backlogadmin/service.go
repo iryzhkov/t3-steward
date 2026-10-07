@@ -1015,6 +1015,7 @@ func (v view) taskDetail(runID, taskID string) (TaskDetail, bool) {
 		detail.Sink = domain.CloneSink(sink)
 		return detail, true
 	}
+	detail.Checkpoint = v.continuationCheckpoint(runID, task.ID)
 	if attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID]); attempt != nil {
 		detail.Attempt = attempt
 		if assignment, ok := v.assignments[attempt.AssignmentID]; ok {
@@ -1079,7 +1080,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	if !ok {
 		return Explanation{}, false
 	}
-	explanation := Explanation{WorkflowRunID: runID, TaskID: task.ID, Blockers: make([]Blocker, 0)}
+	explanation := Explanation{WorkflowRunID: runID, TaskID: task.ID, Blockers: make([]Blocker, 0), Checkpoint: v.continuationCheckpoint(runID, task.ID)}
 	if project := v.workflows[v.runs[runID].WorkflowID].Project; slices.Contains(v.defaultedProjects, project) {
 		explanation.Details = append(explanation.Details, projectBindingDefaultedDetail(project))
 	}
@@ -1412,6 +1413,16 @@ func (v view) artifacts(query Query) []Artifact {
 		return result[i].Metadata.CreatedAt.Before(result[j].Metadata.CreatedAt)
 	})
 	return result
+}
+
+// continuationCheckpoint is the task's latest continuation.md checkpoint, or
+// nil when the coordinator holds none.
+func (v view) continuationCheckpoint(runID, taskID string) *ContinuationCheckpoint {
+	latest := backlog.LatestContinuationArtifact(v.records.Artifacts, v.records.Attempts, runID, taskID)
+	if latest == nil {
+		return nil
+	}
+	return &ContinuationCheckpoint{AttemptID: latest.AttemptID, ArtifactID: latest.ID, Size: latest.Size, CapturedAt: latest.CreatedAt.UTC()}
 }
 
 func (v view) artifact(id string) (Artifact, bool) {

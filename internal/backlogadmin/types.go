@@ -473,6 +473,20 @@ type TaskDetail struct {
 	Evidence      *AttemptEvidence `json:"evidence,omitempty"`
 	Artifacts     []Artifact       `json:"artifacts,omitempty"`
 	ResourceLocks []string         `json:"resourceLocks,omitempty"`
+	// Checkpoint is the latest continuation.md checkpoint the coordinator
+	// holds for the task; absent means no checkpoint.
+	Checkpoint *ContinuationCheckpoint `json:"checkpoint,omitempty"`
+}
+
+// ContinuationCheckpoint is when the task's latest continuation.md snapshot
+// was taken, by which attempt, and how large it is; never its content. The
+// coordinator receives a snapshot with each attempt's result, so a running
+// attempt's newer turn-end snapshots stay in its worker's journal until then.
+type ContinuationCheckpoint struct {
+	AttemptID  string    `json:"attemptId"`
+	ArtifactID string    `json:"artifactId"`
+	Size       int64     `json:"size"`
+	CapturedAt time.Time `json:"capturedAt"`
 }
 
 // AttemptEvidence is the worker's last word on an attempt, as carried by its
@@ -579,6 +593,9 @@ type Explanation struct {
 	// finished turn, with the heads it compared. It is absent until a
 	// review-declared task's result has been judged.
 	ReviewGate *domain.ReviewCompletionGate `json:"reviewGate,omitempty"`
+	// Checkpoint is the task's latest continuation.md checkpoint; absent
+	// means no checkpoint.
+	Checkpoint *ContinuationCheckpoint `json:"checkpoint,omitempty"`
 }
 
 type Event struct {

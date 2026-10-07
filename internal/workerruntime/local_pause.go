@@ -193,7 +193,7 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 		}
 	}
 	now := r.now()
-	return r.journal.update(func(state *journalState) error {
+	if err := r.journal.update(func(state *journalState) error {
 		current, ok := state.Attempts[id]
 		if !ok {
 			return fmt.Errorf("worker journal: unknown assignment %q", id)
@@ -204,6 +204,16 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 		request := *current.LocalThrottle
 		if request.StoppedAt == nil {
 			request.StoppedAt = &now
+			// The paused turn has stopped and owes its continuation.md
+			// snapshot, keyed by the turn when it is known and by the pause
+			// otherwise. The obligation is durable with the stop, so a
+			// snapshot that is not taken below is taken on the next
+			// reconcile pass.
+			pauseKey := "pause:" + request.RequestedAt.UTC().Format(time.RFC3339Nano)
+			if turnID != "" {
+				pauseKey = turnID
+			}
+			current.PendingContinuation = &PendingContinuation{Boundary: domain.ContinuationPause, Turn: pauseKey}
 		}
 		if checkpoint != nil {
 			request.Checkpoint = checkpoint
@@ -220,7 +230,11 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 		state.Attempts[id] = current
 		state.Sequence++
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	r.settlePendingContinuation(ctx, id)
+	return nil
 }
 
 // keepPauseCheckpoint records a checkpoint on the pause request in force
@@ -332,6 +346,9 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 	resume.RequestedAt = now
 	command := r.localThrottleCommand(record, resume)
 	command.Reason = "quota resume permitted: " + why
+	if err := r.closePendingContinuation(ctx, id); err != nil {
+		return err
+	}
 	if err := r.driver.Resume(ctx, pkg, command); err != nil {
 		r.log.Warn("resume after quota pause failed; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil

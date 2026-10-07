@@ -74,6 +74,14 @@ type Client struct {
 	unusable bool
 }
 
+// Usable reports whether the session can still carry an exchange. It turns
+// false for good after an exchange whose outcome is ambiguous.
+func (c *Client) Usable() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.unusable
+}
+
 func NewClient(config ClientConfig) (*Client, error) {
 	if config.CoordinatorID == "" || config.WorkerID == "" || config.CoordinatorEpoch < 1 ||
 		config.WorkerEpoch == "" || config.SessionID == "" {

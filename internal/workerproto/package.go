@@ -153,13 +153,33 @@ const (
 	// review-declared producer's staged commit only for a dependency the
 	// package marks as accepted.
 	PackageCapabilityAcceptedDependencies = "accepted-dependencies-v1"
+	// PackageCapabilityContinuationCheckpoint is the continuation.md
+	// checkpoint contract. A package that declares it tells the worker that
+	// this coordinator accepts the attempt's snapshots as checkpoint uploads
+	// while it runs and the latest one in its result, and it may carry the
+	// snapshot an earlier attempt of the task left.
+	PackageCapabilityContinuationCheckpoint = "continuation-checkpoint-v1"
 )
+
+// ContinuationInputPath is where a package places the previous attempt's
+// continuation snapshot. Static inputs are materialized under the workspace's
+// .t3/inputs/, outside the task's tree.
+const ContinuationInputPath = "inputs/continuation/previous.md"
+
+// ContinuationInput describes the snapshot a package carries at
+// ContinuationInputPath: which attempt left it, when, and how large it is.
+type ContinuationInput struct {
+	Path       string    `json:"path"`
+	AttemptID  string    `json:"attemptId"`
+	Size       int64     `json:"size"`
+	CapturedAt time.Time `json:"capturedAt"`
+}
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint}
 }
 
 // RequiresWorkspaceHead reports whether the worker must report the workspace's
@@ -221,14 +241,16 @@ type ExecutionPackage struct {
 	// Supervision makes this package an overseer activation rather than a
 	// declared task. It is nil for every task package, which is every package
 	// an unsupervised run produces. See SupervisionActivation.
-	Supervision *SupervisionActivation       `json:"supervision,omitempty"`
-	Recovery    *RecoveryExecutionContext    `json:"recovery,omitempty"`
-	Outputs     []domain.ArtifactDeclaration `json:"outputs,omitempty"`
-	NotBefore   *time.Time                   `json:"notBefore,omitempty"`
-	Deadline    *time.Time                   `json:"deadline,omitempty"`
-	ExpiresAt   *time.Time                   `json:"expiresAt,omitempty"`
-	Limits      ExecutionLimits              `json:"limits"`
-	CreatedAt   time.Time                    `json:"createdAt"`
+	Supervision *SupervisionActivation    `json:"supervision,omitempty"`
+	Recovery    *RecoveryExecutionContext `json:"recovery,omitempty"`
+	// Continuation requires PackageCapabilityContinuationCheckpoint.
+	Continuation *ContinuationInput           `json:"continuation,omitempty"`
+	Outputs      []domain.ArtifactDeclaration `json:"outputs,omitempty"`
+	NotBefore    *time.Time                   `json:"notBefore,omitempty"`
+	Deadline     *time.Time                   `json:"deadline,omitempty"`
+	ExpiresAt    *time.Time                   `json:"expiresAt,omitempty"`
+	Limits       ExecutionLimits              `json:"limits"`
+	CreatedAt    time.Time                    `json:"createdAt"`
 }
 
 type ExecutionPackageManifest struct {
@@ -537,6 +559,18 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if _, ok := declared[PackageCapabilitySessionDisplay]; ok && pkg.Display == nil {
 		return errors.New("execution package: session display capability requires display metadata")
+	}
+	if _, ok := declared[PackageCapabilityContinuationCheckpoint]; pkg.Continuation != nil && !ok {
+		return errors.New("execution package: a continuation input requires the continuation checkpoint capability")
+	}
+	if pkg.Continuation != nil {
+		delivered := false
+		for _, input := range pkg.StaticInputs {
+			delivered = delivered || (input.Path == ContinuationInputPath && input.Size == pkg.Continuation.Size)
+		}
+		if pkg.Supervision != nil || pkg.Continuation.Path != ContinuationInputPath || pkg.Continuation.AttemptID == "" || !delivered {
+			return errors.New("execution package: continuation input is incomplete or attached to an activation")
+		}
 	}
 	if pkg.Recovery != nil {
 		if pkg.Supervision != nil || pkg.Recovery.IncidentID == "" || pkg.Recovery.InstructionPath != "inputs/recovery/instructions.md" {
