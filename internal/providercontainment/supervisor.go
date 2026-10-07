@@ -147,6 +147,28 @@ func writeExclusive(path string, content []byte) error {
 	return errors.Join(writeErr, syncErr, closeErr)
 }
 
+// CanonicalRoot returns the supervisor storage path with every symlink in its
+// parent directories resolved. Call it once, when the storage location is
+// configured: the storage checks then demand that the path is already its own
+// canonical form. A system link above the storage (/var to /private/var on
+// macOS, or a symlinked TMPDIR on Linux) is resolved here and accepted, while a
+// symlink at the storage path itself, or one planted later anywhere on the
+// path, still fails those checks.
+func CanonicalRoot(root string) (string, error) {
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	if absolute == "/" {
+		return "", errors.New("supervisor state must not be the filesystem root")
+	}
+	parent, err := filepath.EvalSymlinks(filepath.Dir(absolute))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(absolute)), nil
+}
+
 func privateDirectory(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {

@@ -52,7 +52,11 @@ func containedVerificationFixture(t *testing.T) (containedVerifier, string) {
 	}
 	pkg := testPackage()
 	pkg.Limits.VerificationTimeout = time.Minute
-	manager := ContainedT3{Supervisor: providercontainment.Supervisor{Root: filepath.Join(root, "journal"), Executable: "/bin/true"}}
+	journal, err := providercontainment.CanonicalRoot(filepath.Join(root, "journal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := ContainedT3{Supervisor: providercontainment.Supervisor{Root: journal, Executable: "/bin/true"}}
 	launch := providercontainment.Launch{ExecutionID: pkg.Identity.ThreadID, Spec: providercontainment.Spec{
 		WorkerID: pkg.WorkerID, Directories: pkg.Environment.DirectoryBindings,
 		Workspace: directoryresource.Identity{Registration: directoryresource.Registration{Path: workspace}},
