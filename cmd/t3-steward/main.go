@@ -292,7 +292,7 @@ func dispatch(args []string) error {
 			sub = append([]string{"diagnose"}, sub...)
 		}
 		return cmdBacklog(g, sub)
-	case "schedules":
+	case "lease", "schedules":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -306,6 +306,9 @@ func dispatch(args []string) error {
 				continue
 			}
 			sub = append(sub, rest[i])
+		}
+		if cmd == "lease" {
+			return cmdLease(g, sub)
 		}
 		return cmdSchedules(g, sub)
 	case "version", "--version", "-v":
@@ -454,7 +457,7 @@ var dispatchedVerbs = []string{
 // topLevelFamilies are the command families dispatch routes by name, in the
 // order a did-you-mean suggestion prefers them.
 var topLevelFamilies = []string{
-	"campaign", "task", "review", "policy", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "models", "triage",
+	"campaign", "task", "review", "policy", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "lease", "models", "triage",
 	"diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
 }
 

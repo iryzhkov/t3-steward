@@ -196,6 +196,11 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 // of contradicting each other, and an answer that carries no replay flag at
 // all, such as a refusal, is left alone.
 func markReplayedAnswer(response localResponse) localResponse {
+	if response.LeaseResponse != nil {
+		replayed := *response.LeaseResponse
+		replayed.Replay = true
+		response.LeaseResponse = &replayed
+	}
 	if response.SubmissionResponse != nil {
 		replayed := *response.SubmissionResponse
 		replayed.Replay = true
@@ -283,6 +288,9 @@ func mutatingOperation(operation string) bool {
 // word carries, including the task-wake transitions and expiries the runner also
 // sends, keeps its replay protection.
 func mutatingRequest(operation string, request localRequest) bool {
+	if operation == localOperationLease && request.Lease != nil {
+		return request.Lease.Mutating()
+	}
 	if !mutatingOperation(operation) {
 		return false
 	}

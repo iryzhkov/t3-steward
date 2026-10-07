@@ -22,6 +22,7 @@ import (
 const LocalTransportVersion = "backlog.admin.local/v1"
 
 const (
+	localOperationLease              = "lease"
 	localOperationQuery              = "query"
 	localOperationMutation           = "mutation"
 	localOperationArtifact           = "artifact"
@@ -47,6 +48,7 @@ const (
 // restricted SSH command accepts exactly these words and nothing else.
 func Operations() []string {
 	return []string{
+		localOperationLease,
 		localOperationQuery,
 		localOperationMutation,
 		localOperationArtifact,
@@ -177,6 +179,7 @@ func (a *RemoteAdminAssertion) role() string {
 }
 
 type localRequest struct {
+	Lease *domain.LeaseRequest `json:"lease,omitempty"`
 	// ApprovalFrame is the original signed remote envelope. It is accepted only
 	// for a configured approver decision and reverified by the local coordinator.
 	ApprovalFrame      *remoteFrame                    `json:"approvalFrame,omitempty"`
@@ -199,6 +202,7 @@ type localRequest struct {
 }
 
 type localResponse struct {
+	LeaseResponse              *domain.LeaseResponse                     `json:"leaseResponse,omitempty"`
 	WorkerEnrollment           *domain.WorkerEnrollment                  `json:"workerEnrollment,omitempty"`
 	GraphAmendment             *domain.GraphAmendmentResult              `json:"graphAmendment,omitempty"`
 	NodeWait                   *NodeWaitResponse                         `json:"nodeWait,omitempty"`

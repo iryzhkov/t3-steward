@@ -54,6 +54,10 @@ func (d adminDispatch) handle(
 	body io.Reader,
 ) (localResponse, *ArtifactContent) {
 	response := localResponse{Version: LocalTransportVersion}
+	if request.Lease != nil && request.Operation != localOperationLease {
+		response.Error = "unexpected lease request"
+		return response, nil
+	}
 	if request.RecoveryRetry != nil && request.Operation != localOperationRecoveryRetry {
 		response.Error = "unexpected recovery retry request"
 		return response, nil
@@ -75,6 +79,8 @@ func (d adminDispatch) handle(
 		return response, nil
 	}
 	switch request.Operation {
+	case localOperationLease:
+		d.lease(ctx, principal, request, &response)
 	case localOperationRecoveryRetry:
 		d.retryRecovery(ctx, principal, request, &response)
 	case localOperationSupervisionShow, localOperationSupervisionDecision:
