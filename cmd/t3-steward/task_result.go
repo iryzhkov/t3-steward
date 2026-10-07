@@ -363,9 +363,14 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		collected.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
 		collected.ReviewGate = task.Attempt.ReviewGate
 	}
+	staging, err := stageResultDirectory(collected.Directory)
+	if err != nil {
+		return taskResultTask{}, err
+	}
+	defer os.RemoveAll(staging)
 	final := false
 	for _, artifact := range detail.Artifacts {
-		if artifact.Metadata.TaskID != task.Task.ID {
+		if artifact.Metadata.TaskID != task.Task.ID || !ofSelectedAttempt(task, artifact) {
 			continue
 		}
 		switch artifact.Metadata.Kind {
@@ -389,7 +394,7 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 				artifact.Metadata.Name = "gate/report.json"
 			}
 		}
-		body, err := c.fetch(ctx, artifact, collected.Directory)
+		body, err := c.fetch(ctx, artifact, staging)
 		if err != nil {
 			return taskResultTask{}, err
 		}
@@ -412,6 +417,9 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		if inline && artifact.Metadata.Kind == domain.ArtifactSummary {
 			collected.FinalMessage = string(body)
 		}
+	}
+	if err := replaceResultDirectory(staging, collected.Directory); err != nil {
+		return taskResultTask{}, err
 	}
 	if !final {
 		collected.Missing = append(collected.Missing, finalMessageArtifactName)
