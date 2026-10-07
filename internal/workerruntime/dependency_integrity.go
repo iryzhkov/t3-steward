@@ -229,7 +229,20 @@ func (d *LocalDriver) verifyDependencyIntegrity(ctx context.Context, pkg workerp
 			if len(data) > 1<<20 {
 				continue
 			}
-			if provenance, err := backlog.ParseCommitProvenance(data); err == nil && backlog.IsDependencyCommitRecord(relative, provenance, pkg.DependencyCommitOutputs(dependency)) {
+			commitOutputs := pkg.DependencyCommitOutputs(dependency)
+			provenance, parseErr := backlog.ParseCommitProvenance(data)
+			// A recognized but malformed record is refused in any file, so it
+			// can never pass for ordinary content.
+			if parseErr != nil && backlog.LooksLikeCommitProvenance(data) {
+				return dependencyFailure(dependency, object, parseErr)
+			}
+			if parseErr == nil && !backlog.IsDependencyCommitRecord(relative, provenance, commitOutputs) {
+				// Ordinary content, but a failed candidate is still refused
+				// unless its exact source attempt is bound.
+				if err := validateFailedDependencySource(dependency, provenance); err != nil {
+					return dependencyFailure(dependency, object, err)
+				}
+			} else if parseErr == nil {
 				if err := validateDependencyProvenance(pkg, dependency, provenance); err != nil {
 					return dependencyFailure(dependency, object, err)
 				}
@@ -246,7 +259,7 @@ func (d *LocalDriver) verifyDependencyIntegrity(ctx context.Context, pkg workerp
 		}
 	}
 	for _, input := range pkg.CommitBundles {
-		if !commits[backlog.CampaignRef(input.WorkflowRunID, input.TaskID, input.Name)] {
+		if !commits[backlog.CampaignRef(input.WorkflowRunID, input.TaskID, input.Name)] && !commits[failedCommitBundleRef(pkg, input)] {
 			return &backlog.DependencyIntegrityError{Producer: input.TaskID, Artifact: input.Name, Err: errors.New("declared commit provenance is not materialized")}
 		}
 	}
@@ -274,8 +287,15 @@ func (d *LocalDriver) restoreDependencyCommit(ctx context.Context, pkg workerpro
 		return nil
 	}
 	provenance, err := backlog.ParseCommitProvenance(data)
-	if err != nil || !backlog.IsDependencyCommitRecord(relative, provenance, pkg.DependencyCommitOutputs(dependency)) {
+	commitOutputs := pkg.DependencyCommitOutputs(dependency)
+	if err != nil {
+		if backlog.LooksLikeCommitProvenance(data) {
+			return err
+		}
 		return nil
+	}
+	if !backlog.IsDependencyCommitRecord(relative, provenance, commitOutputs) {
+		return validateFailedDependencySource(dependency, provenance)
 	}
 	if err := validateDependencyProvenance(pkg, dependency, provenance); err != nil {
 		return err
@@ -294,7 +314,20 @@ func (d *LocalDriver) restoreDependencyCommit(ctx context.Context, pkg workerpro
 	return d.Workspace.CampaignRefs.FetchInto(ctx, workspace, provenance, io.Discard)
 }
 
+// validateFailedDependencySource refuses a failed candidate whose dependency
+// is not bound to the exact attempt that retained it.
+func validateFailedDependencySource(dependency workerproto.DependencyInput, provenance backlog.CommitProvenance) error {
+	var source backlog.DependencySource
+	if dependency.Provenance != nil {
+		source = backlog.DependencySource{WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID, AttemptID: dependency.Provenance.AttemptID}
+	}
+	return backlog.ValidateFailedCommitSource(provenance, source)
+}
+
 func validateDependencyProvenance(pkg workerproto.ExecutionPackage, dependency workerproto.DependencyInput, provenance backlog.CommitProvenance) error {
+	if err := validateFailedDependencySource(dependency, provenance); err != nil {
+		return err
+	}
 	run, task := pkg.Identity.WorkflowRunID, dependency.TaskID
 	if dependency.Provenance != nil {
 		run, task = dependency.Provenance.RunID, dependency.Provenance.TaskID

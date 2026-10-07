@@ -433,15 +433,12 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 	if workspaceDir == "" {
 		return errors.New("obtain campaign commit: consuming workspace is required")
 	}
-	if err := validateCommitTarget(provenance.WorkflowRunID, provenance.TaskID, provenance.Name); err != nil {
+	if err := ValidateCommitProvenance(provenance); err != nil {
 		return err
 	}
-	if !validGitObjectID(provenance.Commit) || !validGitObjectID(provenance.Base) {
-		return fmt.Errorf("obtain campaign commit: %q from base %q is not a commit ID", provenance.Commit, provenance.Base)
-	}
 	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
-	if provenance.Ref != "" && provenance.Ref != ref {
-		return fmt.Errorf("campaign commit record names ref %q, want %q", provenance.Ref, ref)
+	if provenance.FailedAttempt != nil {
+		ref = FailedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.FailedAttempt.ID, provenance.Name)
 	}
 	provenance.Ref = ref
 	source, err := bundleRef(provenance)
@@ -778,6 +775,15 @@ func RequireCarriedCommitCapabilities(task *domain.Task, producer domain.Task) {
 	RequireCommitBundleCapability(task)
 	if producer.ReviewRequirements != nil && !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityAcceptedDependencies) {
 		task.Placement.Capabilities = append(task.Placement.Capabilities, workerproto.PackageCapabilityAcceptedDependencies)
+	}
+}
+
+// RequireFailedCommitCapability excludes workers that can import ordinary
+// bundles but do not implement the quarantined ref and attempt binding.
+func RequireFailedCommitCapability(task *domain.Task) {
+	RequireCommitBundleCapability(task)
+	if !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit) {
+		task.Placement.Capabilities = append(task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit)
 	}
 }
 

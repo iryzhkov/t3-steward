@@ -21,6 +21,8 @@ type Round struct {
 	InputManifestDigest string     `json:"inputManifestDigest"`
 	BaseCommit          string     `json:"baseCommit,omitempty"`
 	HeadCommit          string     `json:"headCommit,omitempty"`
+	CandidateMode       string     `json:"candidateMode,omitempty"`
+	BundleInput         string     `json:"bundleInput,omitempty"`
 	Reviewers           []Reviewer `json:"reviewers"`
 	Combined            string     `json:"combinedVerdict"`
 	Revision            int64      `json:"revision"`

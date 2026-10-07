@@ -178,6 +178,8 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if err != nil {
 		return report, err
 	}
+	ordinaryMissingOutputs := missingOutputs
+	failedRecords, artifacts, payloads, missingOutputs := admitFailedCommitRecords(task, attempt, artifacts, payloads, missingOutputs)
 	verificationPassed, failure, summary, err := evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, missingOutputs)
 	if err != nil {
 		if errors.Is(err, ErrInvalidGateEvidence) {
@@ -190,6 +192,25 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		verificationPassed = false
 		failure = strings.TrimPrefix(failure+"; review_output verification failed: "+reviewErr.Error(), "; ")
 	}
+	if err := validateFailedCommitResultOutcome(failedRecords, verificationPassed, failure); err != nil {
+		// Completion or review evidence can add a failure the worker did not
+		// record. Withhold the optional candidates and settle the ordinary result.
+		artifacts, payloads = dropFailedCommitRecords(task, artifacts, payloads)
+		verificationPassed, failure, summary, err = evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, ordinaryMissingOutputs)
+		if err != nil {
+			if errors.Is(err, ErrInvalidGateEvidence) {
+				return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
+			}
+			return report, err
+		}
+		if reviewErr != nil {
+			verificationPassed = false
+			failure = strings.TrimPrefix(failure+"; review_output verification failed: "+reviewErr.Error(), "; ")
+		}
+	}
+	// The review completion gate decides after failed-commit candidates were
+	// settled, so that re-evaluating the ordinary result cannot discard the
+	// gate's own failure.
 	var gate *domain.ReviewCompletionGate
 	if verificationPassed && task.ReviewRequirements != nil && !attempt.IsSupervisionActivation() {
 		// A review-declared task completes only with work its latest review
@@ -488,14 +509,18 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 	case domain.ArtifactGitState:
 		// The Git state a result carries is the report of its workspace HEAD,
 		// the bundle of a commit the task declared, which is how that commit
-		// reaches a consumer on another worker, or the work-in-progress bundle
-		// of a failed attempt whose commands were still running when its turn
-		// ended.
+		// reaches a consumer on another worker, the record of a commit retained
+		// after failed verification, or the work-in-progress bundle of a failed
+		// attempt whose commands were still running when its turn ended.
 		if name == WorkspaceHeadArtifactName || object.ID == WorkspaceHeadArtifactID(attempt.ID) {
 			if object.ID != WorkspaceHeadArtifactID(attempt.ID) || name != WorkspaceHeadArtifactName || object.MediaType != "application/json" {
 				return domain.Artifact{}, fmt.Errorf("result import workspace head identity mismatch: id=%q name=%q mediaType=%q", object.ID, name, object.MediaType)
 			}
-		} else if !(IsCommitBundleOf(task, name) || isWorkInProgressBundleOf(task, attempt.ID, object.ID, name)) || object.MediaType != CommitBundleMediaType {
+			break
+		}
+		failedRecord := isFailedCommitArtifactOf(task, name) && object.MediaType == "application/json"
+		bundle := (IsCommitBundleOf(task, name) || isWorkInProgressBundleOf(task, attempt.ID, object.ID, name)) && object.MediaType == CommitBundleMediaType
+		if !failedRecord && !bundle {
 			return domain.Artifact{}, fmt.Errorf("result import object %q is not the bundle of a commit the task declares", object.ID)
 		}
 	case domain.ArtifactInput, domain.ArtifactCheckpoint:

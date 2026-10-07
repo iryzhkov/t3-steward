@@ -1096,6 +1096,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		return Explanation{}, false
 	}
 	explanation := Explanation{WorkflowRunID: runID, TaskID: task.ID, Blockers: make([]Blocker, 0), Checkpoint: v.continuationCheckpoint(runID, task.ID)}
+	explanation.Details = append(explanation.Details, reusedCommitDetails(v.runs[runID])...)
 	if project := v.workflows[v.runs[runID].WorkflowID].Project; slices.Contains(v.defaultedProjects, project) {
 		explanation.Details = append(explanation.Details, projectBindingDefaultedDetail(project))
 	}

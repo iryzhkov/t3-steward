@@ -25,6 +25,7 @@ type GraphAmendment struct {
 	Timeout          *time.Duration     `json:"timeout,omitempty"`
 	Prompt           string             `json:"prompt,omitempty"`
 	Verification     *[]string          `json:"verification,omitempty"`
+	UseCommit        bool               `json:"useCommit,omitempty"`
 }
 type GraphAmendmentResult struct {
 	Run    WorkflowRun     `json:"run"`
@@ -35,6 +36,9 @@ type GraphAmendmentResult struct {
 var graphName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 func ValidateGraphAmendment(r GraphAmendment) error {
+	if r.UseCommit && r.Operation != "rerun" {
+		return errors.New("useCommit is only valid for rerun")
+	}
 	if !graphName.MatchString(r.ID) || r.RunID == "" || r.ExpectedRevision < 1 ||
 		strings.TrimSpace(r.Reason) == "" || len(r.Reason) > 4096 {
 		return errors.New("amendment requires bounded request ID, run, expected graph revision and reason")

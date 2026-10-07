@@ -25,7 +25,8 @@ concurrency, rollout, resources and docs. Lenses alternate provider families
 when the supplied economy routes offer more than one family. Swarm requires a
 judge, and a judge requires a swarm. At least one independent reviewer is
 required. CLI Phase A role selection is described in [route-policy.md](route-policy.md).
-Quota-aware selection and `--task current` remain deferred.
+Quota-aware selection remains deferred. Inside a task, `review --task current`
+opens the review declared in its manifest; see [m16-review-checkpoint.md](m16-review-checkpoint.md).
 
 The coordinator catalog must classify routes explicitly; instance aliases are
 not evidence of different providers. Configure the following on the coordinator:
@@ -71,7 +72,26 @@ Local files use the shared pinned-input ingestion: bounded, snapshotted, hashed,
 read-only files under `.t3/inputs/`. Inputs are never pasted into prompts.
 `--diff` resolves both refs to full commit IDs once, generates a bounded diff,
 and checks out the pinned head for all reviewers. Dirty and untracked files are
-excluded. `--diff-file` accepts a previously generated diff. Each input is at
+excluded. `--diff-file` accepts a previously generated diff.
+`--commit REF` resolves and checks out one commit, after checking its reachability
+on the catalog project remote. Add `--base REF` to snapshot its bounded diff;
+without it no diff is generated. An unpushed candidate is refused with
+"push the commit or use --bundle".
+`--bundle FILE` verifies and snapshots a single-head Git bundle whose head is a
+commit object (annotated tag objects are refused), including bundles
+from `campaign commit export`. Its prerequisites must resolve in the current
+checkout and be reachable on the catalog project remote, so every worker can
+prepare them; unpublished prerequisites are refused with a push or self-contained
+bundle remedy. Ancestry is checked against the project's remote default ref;
+unrelated bundles are refused. Reviewers start from its prerequisite
+base (or the project default ref for a self-contained bundle), then receive exact
+fetch and detached-checkout commands for the pinned candidate. Bundle bytes keep
+the same 1 MiB per-file limit as other inputs. These candidate modes require a
+catalog git project whose repository matches the current checkout's origin and a
+coordinator at 0.11.0-rc.117 or later.
+`--commit`, `--bundle`, `--diff` and `--diff-file` are mutually exclusive;
+`--base` requires `--commit`. Task mode refuses `--commit`, `--bundle` and
+`--base`, like all other submission flags. Each input is at
 most 1 MiB, the total is at most 3 MiB, and basename collisions are refused.
 The composed first turn is checked against the M7b 120,000 UTF-16-unit limit.
 Fixed binary instructions are versioned as review-instructions/v1, require
