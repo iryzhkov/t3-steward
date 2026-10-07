@@ -42,6 +42,9 @@ type AttemptFinalization struct {
 	// coordinator declared the commit bundle capability on the package, which
 	// is its statement that it accepts the bundle artifact.
 	CommitBundles bool
+	// FailedCommits permits quarantine records only when the coordinator offers
+	// campaign-failed-commit-v1; older coordinators reject those objects.
+	FailedCommits bool
 	// CommitBundleLimit is the largest bundle the artifact transport accepts.
 	// Zero leaves only the campaign ref store's own limit.
 	CommitBundleLimit int64
@@ -243,7 +246,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 	// Failed verification retains a candidate under its attempt's quarantine
 	// ref, while ordinary publication still requires success. Other failures
 	// withhold the commit entirely; a retry can always publish its normal ref.
-	retainFailed := len(verificationFailures) != 0 && len(failures) == len(verificationFailures)
+	retainFailed := request.FailedCommits && len(verificationFailures) != 0 && len(failures) == len(verificationFailures)
 	if len(commits) != 0 && len(failures) != 0 && !retainFailed {
 		names := make([]string, 0, len(commits))
 		for _, declaration := range commits {

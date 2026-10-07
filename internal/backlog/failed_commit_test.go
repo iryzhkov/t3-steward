@@ -28,7 +28,7 @@ func TestVerificationFailedCommitRetainedSeparately(t *testing.T) {
 	task := domain.Task{ID: "implement", Name: "implement", Outputs: []domain.ArtifactDeclaration{{Name: "candidate", Commit: &domain.CommitOutput{}}}, Verification: []string{"exit 7"}}
 	attempt := domain.Attempt{ID: "attempt-failed", WorkflowRunID: "run-failed", TaskID: task.ID, Number: 1}
 	finalizer := AttemptFinalizer{StorageRoot: storage, CampaignRefs: refs, Processes: testProcessRunner{}}
-	request := AttemptFinalization{Task: task, Attempt: attempt, WorkspaceDir: repository, ExplicitSuccess: true, Repository: repository, BaseCommit: base, CommitBundles: true}
+	request := AttemptFinalization{Task: task, Attempt: attempt, WorkspaceDir: repository, ExplicitSuccess: true, Repository: repository, BaseCommit: base, CommitBundles: true, FailedCommits: true}
 	result, err := finalizer.Finalize(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestVerificationFailureWithUnresolvableCommitRetainsNoCandidates(t *testing
 	base := gitOutput(t, repository, "rev-parse", "HEAD")
 	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}
 	task := domain.Task{ID: "implement", Name: "implement", Outputs: []domain.ArtifactDeclaration{{Name: "valid", Commit: &domain.CommitOutput{}}, {Name: "invalid", Commit: &domain.CommitOutput{Revision: "does-not-exist"}}}, Verification: []string{"exit 7"}}
-	result, err := (AttemptFinalizer{StorageRoot: t.TempDir(), CampaignRefs: refs, Processes: testProcessRunner{}}).Finalize(context.Background(), AttemptFinalization{Task: task, Attempt: domain.Attempt{ID: "attempt", WorkflowRunID: "run", TaskID: task.ID, Number: 1}, WorkspaceDir: repository, ExplicitSuccess: true, Repository: repository, BaseCommit: base, CommitBundles: true})
+	result, err := (AttemptFinalizer{StorageRoot: t.TempDir(), CampaignRefs: refs, Processes: testProcessRunner{}}).Finalize(context.Background(), AttemptFinalization{Task: task, Attempt: domain.Attempt{ID: "attempt", WorkflowRunID: "run", TaskID: task.ID, Number: 1}, WorkspaceDir: repository, ExplicitSuccess: true, Repository: repository, BaseCommit: base, CommitBundles: true, FailedCommits: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestVerificationFailureWithMissingFileRetainsNoCommit(t *testing.T) {
 	gitRun(t, repository, "commit", "-m", "candidate")
 	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}
 	task := domain.Task{ID: "implement", Name: "implement", Outputs: []domain.ArtifactDeclaration{{Name: "candidate", Commit: &domain.CommitOutput{}}, {Name: "missing.txt"}}, Verification: []string{"exit 7"}}
-	result, err := (AttemptFinalizer{StorageRoot: t.TempDir(), CampaignRefs: refs, Processes: testProcessRunner{}}).Finalize(context.Background(), AttemptFinalization{Task: task, Attempt: domain.Attempt{ID: "attempt", WorkflowRunID: "run", TaskID: task.ID, Number: 1}, WorkspaceDir: repository, ExplicitSuccess: true, Repository: repository, BaseCommit: base, CommitBundles: true})
+	result, err := (AttemptFinalizer{StorageRoot: t.TempDir(), CampaignRefs: refs, Processes: testProcessRunner{}}).Finalize(context.Background(), AttemptFinalization{Task: task, Attempt: domain.Attempt{ID: "attempt", WorkflowRunID: "run", TaskID: task.ID, Number: 1}, WorkspaceDir: repository, ExplicitSuccess: true, Repository: repository, BaseCommit: base, CommitBundles: true, FailedCommits: true})
 	if err != nil {
 		t.Fatal(err)
 	}

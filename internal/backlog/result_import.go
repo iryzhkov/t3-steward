@@ -164,10 +164,8 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if err != nil {
 		return report, err
 	}
-	failedRecords, missingOutputs, err := failedCommitResultRecords(task, attempt, artifacts, payloads, missingOutputs)
-	if err != nil {
-		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
-	}
+	ordinaryMissingOutputs := missingOutputs
+	failedRecords, artifacts, payloads, missingOutputs := admitFailedCommitRecords(task, attempt, artifacts, payloads, missingOutputs)
 	verificationPassed, failure, summary, err := evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, missingOutputs)
 	if err != nil {
 		return report, err
@@ -178,7 +176,17 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		failure = strings.TrimPrefix(failure+"; review_output verification failed: "+reviewErr.Error(), "; ")
 	}
 	if err := validateFailedCommitResultOutcome(failedRecords, verificationPassed, failure); err != nil {
-		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
+		// Completion or review evidence can add a failure the worker did not
+		// record. Withhold the optional candidates and settle the ordinary result.
+		artifacts, payloads = dropFailedCommitRecords(task, artifacts, payloads)
+		verificationPassed, failure, summary, err = evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, ordinaryMissingOutputs)
+		if err != nil {
+			return report, err
+		}
+		if reviewErr != nil {
+			verificationPassed = false
+			failure = strings.TrimPrefix(failure+"; review_output verification failed: "+reviewErr.Error(), "; ")
+		}
 	}
 	for index, artifact := range artifacts {
 		published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{

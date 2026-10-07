@@ -293,7 +293,8 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 	// without the capability still produces the commit for consumers on its own
 	// worker, and a consumer elsewhere is refused with the capability named.
 	offerBundle := declaresCommit(*pkg) && len(pkg.CommitBundles) == 0
-	if len(pkg.RequiredCapabilities) == 0 && !offerBundle {
+	offerFailed := declaresCommit(*pkg)
+	if len(pkg.RequiredCapabilities) == 0 && !offerBundle && !offerFailed {
 		return nil
 	}
 	advertised, known, err := b.advertisedCapabilities(ctx, pkg.WorkerID)
@@ -304,6 +305,9 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 		// Declared only once the worker is known to advertise it, so the
 		// checks below hold for it as for every required capability.
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle)
+	}
+	if offerFailed && slices.Contains(advertised, workerproto.PackageCapabilityFailedCommit) && !slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit) {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit)
 	}
 	if len(pkg.RequiredCapabilities) == 0 {
 		return nil

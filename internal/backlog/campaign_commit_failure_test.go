@@ -33,7 +33,7 @@ func TestNoCommitIsPublishedForAnAttemptThatAlreadyFailed(t *testing.T) {
 
 	failed, err := finalizer.Finalize(ctx, AttemptFinalization{
 		Task: task, Attempt: attempt, WorkspaceDir: repository,
-		ExplicitSuccess: true, Repository: repository, BaseCommit: base,
+		ExplicitSuccess: true, Repository: repository, BaseCommit: base, FailedCommits: true,
 	})
 	if err != nil {
 		t.Fatalf("finalize: %v", err)

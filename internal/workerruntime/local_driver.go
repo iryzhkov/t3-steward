@@ -1072,6 +1072,7 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		// when it accepts the bundle artifact, and the bundle is uploaded as one
 		// artifact, so it is bounded by the same limit.
 		CommitBundles:     slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle),
+		FailedCommits:     slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit),
 		CommitBundleLimit: pkg.Limits.MaxArtifactBytes,
 		// The whole result, including the final message and the thread
 		// archive published with it below, is one upload, so bundle metadata
