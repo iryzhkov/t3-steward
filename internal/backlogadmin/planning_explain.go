@@ -86,7 +86,7 @@ func (v view) addPlanningExplanation(e *Explanation, attempt *domain.Attempt) {
 		if len(e.Blockers) == 0 {
 			e.Summary = "no planning pass yet since coordinator start; eligibility is computed from records only"
 		} else {
-			e.Summary += "; no planning pass available"
+			e.Summary += "; no planning pass yet since coordinator start"
 		}
 		return
 	}
