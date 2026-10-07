@@ -234,7 +234,7 @@ func (v view) viability(ctx context.Context, settings ViabilitySettings, request
 		result.RoleSelection = selection
 		matrix.Tasks = append(matrix.Tasks, result)
 	}
-	matrix.Outcome = matrixOutcome(matrix)
+	matrix.Outcome = MatrixOutcome(matrix)
 	return matrix
 }
 
@@ -310,7 +310,8 @@ func supervisionInventoryHostsRoute(inventory domain.WorkerInventory, route doma
 	return false
 }
 
-func matrixOutcome(matrix ViabilityMatrix) ViabilityOutcome {
+// MatrixOutcome reduces request-wide reasons and task outcomes, including after filtering tasks.
+func MatrixOutcome(matrix ViabilityMatrix) ViabilityOutcome {
 	outcome := outcomeFor(matrix.Reasons)
 	if outcome == ViabilityImpossible {
 		return ViabilityImpossible

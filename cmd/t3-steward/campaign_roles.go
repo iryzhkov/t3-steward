@@ -117,11 +117,14 @@ func resolveCampaignPolicy(p *routePolicy, tasks []backlogadmin.ViabilityTask, p
 		if len(producers) == 0 {
 			producers = task.Needs
 		}
+		localProducers := make([]string, 0, len(producers))
 		for _, producer := range producers {
 			if !strings.Contains(producer, "/") {
+				localProducers = append(localProducers, producer)
 				visit(producer)
 			}
 		}
+		producers = localProducers
 		state[name] = 2
 		if task.Role == "" {
 			return

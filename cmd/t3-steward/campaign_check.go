@@ -297,6 +297,7 @@ func (c campaignCLI) checkViability(ctx context.Context, plan campaign.Plan, bun
 			}
 		}
 		matrix.Tasks = selected
+		matrix.Outcome = backlogadmin.MatrixOutcome(matrix)
 	}
 	return matrix, nil
 }
