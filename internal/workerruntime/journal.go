@@ -120,8 +120,9 @@ type journalState struct {
 	CoordinatorEpoch int64                    `json:"coordinatorEpoch"`
 	Sequence         int64                    `json:"sequence"`
 	Attempts         map[string]AttemptRecord `json:"attempts"`
-	// WorkerLastSeenAt is refreshed at the start of each reconcile pass, even
-	// when no attempt changes. It protects ownership during brief lease lapses.
+	// WorkerLastSeenAt is refreshed at the end of a reconcile pass, even when
+	// no attempt changes, at most once per LivenessRefreshInterval. It
+	// protects ownership during brief lease lapses.
 	WorkerLastSeenAt time.Time `json:"workerLastSeenAt,omitempty"`
 
 	// Parked is the coordinator's last complete statement of which assignments
@@ -230,8 +231,18 @@ func journalStateAtRoot(root string) (journalState, error) {
 	return cloneState(state), err
 }
 
+// LivenessRefreshInterval bounds how often a reconcile pass rewrites the
+// journal only to refresh WorkerLastSeenAt. Every exchange reconciles, so
+// refreshing on each pass would add a synced write per exchange; once a
+// minute stays well inside OwnershipLivenessGrace.
+const LivenessRefreshInterval = time.Minute
+
 func (j *Journal) recordLiveness(now time.Time) error {
 	return j.update(func(state *journalState) error {
+		last := state.WorkerLastSeenAt
+		if !last.IsZero() && !last.After(now) && now.Sub(last) < LivenessRefreshInterval {
+			return nil
+		}
 		state.WorkerLastSeenAt = now
 		return nil
 	})

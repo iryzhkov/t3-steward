@@ -560,10 +560,18 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 // Reconcile advances every durable attempt as far as local evidence allows.
 // A failure on one attempt is recorded on that attempt and never prevents
 // the others from progressing; only journal I/O errors are returned.
+//
+// Worker liveness is recorded after the pass, whatever its outcome, so the
+// synced write never spends the budget the pass runs under.
 func (r *Runtime) Reconcile(ctx context.Context) error {
-	if err := r.journal.recordLiveness(r.now()); err != nil {
-		return err
+	err := r.reconcilePass(ctx)
+	if livenessErr := r.journal.recordLiveness(r.now()); err == nil {
+		err = livenessErr
 	}
+	return err
+}
+
+func (r *Runtime) reconcilePass(ctx context.Context) error {
 	if observer, ok := r.driver.(interface{ BeginObservationPass() }); ok {
 		observer.BeginObservationPass()
 	}
