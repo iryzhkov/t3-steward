@@ -1092,7 +1092,7 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		d.retainWorkInProgress(ctx, pkg, workspace)
 		result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	}
-	if err := d.Publisher.PublishResult(ctx, pkg, result); err != nil {
+	if err := d.publishCollectedResult(ctx, pkg, result); err != nil {
 		var size *workerproto.ArtifactSizeError
 		if errors.As(err, &size) {
 			return &permanentCollectionFailure{size: size}

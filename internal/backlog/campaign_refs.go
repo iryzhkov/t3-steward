@@ -440,7 +440,9 @@ func LooksLikeCommitProvenance(raw []byte) bool {
 	var header struct {
 		Version string `json:"version"`
 	}
-	return json.Unmarshal(raw, &header) == nil && header.Version == CampaignCommitRecordVersion
+	// Recognize the first document even if strict provenance parsing will
+	// reject trailing bytes. Malformed recognized records stay behind the fence.
+	return json.NewDecoder(bytes.NewReader(raw)).Decode(&header) == nil && header.Version == CampaignCommitRecordVersion
 }
 
 // ParseCommitProvenance reads a provenance document and refuses anything that
