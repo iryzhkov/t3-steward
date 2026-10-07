@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -54,6 +56,75 @@ func TestGateDeclaredRevisionMovedDuringGateIsNotPublished(t *testing.T) {
 				t.Fatalf("published declared commit %s after a failed gate (bad=%s)", p.Commit, bad)
 			}
 		})
+	}
+}
+
+// A gate that rewrites HEAD without changing its tree still passes for a task
+// that publishes no commit, as before the binding; with a declared commit it
+// fails, since the published commit would not be the one gated.
+func TestGateHeadRewriteWithSameTreeFailsOnlyWithDeclaredCommit(t *testing.T) {
+	for _, declared := range []bool{false, true} {
+		t.Run(fmt.Sprint("declared=", declared), func(t *testing.T) {
+			dir := h2GateRepository(t)
+			base := gateBindingGit(t, dir, "rev-parse", "HEAD")
+			req := h2GateRequest(dir, "amend")
+			req.Task.Gate = &domain.TaskGate{Commands: []string{"git -c user.name=t -c user.email=t@t commit -q --amend --no-edit --allow-empty --date=2020-01-01T00:00:00"}, Timeout: 5 * time.Second}
+			if declared {
+				req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "handoff", Commit: &domain.CommitOutput{}}}
+			}
+			req.Repository, req.BaseCommit = dir, base
+			storage := t.TempDir()
+			refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}
+			result, err := (AttemptFinalizer{StorageRoot: storage, CampaignRefs: refs, Processes: &directRunner{}}).Finalize(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cleanupImmutable(t, result.StorageDir)
+			if moved := gateBindingGit(t, dir, "rev-parse", "HEAD"); moved == base {
+				t.Fatal("gate command did not rewrite HEAD")
+			}
+			report := h2ReadGate(t, storage, result)
+			if report.Passed == declared || result.Completion.VerificationPassed == declared {
+				t.Fatalf("declared=%v: gate passed=%v verification=%v failure=%+v", declared, report.Passed, result.Completion.VerificationPassed, report.Failure)
+			}
+		})
+	}
+}
+
+// Publish runs Git in the producer's workspace on the host, after the gate. A
+// workspace pre-push hook ran there and could replace the published commit;
+// a url.*.insteadOf entry could send the push elsewhere.
+func TestCampaignRefPublishIgnoresWorkspaceHooksAndRedirects(t *testing.T) {
+	ctx := context.Background()
+	repository := newGitFixture(t)
+	commit := gitOutput(t, repository, "rev-parse", "HEAD")
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	hook := filepath.Join(gitOutput(t, repository, "rev-parse", "--absolute-git-dir"), "hooks", "pre-push")
+	writeHook := exec.Command("sh", "-c", `mkdir -p "$(dirname "$1")" && printf '#!/bin/sh\ntouch %s\n' "$2" > "$1" && chmod +x "$1"`, "sh", hook, marker)
+	if out, err := writeHook.CombinedOutput(); err != nil {
+		t.Fatalf("install hook: %s %v", out, err)
+	}
+	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}
+	request := PublishCommitRequest{
+		WorkflowRunID: "run-1", TaskID: "task-producer", Name: "handoff",
+		Repository: repository, WorkspaceDir: repository, Base: commit, ExpectedCommit: commit,
+	}
+	if _, err := refs.Publish(ctx, request, nil); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("workspace pre-push hook ran during publication")
+	}
+
+	decoy := filepath.Join(t.TempDir(), "decoy.git")
+	gitRun(t, repository, "init", "-q", "--bare", decoy)
+	gitRun(t, repository, "config", "url."+decoy+".insteadOf", filepath.Join(refs.Root, "campaigns.git"))
+	request.Name = "redirected"
+	if p, err := refs.Publish(ctx, request, nil); err == nil {
+		t.Fatalf("publication redirected by workspace config reported success: %+v", p)
+	}
+	if _, err := refs.Resolve("run-1", "task-producer", "redirected"); err == nil {
+		t.Fatal("redirected publication left a provenance record")
 	}
 }
 

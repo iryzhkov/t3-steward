@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // GateReport is worker-owned evidence, captured outside the producer's turn.
@@ -153,7 +155,7 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 			clean, err = gateCleanTree(ctx, req)
 			current, treeErr := gateGit(ctx, req.WorkspaceDir, "rev-parse", "HEAD^{tree}")
 			currentHead, moved, headErr := gateDeclaredCommitsAtHead(ctx, req)
-			if err == nil && treeErr == nil && headErr == nil && clean && moved == "" && currentHead == head && strings.TrimSpace(current) == report.TreeHash {
+			if err == nil && treeErr == nil && headErr == nil && clean && moved == "" && (!gateDeclaresCommit(req) || currentHead == head) && strings.TrimSpace(current) == report.TreeHash {
 				cached.Report.Cached = true
 				cached.Report.Worker = report.Worker
 				cached.Report.attestedCommit = head
@@ -222,9 +224,10 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 		switch {
 		case err != nil || treeErr != nil || !clean || strings.TrimSpace(finalTree) != report.TreeHash:
 			report.Failure = &GateFailure{Command: "git status", ExitCode: 1, Reason: "gate changed the committed tree or workspace"}
-		case headErr != nil || moved != "" || finalHead != head:
+		case headErr != nil || moved != "" || (gateDeclaresCommit(req) && finalHead != head):
 			// A command that moves HEAD or a declared revision would otherwise
-			// have an ungated commit published under this passing report.
+			// have an ungated commit published under this passing report. A task
+			// that publishes no commit keeps the tree-only check.
 			reason := "HEAD or a declared commit revision moved during the gate"
 			if moved != "" {
 				reason += ": " + moved
@@ -284,6 +287,10 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 		}
 	}
 	return report, rawLog, nil
+}
+
+func gateDeclaresCommit(req AttemptFinalization) bool {
+	return slices.ContainsFunc(req.Task.Outputs, func(output domain.ArtifactDeclaration) bool { return output.Commit != nil })
 }
 
 // gateDeclaredCommitsAtHead requires every declared commit to be HEAD, the
