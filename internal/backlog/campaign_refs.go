@@ -138,7 +138,8 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 		}
 		ref = FailedCampaignRef(request.WorkflowRunID, request.TaskID, request.FailedAttempt.ID, request.Name)
 	}
-	if existing, found, err := s.head(ctx, gitDir, ref, log); err != nil {
+	existing, found, err := s.head(ctx, gitDir, ref, log)
+	if err != nil {
 		return CommitProvenance{}, err
 	} else if found && existing != commit {
 		return CommitProvenance{}, fmt.Errorf("campaign ref %s already names commit %s", ref, existing)
@@ -157,6 +158,12 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 		Base: request.Base, Commit: commit, Ref: ref, CreatedAt: createdAt.UTC(), FailedAttempt: request.FailedAttempt,
 	}
 	if err := s.writeProvenance(provenance); err != nil {
+		if request.FailedAttempt != nil && !found {
+			// Publication and rollback hold the same lock, and the expected
+			// commit fence protects against removing another publication.
+			rollbackErr := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir, "update-ref", "-d", ref, commit)
+			return CommitProvenance{}, errors.Join(err, rollbackErr)
+		}
 		return CommitProvenance{}, err
 	}
 	return provenance, nil

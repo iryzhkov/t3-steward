@@ -119,6 +119,7 @@ func (s *Service) rerunGraph(
 		IdempotencyKey:  r.ID,
 		Reason:          r.Reason,
 	}
+	reusedCommits = inheritFailedCommitReceipts(source, tasks, reusedCommits)
 	if len(reusedCommits) != 0 {
 		provenance.ReusedCommits = &reusedCommits
 	}
