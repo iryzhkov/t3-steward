@@ -579,10 +579,10 @@ func (s CampaignRefStore) Runs() ([]string, error) {
 	}
 	// A run whose first publication crashed between its ref and its record
 	// has no directory at all, and only its refs say that it holds a commit.
-	pinned, err := s.refRuns(context.Background(), "")
-	if err != nil {
-		return nil, fmt.Errorf("list campaign commit runs: %w", err)
-	}
+	// Reading them is in addition to the directories: a repository that cannot
+	// list its refs must not hide the runs those name, and each of their
+	// releases then reports the repository's failure itself.
+	pinned, _ := s.refRuns(context.Background(), "")
 	for _, run := range pinned {
 		if !slices.Contains(runs, run) {
 			runs = append(runs, run)
@@ -631,8 +631,10 @@ func (s CampaignRefStore) refRuns(ctx context.Context, workflowRunID string) ([]
 			if !ok {
 				continue
 			}
-			run, _, _ := strings.Cut(rest, "/")
-			if safePathComponent(run) && !slices.Contains(runs, run) {
+			// Every ref the store writes names something under its run; one
+			// named by its run alone is outside the namespace a release sweeps.
+			run, under, nested := strings.Cut(rest, "/")
+			if nested && under != "" && safePathComponent(run) && !slices.Contains(runs, run) {
 				runs = append(runs, run)
 			}
 		}

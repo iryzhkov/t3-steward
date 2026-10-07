@@ -73,6 +73,41 @@ func TestRunWithOnlyAnOrphanRefIsListedAndReleased(t *testing.T) {
 	}
 }
 
+// Reading runs from refs is in addition to their directories. A repository that
+// cannot list its refs, as a crash while it was being created can leave it,
+// must not hide the runs the directories name, or no run would ever be
+// released again.
+func TestRunsOfAnUnreadableRepositoryStillListsRunDirectories(t *testing.T) {
+	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}
+	for _, dir := range []string{"campaigns.git", filepath.Join("provenance", "old")} {
+		if err := os.MkdirAll(filepath.Join(refs.Root, dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs, err := refs.Runs(); err != nil || !slices.Equal(runs, []string{"old"}) {
+		t.Fatalf("Runs = %v, %v; want [old]", runs, err)
+	}
+}
+
+// Every ref the store writes names a run and something under it. A ref named
+// by its run alone is never written and the release sweep, which works under
+// the run's namespace, cannot remove it, so listing it would report a release
+// on every cycle that never happens.
+func TestRunsIgnoresARefNamedByItsRunAlone(t *testing.T) {
+	ctx := context.Background()
+	repository := newGitFixture(t)
+	base := gitOutput(t, repository, "rev-parse", "HEAD")
+	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}
+	if _, err := refs.Publish(ctx, PublishCommitRequest{WorkflowRunID: "run-1", TaskID: "implement", Name: "candidate", Repository: repository, WorkspaceDir: repository, Base: base}, nil); err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(refs.Root, "campaigns.git")
+	gitOutput(t, refs.Root, "--git-dir", gitDir, "update-ref", "refs/campaigns/run", base)
+	if runs, err := refs.Runs(); err != nil || !slices.Equal(runs, []string{"run-1"}) {
+		t.Fatalf("Runs = %v, %v; want [run-1]", runs, err)
+	}
+}
+
 // A store that never opened its repository lists no runs and creates nothing.
 func TestRunsOfAnUnopenedStoreCreatesNothing(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "refs")
