@@ -74,7 +74,7 @@ func TestLocalQuotaStopReportsPausedAndDefersCollection(t *testing.T) {
 	// The thread is mid-work when the bucket stops; afterwards it is observed
 	// stopped until the worker resumes it.
 	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadActive}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadActive}}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, driver, guard, &now)
 	// The coordinator asks for quota observations, which is what carries the
@@ -85,8 +85,11 @@ func TestLocalQuotaStopReportsPausedAndDefersCollection(t *testing.T) {
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// The stop reaches a thread mid-work as the drain notice first; the fake
-	// checkpoint succeeds at once, which is a thread that honoured it.
+	// The notice returns without a stop wait. The next pass observes that
+	// the thread honoured it and captures its checkpoint.
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if driver.checkpointCalls != 1 || driver.stopCalls != 0 || driver.collectCalls != 0 || driver.collectFailureCalls != 0 {
 		t.Fatalf("checkpoints=%d stops=%d collects=%d failures=%d", driver.checkpointCalls, driver.stopCalls, driver.collectCalls, driver.collectFailureCalls)
 	}
@@ -144,15 +147,17 @@ func TestLocalQuotaStopReportsPausedAndDefersCollection(t *testing.T) {
 func TestLocalQuotaDrainThenHardStop(t *testing.T) {
 	now := runtimeTestNow
 	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
 	pause := stoppedPause()
 	pause.Phase, pause.UsedPercent = domain.PhaseDraining, 91
 	guard := &fakeQuotaGuard{pause: pause, pauseNeeded: true}
 	runtime := runningRuntime(t, driver, guard, &now)
-	// The fake checkpoint succeeds at once, which is a thread that honoured
-	// the drain notice: the pause is in force with a checkpoint.
-	if err := runtime.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
+	// The first pass sends; the second observes the stopped thread and reads
+	// its checkpoint without another drain notice.
+	for range 2 {
+		if err := runtime.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	record := journalRecord(t, runtime)
 	if driver.checkpointCalls != 1 || driver.stopCalls != 0 || record.Phase != PhaseStopped ||
@@ -225,6 +230,8 @@ func TestFinishedTurnIsCollectedNotPausedWhileBucketStopped(t *testing.T) {
 		observations: []backlog.DispatchThreadState{backlog.DispatchThreadStopped}}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, driver, guard, &now)
+	// Finished work supplies explicit completion evidence for its stopped turn.
+	runtime.driver = &watchdogDrainDriver{fakeDriver: driver, state: backlog.DispatchThreadStopped, complete: true}
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}

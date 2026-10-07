@@ -21,11 +21,11 @@ import (
 // once-only log state.
 //
 // Ownership read from the journal is bounded by freshness. The journal is
-// advanced only by a live worker process, so a record that says "running" is
-// evidence only while its assignment lease, which the coordinator renews
-// through that worker, has not expired. A crashed or stopped worker stops
-// renewing, its leases expire, and its threads become the watchdog's again
-// rather than staying immune forever. A record without a lease expiry is
+// advanced only by a live worker process. An owning record remains evidence
+// while its assignment lease is valid or a reconcile pass has refreshed
+// worker liveness within OwnershipLivenessGrace, for at most OwnershipMaxAge
+// past the lease. A crashed worker eventually hands its threads back to the
+// watchdog, and so does a live one whose lease is no longer renewed. A record without a lease expiry is
 // bounded by OwnershipMaxAge since its last update instead.
 type JournalThreadOwnership struct {
 	// Home is the worker's home directory, where its bootstrap and retained
@@ -46,12 +46,15 @@ type JournalThreadOwnership struct {
 // longer proves a live worker, and its thread is unowned for the watchdog.
 const OwnershipMaxAge = time.Hour
 
+// OwnershipLivenessGrace tolerates short lease lapses while a worker is alive.
+const OwnershipLivenessGrace = 10 * time.Minute
+
 // Threads implements daemon.ThreadOwnership. A host without a worker
 // bootstrap knows nothing; a worker without a catalog or journal knows
 // nothing. A live attempt's thread is owned unless the record is stale; a
 // terminal or released attempt's thread is settled.
 func (o *JournalThreadOwnership) Threads(context.Context) (daemon.ThreadOwners, error) {
-	attempts, err := hostJournalAttempts(o.Home)
+	state, err := hostJournalState(o.Home)
 	if errors.Is(err, os.ErrNotExist) {
 		return daemon.ThreadOwners{}, nil
 	}
@@ -59,6 +62,7 @@ func (o *JournalThreadOwnership) Threads(context.Context) (daemon.ThreadOwners, 
 		return daemon.ThreadOwners{}, err
 	}
 	now := o.now()
+	attempts := state.Attempts
 	owners := daemon.ThreadOwners{Live: make(map[string]string), Settled: make(map[string]string)}
 	var stale []string
 	for _, id := range sortedAttemptIDs(attempts) {
@@ -76,7 +80,7 @@ func (o *JournalThreadOwnership) Threads(context.Context) (daemon.ThreadOwners, 
 			}
 			continue
 		}
-		if why := ownershipStale(record, now); why != "" {
+		if why := ownershipStale(record, now, state.WorkerLastSeenAt); why != "" {
 			stale = append(stale, fmt.Sprintf("%s (thread %s): %s", record.Assignment.AttemptID, threadID, why))
 			continue
 		}
@@ -118,7 +122,7 @@ func (o *JournalThreadOwnership) noteStale(stale []string) {
 		o.staleWarned = true
 		if o.Log != nil {
 			o.Log.Warn("thread ownership ignored for stale attempt records; the watchdog treats their threads as unowned",
-				"attempts", strings.Join(stale, "; "))
+				"attempts", strings.Join(stale, "; "), "livenessGrace", OwnershipLivenessGrace)
 		}
 	case len(stale) == 0 && o.staleWarned:
 		o.staleWarned = false
@@ -129,13 +133,21 @@ func (o *JournalThreadOwnership) noteStale(stale []string) {
 }
 
 // ownershipStale reports why a record that owns its thread by phase no longer
-// proves a live worker, or "" while it does. The assignment lease is the
-// bound when the record has one; the journal update age is the bound
-// otherwise.
-func ownershipStale(record AttemptRecord, now time.Time) string {
+// proves a live worker, or "" while it does. Leased records also trust recent
+// reconcile liveness; records without leases keep their existing age bound.
+func ownershipStale(record AttemptRecord, now, lastSeen time.Time) string {
 	if lease := record.Assignment.LeaseExpiresAt; !lease.IsZero() {
 		if !lease.After(now) {
-			return "assignment lease expired at " + lease.UTC().Format(time.RFC3339)
+			// Liveness bridges a lapse in renewal, not an abandoned
+			// assignment: past OwnershipMaxAge after the lease the thread
+			// is the watchdog's even while the worker runs.
+			if now.Sub(lease) > OwnershipMaxAge {
+				return fmt.Sprintf("assignment lease expired at %s, more than %s ago", lease.UTC().Format(time.RFC3339), OwnershipMaxAge)
+			}
+			if !lastSeen.IsZero() && !lastSeen.After(now) && now.Sub(lastSeen) <= OwnershipLivenessGrace {
+				return ""
+			}
+			return fmt.Sprintf("assignment lease expired at %s; no worker liveness within %s", lease.UTC().Format(time.RFC3339), OwnershipLivenessGrace)
 		}
 		return ""
 	}

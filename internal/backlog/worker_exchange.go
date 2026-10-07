@@ -241,6 +241,8 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			}
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaObservations) {
 				request.QuotaObservationsWanted = true
+				// The runway fields likewise go only to a build that sends them.
+				request.QuotaRunwayWanted = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaRunway)
 			}
 			// Session states likewise go only to a build that decodes them.
 			sessionTitles = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilitySessionTitles)

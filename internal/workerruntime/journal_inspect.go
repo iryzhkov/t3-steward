@@ -88,23 +88,23 @@ func readRetainedCatalog(home string) (retainedCatalog, bool, error) {
 	return retained, true, nil
 }
 
-// hostJournalAttempts reads the attempt records of the worker configured in
+// hostJournalState reads the journal of the worker configured in
 // this home directory, resolving the journal root the way InspectWorkerJournal
 // does. A host without a worker bootstrap reports os.ErrNotExist; a worker
 // without a catalog or journal reports no attempts.
-func hostJournalAttempts(home string) (map[string]AttemptRecord, error) {
+func hostJournalState(home string) (journalState, error) {
 	bootstrap, _, err := LoadWorkerBootstrap(home)
 	if err != nil {
-		return nil, err
+		return journalState{}, err
 	}
 	retained, found, err := readRetainedCatalog(home)
 	if err != nil || !found {
-		return nil, err
+		return journalState{}, err
 	}
 	settings, err := retained.Projection.Settings(bootstrap, home)
 	if err != nil && !errors.Is(err, ErrCatalogProjectionDigestMismatch) {
-		return nil, err
+		return journalState{}, err
 	}
 	_, _, root := WorkerRoots(settings, bootstrap.WorkerID)
-	return JournalAttempts(root)
+	return journalStateAtRoot(root)
 }

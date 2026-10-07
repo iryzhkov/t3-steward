@@ -82,6 +82,12 @@ func (f *recoveryFixture) pausedRuntime(t *testing.T, now *time.Time, observatio
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// A drain notice no longer waits for the stop; the fixture observes it
+	// on the next tick without consuming the scripted recovery observations.
+	driver.observations = append([]backlog.DispatchThreadState{backlog.DispatchThreadStopped}, driver.observations...)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	record := journalRecord(t, runtime)
 	if record.Phase != PhaseStopped || record.LocalThrottle == nil || driver.resumeCalls != 0 {
 		t.Fatalf("attempt not paused: %+v resumes=%d", record, driver.resumeCalls)
@@ -279,6 +285,11 @@ func TestProbeResumesThePausedAttemptThroughTheRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(30 * time.Second)
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Observe the asynchronous drain taking effect before checking the pause.
+	driver.observations = append([]backlog.DispatchThreadState{backlog.DispatchThreadStopped}, driver.observations...)
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
