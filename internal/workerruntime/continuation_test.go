@@ -231,15 +231,19 @@ func TestRuntimeSnapshotsContinuationAtQuotaPause(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	base := &fakeDriver{workspace: workspace, workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
 	local := &LocalDriver{Config: LocalDriverConfig{RunsRoot: filepath.Join(root, "runs")}, Now: func() time.Time { return now }}
 	driver := &continuationTurnDriver{fakeDriver: base, local: local, turnID: "turn-drained"}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, base, guard, &now)
 	runtime.driver = driver
 	writeContinuation(t, workspace, "checkpoint before the pause\n")
-	if err := runtime.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
+	// The drain notice is asynchronous: the first pass sends it, the second
+	// observes the stopped turn and records the pause.
+	for range 2 {
+		if err := runtime.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	record := journalRecord(t, runtime)
 	if record.LocalThrottle == nil || record.LocalThrottle.StoppedAt == nil {

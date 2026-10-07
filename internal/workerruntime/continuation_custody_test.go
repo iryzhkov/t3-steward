@@ -147,15 +147,19 @@ func TestQuotaPauseSnapshotIsRetriedAfterItFailedAtTheDurableStop(t *testing.T) 
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")
 	base := &fakeDriver{workspace: workspace, workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
 	local := &LocalDriver{Config: LocalDriverConfig{RunsRoot: filepath.Join(root, "runs")}, Now: func() time.Time { return now }}
 	driver := &flakyContinuationDriver{continuationTurnDriver: &continuationTurnDriver{fakeDriver: base, local: local, turnID: "turn-drained"}, failures: 1}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, base, guard, &now)
 	runtime.driver = driver
 	writeContinuation(t, workspace, "checkpoint before the pause\n")
-	if err := runtime.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
+	// The drain notice is asynchronous: the first pass sends it, the second
+	// observes the stopped turn and records the pause.
+	for range 2 {
+		if err := runtime.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	record := journalRecord(t, runtime)
 	if record.LocalThrottle == nil || record.LocalThrottle.StoppedAt == nil || record.Continuation != nil {
@@ -217,15 +221,19 @@ func TestAResumeNeverLeavesAPauseSnapshotOwedToTheNextTurn(t *testing.T) {
 		root := t.TempDir()
 		workspace := filepath.Join(root, "workspace")
 		base := &fakeDriver{workspace: workspace, workspaceReady: true,
-			observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
+			observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
 		local := &LocalDriver{Config: LocalDriverConfig{RunsRoot: filepath.Join(root, "runs")}, Now: func() time.Time { return now }}
 		driver := &flakyContinuationDriver{continuationTurnDriver: &continuationTurnDriver{fakeDriver: base, local: local, turnID: "turn-drained"}, failures: 1 << 10}
 		guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 		runtime := runningRuntime(t, base, guard, &now)
 		runtime.driver = driver
 		writeContinuation(t, workspace, "checkpoint before the pause\n")
-		if err := runtime.Reconcile(ctx); err != nil {
-			t.Fatal(err)
+		// The drain notice is asynchronous: the first pass sends it, the
+		// second observes the stopped turn and records the pause.
+		for range 2 {
+			if err := runtime.Reconcile(ctx); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if record := journalRecord(t, runtime); record.LocalThrottle == nil || record.PendingContinuation == nil {
 			t.Fatalf("setup: the pause should owe its snapshot: %+v", record)

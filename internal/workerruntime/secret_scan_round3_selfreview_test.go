@@ -126,6 +126,14 @@ func TestSecretScanLocalQuotaLogRedacted(t *testing.T) {
 			if err := runtime.Reconcile(context.Background()); err != nil {
 				t.Fatal(err)
 			}
+			if name == "drain" {
+				// The drain notice is asynchronous; the driver error comes
+				// from reading the checkpoint once the drained turn stopped.
+				driver.observations = []backlog.DispatchThreadState{backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}
+				if err := runtime.Reconcile(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if name == "stop" {
 				runtime.config.PauseEscalation = time.Second
 				now = now.Add(time.Minute)

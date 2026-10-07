@@ -55,12 +55,16 @@ func TestSecretScanSafeNameRedactsLongestCanary(t *testing.T) {
 func TestLocalQuotaDrainWithRefusedCheckpointRecordsPause(t *testing.T) {
 	now := runtimeTestNow
 	driver := &fakeDriver{workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped}}
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped}}
 	driver.checkpointErr = &SecretScanError{Object: ".t3/checkpoint.md", Detector: "canary", Offset: 3, Fingerprint: "synt:000000000000"}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, driver, guard, &now)
-	if err := runtime.Reconcile(context.Background()); err != nil {
-		t.Fatal(err)
+	// The drain notice is asynchronous: the first pass sends it, the second
+	// observes the stopped turn and reads, and here refuses, its checkpoint.
+	for range 2 {
+		if err := runtime.Reconcile(context.Background()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	record := journalRecord(t, runtime)
 	if driver.checkpointCalls != 1 || driver.stopCalls != 0 || record.Phase != PhaseStopped ||
