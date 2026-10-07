@@ -73,7 +73,11 @@ type SubmissionService struct {
 	Now               func() time.Time
 	NewKey            func() string
 	// Permanent refuses a permanently impossible manifest during ingestion.
-	Permanent PermanentValidator
+	Permanent      PermanentValidator
+	QuotaAdmission *SubmissionQuotaAdmission
+	// MaxGateTimeout, when positive, refuses a task gate timeout above the
+	// coordinator's verification.command_timeout.
+	MaxGateTimeout time.Duration
 	// Audit records every submission decision, including a skipped client check.
 	Audit func(context.Context, SubmissionAudit)
 
@@ -200,9 +204,11 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		Store:             s.Store,
 		// Reuse the exact successful permanent verdict without dialing again.
 		// A changed manifest cannot use this private validation receipt.
-		Permanent:  validated,
-		Now:        func() time.Time { return record.CreatedAt },
-		NewTypedID: submissionTypedIDGenerator(key),
+		QuotaAdmission: s.QuotaAdmission,
+		Permanent:      validated,
+		MaxGateTimeout: s.MaxGateTimeout,
+		Now:            func() time.Time { return record.CreatedAt },
+		NewTypedID:     submissionTypedIDGenerator(key),
 	}
 	ingested, err := ingester.Ingest(ctx, request.BundleDir)
 	if err != nil {

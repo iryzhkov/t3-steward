@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -131,6 +132,11 @@ type WorkspacePreparation struct {
 	// that produced it. A commit record of another run is accepted only from a
 	// directory bound to exactly that run and task.
 	DependencySources map[string]DependencySource
+	// AcceptedCommits names, by dependency task ID, the declared commit outputs
+	// whose result the coordinator's review gate accepted. The commit such an
+	// output references is published when it is consumed; any other staged
+	// commit is only fetched for inspection.
+	AcceptedCommits map[string][]string
 }
 
 // DependencySource is the run and task a carried dependency came from.
@@ -492,16 +498,31 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 			// An ordinary dependency file is not a commit reference.
 			return nil
 		}
-		if provenance.WorkflowRunID != request.WorkflowRunID {
+		relative, relErr := filepath.Rel(dependenciesDir, path)
+		if relErr != nil {
+			return fmt.Errorf("resolve dependency commits: %w", relErr)
+		}
+		directory, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
+		producer := slices.IndexFunc(request.DependencyTasks, func(task domain.Task) bool { return task.Name == directory })
+		source, bound := request.DependencySources[directory]
+		if producer < 0 || !IsDependencyCommitRecord(relative, provenance, DeclaredCommitOutputs(request.DependencyTasks[producer])) {
+			// A record in any other file is the content of an ordinary output,
+			// and publishes nothing. A record of another run that names its own
+			// file, in a dependency no source binding vouches for, is a commit
+			// carried before carried inputs were bound to their source, whose
+			// declaration the coordinator cannot find; it stays refused, so its
+			// consumer never runs without the commit it was handed.
+			if _, name, _ := strings.Cut(filepath.ToSlash(relative), "/"); name == provenance.Name &&
+				!bound && provenance.WorkflowRunID != request.WorkflowRunID {
+				return fmt.Errorf("dependency commit %s belongs to run %q, want %q",
+					provenance.Ref, provenance.WorkflowRunID, request.WorkflowRunID)
+			}
+			return nil
+		}
+		if bound || provenance.WorkflowRunID != request.WorkflowRunID {
 			// A record of another run arrives only as a carried input, and only
 			// the source binding of the dependency it arrived in can vouch for
 			// it: the run and the task must both be that binding's.
-			relative, relErr := filepath.Rel(dependenciesDir, path)
-			if relErr != nil {
-				return fmt.Errorf("resolve dependency commits: %w", relErr)
-			}
-			directory, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
-			source, bound := request.DependencySources[directory]
 			if !bound || source.WorkflowRunID != provenance.WorkflowRunID {
 				return fmt.Errorf("dependency commit %s belongs to run %q, want %q",
 					provenance.Ref, provenance.WorkflowRunID, request.WorkflowRunID)
@@ -510,6 +531,11 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 				return fmt.Errorf("dependency commit %s was carried from task %q of run %q, but its record names task %q",
 					provenance.Ref, source.TaskID, source.WorkflowRunID, provenance.TaskID)
 			}
+		} else if owner := request.DependencyTasks[producer].ID; owner != provenance.TaskID {
+			// The commit output of one producer vouches only for that
+			// producer's commit, never for another task's campaign ref.
+			return fmt.Errorf("dependency commit %s is in output %q of task %q, but its record names task %q",
+				provenance.Ref, provenance.Name, owner, provenance.TaskID)
 		}
 		if request.Environment.Type == EnvironmentFresh {
 			return fmt.Errorf("dependency commit %s cannot be resolved in a fresh workspace", provenance.Ref)
@@ -524,10 +550,57 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		if err := p.CampaignRefs.Obtain(ctx, workspaceDir, provenance, delivery, log); err != nil {
 			return err
 		}
-		if err := p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log); err != nil {
-			return err
+		if acceptedDependencyCommit(dependenciesDir, path, provenance, request) {
+			return p.CampaignRefs.FetchAcceptedInto(ctx, workspaceDir, provenance, log)
 		}
-		return nil
+		return p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log)
+	})
+}
+
+// IsDependencyCommitRecord reports whether a provenance record found at
+// relative, its path in the dependency view, is a commit reference: the file
+// of one of commitOutputs, the producer's declared commit outputs, directly in
+// that producer's directory and naming that output, which is the record the
+// producer's worker wrote. The declarations come from the coordinator, never
+// from the record. A record in any other file is the content of an ordinary
+// output, which the producer's executor wrote, and is never resolved: it
+// could name the base, which needs no bundle, as the commit of a
+// review-declared task's output, and have the consuming worker publish it
+// without the coordinator's acceptance. The caller still binds the record to
+// the producer the directory belongs to.
+func IsDependencyCommitRecord(relative string, provenance CommitProvenance, commitOutputs []string) bool {
+	_, name, nested := strings.Cut(filepath.ToSlash(relative), "/")
+	return nested && name == provenance.Name && slices.Contains(commitOutputs, name)
+}
+
+// DeclaredCommitOutputs names a task's declared commit outputs.
+func DeclaredCommitOutputs(task domain.Task) []string {
+	var names []string
+	for _, output := range task.Outputs {
+		if output.Commit != nil {
+			names = append(names, filepath.ToSlash(output.Name))
+		}
+	}
+	return names
+}
+
+// acceptedDependencyCommit reports whether a commit reference found in the
+// dependency view may publish its producer's staged commit. It must be the
+// file of a declared commit output the coordinator accepted, in that
+// producer's directory of the view, naming that producer and that output. Any
+// other file is the executor's content, and it could name another task's or
+// another attempt's rejected staging.
+func acceptedDependencyCommit(dependenciesDir, path string, provenance CommitProvenance, request WorkspacePreparation) bool {
+	relative, err := filepath.Rel(dependenciesDir, path)
+	if err != nil {
+		return false
+	}
+	directory, name, nested := strings.Cut(filepath.ToSlash(relative), "/")
+	if !nested || name != provenance.Name || !slices.Contains(request.AcceptedCommits[provenance.TaskID], name) {
+		return false
+	}
+	return slices.ContainsFunc(request.DependencyTasks, func(task domain.Task) bool {
+		return task.Name == directory && task.ID == provenance.TaskID
 	})
 }
 
@@ -648,12 +721,21 @@ func runLoggedCheckoutCommand(ctx context.Context, log io.Writer, program string
 }
 
 func runLoggedCommandOutput(ctx context.Context, log io.Writer, dir, program string, args ...string) ([]byte, error) {
+	return runLoggedCommandOutputEnv(ctx, log, dir, nil, program, args...)
+}
+
+// runLoggedCommandOutputEnv is runLoggedCommandOutput with env added to the
+// worker's environment.
+func runLoggedCommandOutputEnv(ctx context.Context, log io.Writer, dir string, env []string, program string, args ...string) ([]byte, error) {
 	if log == nil {
 		log = io.Discard
 	}
 	fmt.Fprintf(log, "$ %s %s\n", program, strings.Join(args, " "))
 	command := exec.CommandContext(ctx, program, args...)
 	command.Dir = dir
+	if len(env) != 0 {
+		command.Env = append(os.Environ(), env...)
+	}
 	// A cancelled command may leave children holding the output pipe (dash does
 	// not exec the last command of -c). Stop waiting for them shortly after the
 	// context ends instead of blocking until they exit on their own.

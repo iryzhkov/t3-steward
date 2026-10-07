@@ -144,7 +144,22 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
-	dependencies, err := packageDependencies(state.task, state.tasks, state.artifacts, state.run.ID)
+	identity := workerproto.ExecutionIdentity{
+		WorkflowID: state.workflow.ID, WorkflowRunID: state.run.ID, TaskID: state.task.ID,
+		AttemptID: assignment.AttemptID, AttemptRevision: state.attempt.Revision,
+		AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
+		DispatchToken: assignment.DispatchToken, ThreadID: assignment.ThreadID,
+	}
+	// The continuation input is budgeted with the other static inputs below.
+	staticInputs, continuation, continuationOffered, err := b.continuationInputs(ctx, state, assignment, identity, staticInputs)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	dependencyArtifacts, err := gateDependencyArtifacts(state.tasks, state.artifacts, records.Attempts, state.run.ID)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	dependencies, err := packageDependencies(state.task, state.tasks, dependencyArtifacts, state.run.ID)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
 	}
@@ -159,10 +174,14 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			budget.Remaining -= object.Size
 		}
 	}
-	commitBundles, err := packageCommitBundles(state.task, state.tasks, state.artifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records), budget)
+	commitBundles, err := packageCommitBundles(state.task, state.tasks, dependencyArtifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records), budget)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: commit bundles: %w", err)
 	}
+	markAcceptedDependencies(dependencies, state.tasks, state.artifacts, state.succeededAttempts)
+	markDependencyCommitOutputs(dependencies, state.task, state.tasks, func(carried domain.CarriedInput) bool {
+		return carriedCommitDeclared(records, carried)
+	})
 	pkg := workerproto.ExecutionPackage{
 		Timeout:       state.task.Timeout,
 		GraphRevision: assignment.GraphRevision, TaskRevision: assignment.TaskRevision, TaskDigest: assignment.TaskDigest,
@@ -172,20 +191,16 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		CoordinatorEpoch: b.CoordinatorEpoch,
 		WorkerID:         assignment.WorkerID,
 		WorkerEpoch:      assignment.WorkerEpoch,
-		Identity: workerproto.ExecutionIdentity{
-			WorkflowID: state.workflow.ID, WorkflowRunID: state.run.ID, TaskID: state.task.ID,
-			AttemptID: assignment.AttemptID, AttemptRevision: state.attempt.Revision,
-			AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch,
-			DispatchToken: assignment.DispatchToken, ThreadID: assignment.ThreadID,
-		},
-		Class:         state.task.Class,
-		Prompt:        prompt,
-		StaticInputs:  staticInputs,
-		Recovery:      recovery,
-		Dependencies:  dependencies,
-		CommitBundles: commitBundles,
-		Context:       reviewJudgeInputs(state.task, state.tasks, state.artifacts, state.run.ID, assignment.CreatedAt),
-		Route:         cloneProviderRoute(assignment.Route),
+		Identity:         identity,
+		Class:            state.task.Class,
+		Prompt:           prompt,
+		StaticInputs:     staticInputs,
+		Recovery:         recovery,
+		Continuation:     continuation,
+		Dependencies:     dependencies,
+		CommitBundles:    commitBundles,
+		Context:          reviewJudgeInputs(state.task, state.tasks, state.artifacts, state.run.ID, assignment.CreatedAt),
+		Route:            cloneProviderRoute(assignment.Route),
 		Environment: workerproto.EnvironmentReference{
 			DirectoryBindings: directoryresource.CloneBindings(state.task.DirectoryBindings),
 			Type:              environment.Type, CatalogRevision: b.CatalogRevision, Project: environment.ProjectName,
@@ -195,6 +210,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			RequiredCredentials: append([]string(nil), environment.RequiredCredentials...),
 		},
 		Verification: append([]string(nil), state.task.Verification...),
+		Gate:         dispatchGate(state.task.Gate, b.VerificationTimeout),
 		Outputs:      append([]domain.ArtifactDeclaration(nil), state.task.Outputs...),
 		Preflight:    append([]workerproto.PreflightStep(nil), state.task.Preflight...),
 		NotBefore:    cloneTime(state.task.NotBefore),
@@ -207,8 +223,28 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		CreatedAt: assignment.CreatedAt,
 	}
-	if err := b.declarePackageCapabilities(ctx, &pkg); err != nil {
+	if err := b.declarePackageCapabilities(ctx, &pkg, state.task.ReviewRequirements != nil); err != nil {
 		return workerproto.AssignmentOffer{}, err
+	}
+	// Declared after negotiation, as the frozen session display is: the
+	// decision was frozen against the worker's inventory, which a replay may
+	// no longer be able to read.
+	if continuationOffered {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityContinuationCheckpoint)
+	}
+	// Dependency commit outputs are marked on the same frozen decision, so a
+	// replay builds the same package whatever the inventory then says. Both
+	// capabilities arrived in rc.117, and a worker that advertised the
+	// continuation checkpoint at first offer is a build that also resolves
+	// commit records only from marked files. Any other worker, and every
+	// worker of an older coordinator, is sent no marks and keeps taking a
+	// record from any dependency file of its own producer.
+	if continuationOffered && len(pkg.Dependencies) != 0 {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitOutputs)
+	} else {
+		for index := range pkg.Dependencies {
+			pkg.Dependencies[index].CommitOutputs = nil
+		}
 	}
 	if err := b.freezeSessionDisplay(ctx, assignment, &pkg, state.workflow.Name, state.task.Name, state.task.ReviewJudge); err != nil {
 		return workerproto.AssignmentOffer{}, err
@@ -272,7 +308,10 @@ func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageR
 	return inputs, context, nil
 }
 
-func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage) error {
+func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage, reviewDeclared bool) error {
+	if pkg.Gate != nil {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityWorkerOwnedGate)
+	}
 	if len(pkg.Preflight) > 0 {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
 	}
@@ -290,6 +329,17 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 	// without the capability still produces the commit for consumers on its own
 	// worker, and a consumer elsewhere is refused with the capability named.
 	offerBundle := declaresCommit(*pkg) && len(pkg.CommitBundles) == 0
+	if reviewDeclared {
+		// The completion gate needs the workspace HEAD at collection. A worker
+		// that cannot report it is never offered the task, rather than having
+		// every result it returns fail the gate.
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityWorkspaceHead)
+	}
+	if pkg.HasAcceptedDependencies() {
+		// Only a worker that publishes a staged commit on this mark alone may
+		// consume an accepted review-declared producer.
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityAcceptedDependencies)
+	}
 	if len(pkg.RequiredCapabilities) == 0 && !offerBundle {
 		return nil
 	}
@@ -309,7 +359,7 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 		// Nothing can be proven about the worker, so declared preflight is
 		// refused rather than assumed.
 		return fmt.Errorf("execution package builder: worker %q capabilities are unknown, required %q",
-			pkg.WorkerID, workerproto.PackageCapabilityPreflight)
+			pkg.WorkerID, pkg.RequiredCapabilities[0])
 	}
 	for _, capability := range pkg.RequiredCapabilities {
 
@@ -390,11 +440,17 @@ type executionPackageState struct {
 	attempt   domain.Attempt
 	tasks     []domain.Task
 	artifacts map[string]domain.Artifact
+	// attempts holds every attempt, so continuation snapshots are ordered by
+	// the task's execution order rather than by a worker's clock.
+	attempts []domain.Attempt
 	// definitionRuns holds every run of this workflow. A task's prompt and its
 	// static inputs are the workflow's definition, retained under the run that
 	// submitted them, and every later run of that workflow executes those same
 	// bytes. Outputs stay strictly run-scoped; only the definition is shared.
 	definitionRuns map[string]struct{}
+	// succeededAttempts holds every attempt whose result the coordinator
+	// accepted as the task's success.
+	succeededAttempts map[string]struct{}
 }
 
 func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment domain.Assignment) (executionPackageState, error) {
@@ -481,6 +537,12 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 			state.definitionRuns[run.ID] = struct{}{}
 		}
 	}
+	state.succeededAttempts = make(map[string]struct{})
+	for _, attempt := range records.Attempts {
+		if attempt.WorkflowRunID == state.run.ID && attempt.Progress == domain.ProgressSucceeded {
+			state.succeededAttempts[attempt.ID] = struct{}{}
+		}
+	}
 	state.artifacts = make(map[string]domain.Artifact, len(records.Artifacts))
 	for _, artifact := range records.Artifacts {
 		if artifact.ID == "" {
@@ -491,6 +553,7 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 		}
 		state.artifacts[artifact.ID] = artifact
 	}
+	state.attempts = records.Attempts
 	return state, nil
 }
 
@@ -529,6 +592,45 @@ func packageArtifact(artifact domain.Artifact, path, kind string) (workerproto.A
 	}, nil
 }
 
+func gateDependencyArtifacts(tasks []domain.Task, artifacts map[string]domain.Artifact, attempts []domain.Attempt, runID string) (map[string]domain.Artifact, error) {
+	gated := map[string]bool{}
+	for _, task := range tasks {
+		if task.Gate != nil {
+			gated[task.ID] = true
+		}
+	}
+	if len(gated) == 0 {
+		return artifacts, nil
+	}
+	latest := map[string]domain.Attempt{}
+	for _, attempt := range attempts {
+		if attempt.WorkflowRunID != runID || !gated[attempt.TaskID] || attempt.IsSupervisionActivation() {
+			continue
+		}
+		previous, exists := latest[attempt.TaskID]
+		if exists && previous.Number == attempt.Number && previous.ID != attempt.ID {
+			return nil, fmt.Errorf("gate dependency task %q has ambiguous attempt number", attempt.TaskID)
+		}
+		if !exists || attempt.Number > previous.Number {
+			latest[attempt.TaskID] = attempt
+		}
+	}
+	selected := make(map[string]domain.Artifact, len(artifacts))
+	for id, artifact := range artifacts {
+		if artifact.WorkflowRunID == runID && gated[artifact.TaskID] && (artifact.Kind == domain.ArtifactGate || artifact.Kind == domain.ArtifactOutput || artifact.Kind == domain.ArtifactGitState) {
+			attempt, exists := latest[artifact.TaskID]
+			if !exists {
+				return nil, fmt.Errorf("gate dependency task %q has no authoritative attempt", artifact.TaskID)
+			}
+			if artifact.AttemptID != attempt.ID {
+				continue
+			}
+		}
+		selected[id] = artifact
+	}
+	return selected, nil
+}
+
 func packageDependencies(
 	task domain.Task,
 	tasks []domain.Task,
@@ -544,7 +646,7 @@ func packageDependencies(
 	}
 	outputs := make(map[string]domain.Artifact)
 	for _, artifact := range artifacts {
-		if artifact.WorkflowRunID != runID || artifact.Kind != domain.ArtifactOutput {
+		if artifact.WorkflowRunID != runID || (artifact.Kind != domain.ArtifactOutput && artifact.Kind != domain.ArtifactGate) {
 			continue
 		}
 		key := artifact.TaskID + "\x00" + artifact.Name
@@ -584,7 +686,7 @@ func packageDependencies(
 			}
 			object, err := packageArtifact(
 				artifact,
-				"dependencies/"+producer+"/"+filepath.ToSlash(artifact.Name),
+				"dependencies/"+producer+"/"+gateDependencyPath(artifact),
 				"dependency",
 			)
 			if err != nil {
@@ -599,6 +701,111 @@ func packageDependencies(
 		return nil, err
 	}
 	return append(result, carried...), nil
+}
+
+// markAcceptedDependencies names, for each review-declared producer whose
+// packaged outputs all came from an attempt the coordinator accepted, the
+// declared commit outputs among them. A review-declared producer's declared
+// commit is only staged by its worker, and this list is what lets the
+// consuming worker publish it. Only the commit reference the producer's worker
+// wrote for a declared commit output is named: any other output file is the
+// executor's content and could name a rejected staging. A review judge can be
+// given the outputs of a failed producer, and those stay unnamed. Producers
+// without a review declaration publish directly and are never marked, so their
+// consumers' packages are unchanged.
+func markAcceptedDependencies(dependencies []workerproto.DependencyInput, tasks []domain.Task, artifacts map[string]domain.Artifact, succeededAttempts map[string]struct{}) {
+	for index := range dependencies {
+		dependency := &dependencies[index]
+		if dependency.Provenance != nil || len(dependency.Artifacts) == 0 {
+			continue
+		}
+		producer := slices.IndexFunc(tasks, func(task domain.Task) bool { return task.ID == dependency.TaskID })
+		if producer < 0 || tasks[producer].ReviewRequirements == nil {
+			continue
+		}
+		var accepted []string
+		for _, object := range dependency.Artifacts {
+			artifact, exists := artifacts[object.ID]
+			if !exists || artifact.TaskID != dependency.TaskID || artifact.AttemptID == "" {
+				accepted = nil
+				break
+			}
+			if _, succeeded := succeededAttempts[artifact.AttemptID]; !succeeded {
+				accepted = nil
+				break
+			}
+			name := filepath.ToSlash(artifact.Name)
+			if slices.ContainsFunc(tasks[producer].Outputs, func(output domain.ArtifactDeclaration) bool {
+				return output.Commit != nil && filepath.ToSlash(output.Name) == name
+			}) {
+				accepted = append(accepted, name)
+			}
+		}
+		dependency.AcceptedCommits = accepted
+	}
+}
+
+// markDependencyCommitOutputs names, for each dependency, the delivered files
+// that are its producer's declared commit outputs: for a producer of this run,
+// by that task's declaration, and for an input carried from another run, by
+// the declaration of the source task it was carried from, which
+// carriedDeclares reads. A worker that is told about them resolves a commit
+// record from these files only. Every other file, including one whose content
+// parses as a commit record, is the producer's executor's content.
+func markDependencyCommitOutputs(dependencies []workerproto.DependencyInput, task domain.Task, tasks []domain.Task, carriedDeclares func(domain.CarriedInput) bool) {
+	commits := map[string]bool{}
+	for producer, names := range task.DependencyInputs {
+		producerTask := slices.IndexFunc(tasks, func(candidate domain.Task) bool { return candidate.Name == producer })
+		if producerTask < 0 {
+			continue
+		}
+		for _, name := range names {
+			if DeclaresCommit(tasks[producerTask], name) {
+				commits["dependencies/"+producer+"/"+filepath.ToSlash(name)] = true
+			}
+		}
+	}
+	for _, carried := range task.CarriedInputs {
+		if !carriedDeclares(carried) {
+			continue
+		}
+		namespace := carried.ProducerNamespace
+		if namespace == "" {
+			namespace = carried.Producer
+		}
+		commits["dependencies/"+namespace+"/"+gateCarriedDependencyPath(carried)] = true
+	}
+	for index := range dependencies {
+		dependency := &dependencies[index]
+		dependency.CommitOutputs = nil
+		for _, object := range dependency.Artifacts {
+			if parts := strings.SplitN(object.Path, "/", 3); len(parts) == 3 && commits[object.Path] {
+				dependency.CommitOutputs = append(dependency.CommitOutputs, parts[2])
+			}
+		}
+	}
+}
+
+// carriedCommitDeclared reports whether an input carried from another run is
+// a declared commit output of the source task it was carried from. An input
+// without its source run predates the source binding and is never marked; a
+// worker refuses a record of another run in it whether marked or not, because
+// no source binding vouches for that run.
+func carriedCommitDeclared(records sqlite.CoordinatorRecords, carried domain.CarriedInput) bool {
+	if carried.SourceRunID == "" {
+		return false
+	}
+	for _, run := range records.WorkflowRuns {
+		if run.ID != carried.SourceRunID {
+			continue
+		}
+		for _, source := range domain.TasksForRun(run, records.Tasks) {
+			if source.ID == carried.ProducerTaskID {
+				return DeclaresCommit(source, carried.Name)
+			}
+		}
+	}
+	return false
 }
 
 // packageCarriedInputs delivers the dependency artifacts a rerun carried over
@@ -648,7 +855,7 @@ func packageCarriedInputs(task domain.Task, artifacts map[string]domain.Artifact
 			if namespace == "" {
 				namespace = carried.Producer
 			}
-			path := "dependencies/" + namespace + "/" + filepath.ToSlash(carried.Name)
+			path := "dependencies/" + namespace + "/" + gateCarriedDependencyPath(carried)
 			if seenPaths[path] {
 				return nil, fmt.Errorf("duplicate carried input path %q", path)
 			}

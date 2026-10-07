@@ -29,12 +29,16 @@ func TestCompletedQuotaDrainCollectsWithoutRecovery(t *testing.T) {
 	now := runtimeTestNow
 	base := &fakeDriver{
 		workspace: filepath.Join(t.TempDir(), "workspace"), workspaceReady: true,
-		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped},
+		observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped, backlog.DispatchThreadStopped},
 	}
 	driver := &quotaCompletionDriver{fakeDriver: base, turnID: "turn-drained"}
 	guard := &fakeQuotaGuard{pause: stoppedPause(), pauseNeeded: true}
 	runtime := runningRuntime(t, base, guard, &now)
 	runtime.driver = driver
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// The drain notice is asynchronous; record the observed stop next tick.
 	if err := runtime.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}

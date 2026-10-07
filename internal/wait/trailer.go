@@ -24,11 +24,12 @@ func F(key, value string) Field { return Field{Key: key, Value: value} }
 //
 //	t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> <key>=<value> ...
 //
-// The three leading pairs are fixed and come first; the kind-specific pairs
-// follow in key order. Pairs are space-separated, a value is quoted when it
-// contains a space, a quote or a control character, and a pair with an empty
-// value is left out. Readers ignore keys they do not know, so a sender may add
-// pairs; the order of the extra pairs is not part of the contract.
+// The three leading pairs are fixed and come first; a summary pair, when there
+// is one, follows them, and the other kind-specific pairs follow in key order.
+// Pairs are space-separated, a value is quoted when it contains a space, a
+// quote or a control character, and a pair with an empty value is left out.
+// Readers ignore keys they do not know, so a sender may add pairs; the order of
+// the extra pairs is not part of the contract.
 func WakeTrailer(kind, outcome, waitID string, fields ...Field) string {
 	var b strings.Builder
 	b.WriteString(TrailerPrefix)
@@ -41,6 +42,13 @@ func WakeTrailer(kind, outcome, waitID string, fields ...Field) string {
 	extra := make([]Field, 0, len(fields))
 	for _, f := range fields {
 		if f.Key == "" || f.Value == "" || f.Key == "kind" || f.Key == "outcome" || f.Key == "wait" {
+			continue
+		}
+		// The summary is the answer, so it is read first; the other pairs keep
+		// their key order, and a trailer without it is unchanged.
+		if f.Key == "summary" {
+			b.WriteString(" summary=")
+			b.WriteString(quoteTrailerValue(f.Value))
 			continue
 		}
 		extra = append(extra, f)
@@ -158,6 +166,9 @@ func trailerFields(w Wait) []Field {
 	if w.OrTimeout && w.Status == StatusTimedOut {
 		fields = append(fields, F("or-timeout", "true"))
 	}
+	if w.Kind == domain.WaitKindGitHub && w.Summary != nil && w.Summary.Headline != "" {
+		fields = append(fields, F("summary", w.Summary.Headline))
+	}
 	return fields
 }
 
@@ -181,6 +192,12 @@ func taskTrailer(w domain.TaskWait) string {
 
 // nodeTrailer is the first line of a node or quota wake.
 func nodeTrailer(w domain.NodeWait) string {
+	return nodeTrailerWith(w, nil)
+}
+
+// nodeTrailerWith is nodeTrailer with the pairs of the wake's summary
+// appended, when one was built.
+func nodeTrailerWith(w domain.NodeWait, summary *WakeSummary) string {
 	kind := w.Request.Kind()
 	if w.Observation == nil {
 		return WakeTrailer(string(kind), "", w.Request.ID)
@@ -194,5 +211,6 @@ func nodeTrailer(w domain.NodeWait) string {
 	if w.Request.OrTimeout && outcome == domain.TaskWaitTimedOut {
 		fields = append(fields, F("or-timeout", "true"))
 	}
+	fields = append(fields, summaryTrailerFields(summary)...)
 	return WakeTrailer(string(kind), string(outcome), w.Request.ID, fields...)
 }

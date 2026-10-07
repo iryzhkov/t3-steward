@@ -54,6 +54,8 @@ type waitListRow struct {
 	// Settled reports whether this wait has an outcome. Settled waits are
 	// hidden unless --all asks for them.
 	Settled bool `json:"settled"`
+	// Summary is the stored wake summary of a settled local GitHub wait.
+	Summary *wait.WakeSummary `json:"summary,omitempty"`
 }
 
 // waitListOptions is one parsed "wait list" command line.
@@ -208,6 +210,7 @@ func localWaitRow(w wait.Wait, host string) waitListRow {
 		State: state, Delivery: w.Delivery, DeliveryReason: w.DeliveryReason,
 		Host: host, Registered: w.CreatedAt, Deadline: deadline, TaskWait: w.TaskWaitID,
 		Source: "local", Settled: w.Settled() || w.Status == wait.StatusCancelled || w.Status == wait.StatusWoken,
+		Summary: w.Summary,
 	}
 }
 

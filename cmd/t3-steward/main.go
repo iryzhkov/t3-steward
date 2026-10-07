@@ -63,6 +63,7 @@ Commands:
   backlog            Inspect and control coordinator workflows; deprecated offline file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
+  lease              Acquire, renew, release and check shared integration/release ownership.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
   ask                Inside a task: ask the owner a question in T3 and park until it is answered;
                      answer <id>: answer an open ask from the CLI.
@@ -292,7 +293,7 @@ func dispatch(args []string) error {
 			sub = append([]string{"diagnose"}, sub...)
 		}
 		return cmdBacklog(g, sub)
-	case "schedules":
+	case "lease", "schedules":
 		paths, err := config.DefaultPaths()
 		if err != nil {
 			return err
@@ -306,6 +307,9 @@ func dispatch(args []string) error {
 				continue
 			}
 			sub = append(sub, rest[i])
+		}
+		if cmd == "lease" {
+			return cmdLease(g, sub)
 		}
 		return cmdSchedules(g, sub)
 	case "version", "--version", "-v":
@@ -454,7 +458,7 @@ var dispatchedVerbs = []string{
 // topLevelFamilies are the command families dispatch routes by name, in the
 // order a did-you-mean suggestion prefers them.
 var topLevelFamilies = []string{
-	"campaign", "task", "review", "policy", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "models", "triage",
+	"campaign", "task", "review", "policy", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "lease", "models", "triage",
 	"diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
 }
 
@@ -823,6 +827,7 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store) 
 		}
 	}
 	configureNodeWaitTransport(waits, cfg, logger)
+	waits.NodeSummary = newNodeSummarySource(cfg)
 	// What this daemon is doing about node wakes, written where a command that
 	// registers one can read it. Without it no command can establish that the
 	// daemon which has to deliver the wake is running at all.

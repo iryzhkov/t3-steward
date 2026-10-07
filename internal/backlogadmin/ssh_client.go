@@ -194,6 +194,10 @@ func requestIdentity(request localRequest) (string, error) {
 		return prefix + "/" + id, nil
 	}
 	switch request.Operation {
+	case localOperationLease:
+		if request.Lease != nil && request.Lease.Mutating() {
+			return stable(localOperationLease, request.Lease.RequestID)
+		}
 	case localOperationRecoveryRetry:
 		if request.RecoveryRetry != nil {
 			return stable(localOperationRecoveryRetry, request.RecoveryRetry.OperationID)

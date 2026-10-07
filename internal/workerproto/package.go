@@ -91,6 +91,22 @@ type DependencyInput struct {
 	TaskID     string                `json:"taskId"`
 	Provenance *DependencyProvenance `json:"provenance,omitempty"`
 	Artifacts  []ArtifactObject      `json:"artifacts"`
+	// AcceptedCommits names the producer's declared commit outputs, among
+	// these artifacts, whose result the coordinator's review gate accepted.
+	// Only such a commit reference may make a commit the producer staged its
+	// campaign output: a review judge may also be given a rejected result to
+	// inspect, and any other file in the producer's outputs is the executor's
+	// content. It is set only for review-declared producers and requires the
+	// accepted-dependencies capability.
+	AcceptedCommits []string `json:"acceptedCommits,omitempty"`
+	// CommitOutputs names the producer's declared commit outputs among these
+	// artifacts, by their name in the producer's directory. In a package that
+	// declares PackageCapabilityCommitOutputs, these files, and only these,
+	// are commit references the worker resolves; every other file is the
+	// executor's content, even when it parses as a commit record. A package
+	// without that capability comes from a coordinator that does not mark
+	// them, and the worker then takes any artifact as a candidate.
+	CommitOutputs []string `json:"commitOutputs,omitempty"`
 }
 
 // CommitBundleInput is the retained bundle of one declared commit a dependency
@@ -126,6 +142,7 @@ func CommitBundlePath(runID, taskID, name string) string {
 // package faithfully. A package that declares one is only understood by a build
 // that supports it; see ValidateExecutionPackage.
 const (
+	PackageCapabilityWorkerOwnedGate     = "worker-owned-gate-v1"
 	PackageCapabilityPreflight           = "preflight"
 	PackageCapabilitySupervisionEvidence = "supervision-evidence-v1"
 	PackageCapabilityRecoveryRetry       = "recovery-retry-v1"
@@ -136,13 +153,83 @@ const (
 	// of each declared commit, and a consuming worker that has it imports one
 	// delivered in CommitBundles into its own campaign ref store.
 	PackageCapabilityCommitBundle = "campaign-commit-bundle-v1"
+	// PackageCapabilityWorkspaceHead asks the worker to report the workspace's
+	// physical HEAD and tracked changes when it collects the turn. A
+	// review-declared task requires it, because the coordinator's completion
+	// gate compares that HEAD with the head its latest review round accepted.
+	PackageCapabilityWorkspaceHead = "workspace-head-v1"
+	// PackageCapabilityAcceptedDependencies asks the worker to publish a
+	// review-declared producer's staged commit only for a dependency the
+	// package marks as accepted.
+	PackageCapabilityAcceptedDependencies = "accepted-dependencies-v1"
+	// PackageCapabilityContinuationCheckpoint is the continuation.md
+	// checkpoint contract. A package that declares it tells the worker that
+	// this coordinator accepts the attempt's snapshots as checkpoint uploads
+	// while it runs and the latest one in its result, and it may carry the
+	// snapshot an earlier attempt of the task left.
+	PackageCapabilityContinuationCheckpoint = "continuation-checkpoint-v1"
+	// PackageCapabilityCommitOutputs says the package names every
+	// dependency's declared commit outputs in DependencyInput.CommitOutputs,
+	// so the worker resolves a commit record only from one of those files.
+	// The coordinator declares it for every package with dependencies, even
+	// when none of them is a commit, to a worker it froze the continuation
+	// checkpoint decision for; both arrived in the same release.
+	PackageCapabilityCommitOutputs = "dependency-commit-outputs-v1"
 )
+
+// ContinuationInputPath is where a package places the previous attempt's
+// continuation snapshot. Static inputs are materialized under the workspace's
+// .t3/inputs/, outside the task's tree.
+const ContinuationInputPath = "inputs/continuation/previous.md"
+
+// ContinuationInput describes the snapshot a package carries at
+// ContinuationInputPath: which attempt left it, when, and how large it is.
+type ContinuationInput struct {
+	Path       string    `json:"path"`
+	AttemptID  string    `json:"attemptId"`
+	Size       int64     `json:"size"`
+	CapturedAt time.Time `json:"capturedAt"`
+}
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle}
+	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs}
+}
+
+// MarksCommitOutputs reports whether the package names its dependencies'
+// declared commit outputs, which makes every other dependency file ordinary.
+func (pkg ExecutionPackage) MarksCommitOutputs() bool {
+	return slices.Contains(pkg.RequiredCapabilities, PackageCapabilityCommitOutputs)
+}
+
+// DependencyCommitOutputs names the files of a dependency the worker may
+// resolve as commit references: the declared commit outputs the package
+// marks, or, from a coordinator that does not mark them, every artifact.
+func (pkg ExecutionPackage) DependencyCommitOutputs(dependency DependencyInput) []string {
+	if pkg.MarksCommitOutputs() {
+		return append([]string(nil), dependency.CommitOutputs...)
+	}
+	names := make([]string, 0, len(dependency.Artifacts))
+	for _, artifact := range dependency.Artifacts {
+		if parts := strings.SplitN(artifact.Path, "/", 3); len(parts) == 3 && parts[0] == "dependencies" {
+			names = append(names, parts[2])
+		}
+	}
+	return names
+}
+
+// RequiresWorkspaceHead reports whether the worker must report the workspace's
+// physical HEAD with this package's result.
+func (pkg ExecutionPackage) RequiresWorkspaceHead() bool {
+	return slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkspaceHead)
+}
+
+// HasAcceptedDependencies reports whether any dependency names an accepted
+// commit output of a review-declared producer.
+func (pkg ExecutionPackage) HasAcceptedDependencies() bool {
+	return slices.ContainsFunc(pkg.Dependencies, func(dependency DependencyInput) bool { return len(dependency.AcceptedCommits) != 0 })
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -183,6 +270,7 @@ type ExecutionPackage struct {
 	Route         domain.ProviderRoute   `json:"route"`
 	Environment   EnvironmentReference   `json:"environment"`
 	Verification  []string               `json:"verification,omitempty"`
+	Gate          *domain.TaskGate       `json:"gate,omitempty"`
 	Preflight     []PreflightStep        `json:"preflight,omitempty"`
 	// RequiredCapabilities names what a worker must implement to run this
 	// package. The manifest content address already stops an older build from
@@ -192,14 +280,16 @@ type ExecutionPackage struct {
 	// Supervision makes this package an overseer activation rather than a
 	// declared task. It is nil for every task package, which is every package
 	// an unsupervised run produces. See SupervisionActivation.
-	Supervision *SupervisionActivation       `json:"supervision,omitempty"`
-	Recovery    *RecoveryExecutionContext    `json:"recovery,omitempty"`
-	Outputs     []domain.ArtifactDeclaration `json:"outputs,omitempty"`
-	NotBefore   *time.Time                   `json:"notBefore,omitempty"`
-	Deadline    *time.Time                   `json:"deadline,omitempty"`
-	ExpiresAt   *time.Time                   `json:"expiresAt,omitempty"`
-	Limits      ExecutionLimits              `json:"limits"`
-	CreatedAt   time.Time                    `json:"createdAt"`
+	Supervision *SupervisionActivation    `json:"supervision,omitempty"`
+	Recovery    *RecoveryExecutionContext `json:"recovery,omitempty"`
+	// Continuation requires PackageCapabilityContinuationCheckpoint.
+	Continuation *ContinuationInput           `json:"continuation,omitempty"`
+	Outputs      []domain.ArtifactDeclaration `json:"outputs,omitempty"`
+	NotBefore    *time.Time                   `json:"notBefore,omitempty"`
+	Deadline     *time.Time                   `json:"deadline,omitempty"`
+	ExpiresAt    *time.Time                   `json:"expiresAt,omitempty"`
+	Limits       ExecutionLimits              `json:"limits"`
+	CreatedAt    time.Time                    `json:"createdAt"`
 }
 
 type ExecutionPackageManifest struct {
@@ -337,6 +427,12 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return errors.New("execution package: duplicate dependency task")
 		}
 		dependencies[dependency.TaskID] = struct{}{}
+		if err := validateAcceptedCommits(dependency); err != nil {
+			return err
+		}
+		if err := validateCommitOutputs(dependency); err != nil {
+			return err
+		}
 		if provenance := dependency.Provenance; provenance != nil {
 			if strings.TrimSpace(provenance.RunID) == "" || strings.TrimSpace(provenance.TaskID) == "" ||
 				strings.TrimSpace(provenance.AttemptID) == "" ||
@@ -397,6 +493,22 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return errors.New("execution package: invalid verification command")
 		}
 	}
+	if pkg.Gate != nil {
+		if err := pkg.Gate.Validate(); err != nil {
+			return fmt.Errorf("execution package: %w", err)
+		}
+		if pkg.Gate.Timeout > pkg.Limits.VerificationTimeout && pkg.Gate.Timeout <= 6*time.Hour {
+			return fmt.Errorf("execution package: gate timeout %s exceeds verification timeout %s", pkg.Gate.Timeout, pkg.Limits.VerificationTimeout)
+		}
+		if len(pkg.Gate.Commands) == 0 || pkg.Gate.Timeout <= 0 || pkg.Gate.Timeout > 6*time.Hour {
+			return errors.New("execution package: invalid gate limits")
+		}
+		for _, command := range pkg.Gate.Commands {
+			if strings.TrimSpace(command) == "" || strings.ContainsRune(command, 0) {
+				return errors.New("execution package: invalid gate command")
+			}
+		}
+	}
 	outputs := make(map[string]struct{})
 	for _, output := range pkg.Outputs {
 		if !safeRelativePath(output.Name) || output.MediaType == "" {
@@ -430,12 +542,66 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	return validatePackagePreflight(pkg.Preflight)
 }
 
+// validateAcceptedCommits requires each accepted commit to name one of the
+// dependency's own artifacts, once, for a producer of this run.
+func validateAcceptedCommits(dependency DependencyInput) error {
+	if len(dependency.AcceptedCommits) == 0 {
+		return nil
+	}
+	if dependency.Provenance != nil {
+		return errors.New("execution package: a carried input cannot be an accepted commit")
+	}
+	for index, name := range dependency.AcceptedCommits {
+		if slices.Contains(dependency.AcceptedCommits[:index], name) {
+			return errors.New("execution package: duplicate accepted commit")
+		}
+		if !slices.ContainsFunc(dependency.Artifacts, func(artifact ArtifactObject) bool {
+			parts := strings.SplitN(artifact.Path, "/", 3)
+			return len(parts) == 3 && parts[0] == "dependencies" && parts[2] == name
+		}) {
+			return errors.New("execution package: accepted commit is not one of the dependency's artifacts")
+		}
+	}
+	return nil
+}
+
+// validateCommitOutputs requires each declared commit output to name one of
+// the dependency's own artifacts, once.
+func validateCommitOutputs(dependency DependencyInput) error {
+	if len(dependency.CommitOutputs) == 0 {
+		return nil
+	}
+	artifacts := make(map[string]struct{}, len(dependency.Artifacts))
+	for _, artifact := range dependency.Artifacts {
+		if parts := strings.SplitN(artifact.Path, "/", 3); len(parts) == 3 && parts[0] == "dependencies" {
+			artifacts[parts[2]] = struct{}{}
+		}
+	}
+	seen := make(map[string]struct{}, len(dependency.CommitOutputs))
+	for _, name := range dependency.CommitOutputs {
+		if _, duplicate := seen[name]; duplicate {
+			return errors.New("execution package: duplicate dependency commit output")
+		}
+		seen[name] = struct{}{}
+		if _, exists := artifacts[name]; !exists {
+			return errors.New("execution package: dependency commit output is not one of the dependency's artifacts")
+		}
+	}
+	return nil
+}
+
 func validatePackageCapabilities(pkg ExecutionPackage) error {
 	// The campaign-supervision capability is a worker inventory capability, not
 	// a package capability: it says which build is running on the host rather
 	// than which behaviour this package needs. An activation package names it
 	// anyway, so that a worker validating a package it should never have been
 	// offered refuses it by name instead of running a review as a task.
+	if pkg.Gate != nil && !slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkerOwnedGate) {
+		return errors.New("execution package: gate requires worker-owned-gate-v1 capability")
+	}
+	if pkg.Gate == nil && slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkerOwnedGate) {
+		return errors.New("execution package: worker-owned-gate-v1 capability requires a gate")
+	}
 	supported := append(SupportedPackageCapabilities(), CapabilityCampaignSupervision)
 	declared := make(map[string]struct{}, len(pkg.RequiredCapabilities))
 	for _, capability := range pkg.RequiredCapabilities {
@@ -447,6 +613,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 		}
 		if capability == PackageCapabilityRecoveryRetry && (pkg.Supervision == nil || pkg.Supervision.Purpose != "repair") {
 			return errors.New("execution package: only a repair activation may require recovery retry")
+		}
+		if capability == PackageCapabilityWorkspaceHead && pkg.Supervision != nil {
+			return errors.New("execution package: an activation has no reviewed workspace HEAD to report")
 		}
 		if capability == PackageCapabilityProjectContext && pkg.Context == nil {
 			return errors.New("execution package: project context capability requires a context index")
@@ -471,11 +640,38 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	if _, ok := declared[PackageCapabilityProjectContext]; pkg.Context != nil && !ok {
 		return errors.New("execution package: project context requires the project context capability")
 	}
+	if _, ok := declared[PackageCapabilityAcceptedDependencies]; ok != pkg.HasAcceptedDependencies() {
+		return errors.New("execution package: accepted dependencies and the accepted dependencies capability must be declared together")
+	}
+	if _, ok := declared[PackageCapabilityCommitOutputs]; !ok && slices.ContainsFunc(pkg.Dependencies, func(dependency DependencyInput) bool { return len(dependency.CommitOutputs) != 0 }) {
+		return errors.New("execution package: dependency commit outputs require the commit outputs capability")
+	}
+	if _, ok := declared[PackageCapabilityCommitOutputs]; ok {
+		for _, dependency := range pkg.Dependencies {
+			for _, name := range dependency.AcceptedCommits {
+				if !slices.Contains(dependency.CommitOutputs, name) {
+					return errors.New("execution package: an accepted commit is not a declared commit output of its dependency")
+				}
+			}
+		}
+	}
 	if _, ok := declared[PackageCapabilitySessionDisplay]; pkg.Display != nil && !ok {
 		return errors.New("execution package: display requires session display capability")
 	}
 	if _, ok := declared[PackageCapabilitySessionDisplay]; ok && pkg.Display == nil {
 		return errors.New("execution package: session display capability requires display metadata")
+	}
+	if _, ok := declared[PackageCapabilityContinuationCheckpoint]; pkg.Continuation != nil && !ok {
+		return errors.New("execution package: a continuation input requires the continuation checkpoint capability")
+	}
+	if pkg.Continuation != nil {
+		delivered := false
+		for _, input := range pkg.StaticInputs {
+			delivered = delivered || (input.Path == ContinuationInputPath && input.Size == pkg.Continuation.Size)
+		}
+		if pkg.Supervision != nil || pkg.Continuation.Path != ContinuationInputPath || pkg.Continuation.AttemptID == "" || !delivered {
+			return errors.New("execution package: continuation input is incomplete or attached to an activation")
+		}
 	}
 	if pkg.Recovery != nil {
 		if pkg.Supervision != nil || pkg.Recovery.IncidentID == "" || pkg.Recovery.InstructionPath != "inputs/recovery/instructions.md" {

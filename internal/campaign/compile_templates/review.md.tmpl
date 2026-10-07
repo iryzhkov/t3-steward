@@ -1,0 +1,33 @@
+# Review of unit {{.UnitID}}: {{.Title}}
+
+Goal: review the implementation of unit {{.UnitID}} (plan section
+"{{.Section}}") of project {{.Project}} against its brief, and decide whether
+it is ready.
+
+Inputs:
+- `{{.UnitPath}}` is the unit's brief, byte for byte. Check every acceptance
+  criterion in it.
+- `{{.PlanPath}}` is the whole plan, for context.
+- `{{.DependenciesPath}}` holds one directory for the implement task; list it
+  to find that directory. It contains `handoff.md` and `{{.CommitName}}`, the
+  provenance record of the implementation commit. The commit itself is
+  already fetched into this checkout under the campaign ref the record names.
+
+The pinned base is {{.Ref}}. Confirm that the implementation commit descends
+from it, and review `git diff {{.Ref}}..<implementation commit>`.
+
+Scope: read and test only. Do not modify, commit or push source.
+
+Outputs:
+- `review.md`: the first line is exactly `VERDICT: ACCEPT` or
+  `VERDICT: CHANGES_REQUESTED`. Then the reviewed commit, the findings (each
+  with a severity, file:line, a concrete failure scenario and a reproducing
+  command), the criteria checked with their evidence, and the commands you
+  ran with their exit codes.
+- `continuation.md`: kept current as you work.
+
+Verification: {{if .Verify}}rerun these on the implementation commit:
+{{range .Verify}}- `{{.}}`
+{{end}}{{else}}rerun the checks the brief names on the implementation commit.
+{{end}}
+Request changes only for real defects or unmet criteria, not for style.

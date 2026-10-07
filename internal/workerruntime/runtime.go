@@ -36,6 +36,9 @@ type Driver interface {
 	Cleanup(context.Context, workerproto.ExecutionPackage, string) error
 	Warn(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error
 	Checkpoint(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) (*domain.CheckpointMetadata, error)
+	// Local quota pauses send without waiting; evidence is read after an observed stop.
+	RequestQuotaDrain(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error
+	ReadQuotaCheckpoint(context.Context, workerproto.ExecutionPackage) (*domain.CheckpointMetadata, error)
 	Resume(context.Context, workerproto.ExecutionPackage, domain.ThrottleCommand) error
 }
 
@@ -106,6 +109,8 @@ type Runtime struct {
 	// on its last snapshot request. It is not durable: the coordinator asks
 	// again on every exchange.
 	reportQuota bool
+	// reportQuotaRunway records that it also asked for the runway fields.
+	reportQuotaRunway bool
 	// titleFailures holds, per assignment, the session title whose last update
 	// failed, so it is retried at the next state change rather than on every
 	// exchange. It is not durable on purpose; see titleFailed.
@@ -189,6 +194,9 @@ func AdvertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilityQuotaObservations) {
 		merged = append(merged, workerproto.CapabilityQuotaObservations)
 	}
+	if !slices.Contains(merged, workerproto.CapabilityQuotaRunway) {
+		merged = append(merged, workerproto.CapabilityQuotaRunway)
+	}
 	if !slices.Contains(merged, workerproto.CapabilitySessionTitles) {
 		merged = append(merged, workerproto.CapabilitySessionTitles)
 	}
@@ -227,7 +235,7 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 	now := r.now()
 	var quota []domain.WorkerQuotaObservation
 	if r.reportQuota && r.config.Quota != nil {
-		observed, err := r.config.Quota.Observations(ctx)
+		observed, err := quotaObservations(ctx, r.config.Quota, r.reportQuotaRunway)
 		if err != nil {
 			r.log.Warn("host quota observations unavailable; snapshot carries none", "error", err)
 		} else {
@@ -581,6 +589,11 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		err = r.driver.StopThread(ctx, pkg)
 		result = domain.ThrottleResultStopped
 	case domain.ThrottleCommandResume:
+		// A pause snapshot still owed is of the paused turn: it is taken
+		// before a new turn can change the file, or forgone.
+		if err = r.closePendingContinuation(ctx, command.AssignmentID); err != nil {
+			return domain.ThrottleAcknowledgement{}, err
+		}
 		err = r.driver.Resume(ctx, pkg, command)
 		result = domain.ThrottleResultResumed
 	default:
@@ -591,13 +604,31 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		// The acknowledgement is sent to the coordinator and stored there.
 		detail = r.recordableFailure(ctx, command.AssignmentID, err.Error())
 	}
-	return r.finishThrottle(command, err == nil, result, checkpoint, detail)
+	acknowledgement, finishErr := r.finishThrottle(command, err == nil, result, checkpoint, detail)
+	if finishErr == nil {
+		// An accepted operator or coordinator pause has stopped the turn and
+		// owes its snapshot (finishThrottle journals the obligation).
+		r.settlePendingContinuation(ctx, command.AssignmentID)
+	}
+	return acknowledgement, finishErr
 }
 
 // Reconcile advances every durable attempt as far as local evidence allows.
 // A failure on one attempt is recorded on that attempt and never prevents
 // the others from progressing; only journal I/O errors are returned.
+//
+// Worker liveness is recorded after the pass, whatever its outcome, so the
+// synced write never spends the budget the pass runs under.
 func (r *Runtime) Reconcile(ctx context.Context) error {
+	err := r.reconcilePass(ctx)
+	if livenessErr := r.journal.recordLiveness(r.now()); livenessErr != nil {
+		// Liveness is advisory: the watchdog falls back to the lease.
+		r.log.Warn("worker liveness not recorded", "error", livenessErr)
+	}
+	return err
+}
+
+func (r *Runtime) reconcilePass(ctx context.Context) error {
 	if observer, ok := r.driver.(interface{ BeginObservationPass() }); ok {
 		observer.BeginObservationPass()
 	}
@@ -631,6 +662,18 @@ func (r *Runtime) Reconcile(ctx context.Context) error {
 			}
 			continue
 		}
+		if record.PendingContinuation != nil {
+			// A pause became durable before its snapshot was taken: the
+			// snapshot is taken before the attempt can resume.
+			r.settlePendingContinuation(ctx, id)
+			current, exists, err := r.currentRecord(id)
+			if err != nil {
+				return err
+			}
+			if exists {
+				record = current
+			}
+		}
 		if err := r.reconcileAttempt(ctx, id, record, now); err != nil {
 			return err
 		}
@@ -642,11 +685,8 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 	var err error
 	switch record.Phase {
 	case PhaseRunning:
-		// Observe before deciding on a pause: a thread that has already ended
-		// its turn is finished work, and collecting it spends no provider
-		// quota. Pausing it would settle a finished thread and later resume
-		// it with a filler turn. Only a thread that is still working is
-		// paused; a stopped one takes the collection path.
+		// Observe before deciding on a pause. A stopped turn during a host
+		// drain may be a checkpoint rather than task completion.
 		threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
 		if observeErr != nil {
 			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
@@ -664,6 +704,11 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			// attempt finishing, so nothing is collected.
 			err = r.markLocalPauseStopped(ctx, id, nil)
 		case threadState == backlog.DispatchThreadStopped:
+			var parked bool
+			parked, err = r.parkStoppedForQuota(ctx, id, record)
+			if err != nil || parked {
+				break
+			}
 			if err = r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.Package.Package.Identity.ThreadID); err == nil {
 				err = r.collectUnlessWaiting(ctx, id, record)
 			}
@@ -1155,6 +1200,9 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 		}); err != nil {
 			return err
 		}
+		// The turn has ended, whether it parks or is collected next: its
+		// continuation.md is checkpointed now, once per turn.
+		r.recordContinuation(ctx, id, domain.ContinuationTurnEnd, turnID)
 	}
 	// The stopped observation must become durable before an empty coordinator
 	// statement can authorize collection. A report received earlier in this
@@ -1454,8 +1502,10 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 			switch command.Kind {
 			case domain.ThrottleCommandDrain:
 				record.Phase = PhaseStopped
+				record.PendingContinuation = throttlePauseContinuation(command)
 			case domain.ThrottleCommandHardStop:
 				record.Phase = PhaseStopped
+				record.PendingContinuation = throttlePauseContinuation(command)
 				if command.AttentionStop != nil {
 					record.StopConfirmed = true
 					record.ObservedThreadState = "stopped"

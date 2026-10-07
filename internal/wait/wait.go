@@ -97,6 +97,9 @@ type Wait struct {
 	// Delivery records local wake visibility without changing the settled outcome.
 	Delivery       string `json:"delivery,omitempty"`
 	DeliveryReason string `json:"deliveryReason,omitempty"`
+	// Summary is the wake summary of a settled GitHub wait whose annotations
+	// were collected: what its trailer's summary pair and "wait summary" show.
+	Summary *WakeSummary `json:"summary,omitempty"`
 }
 
 // Settled reports whether the wait has an outcome.
@@ -205,6 +208,11 @@ type Runner struct {
 	// what it records is the whole path having worked, and it is not called at
 	// all in a dry run, where a wake is held rather than sent.
 	NodeDelivery func(ctx context.Context, host string)
+	// NodeSummary, when set, is where a terminal node wake's summary is read
+	// from: the run's tasks and their retained outputs, at the moment the
+	// wake is built and before its payload is frozen. A wake whose summary
+	// cannot be built within the bound is still delivered, without it.
+	NodeSummary NodeSummarySource
 	// DisableQuotaChecks bypasses quota-based wake holds, independently of DryRun.
 	DisableQuotaChecks bool
 
@@ -459,7 +467,7 @@ func WakeMessage(due []Wait) string {
 			fmt.Fprintf(&b, "Last output:\n```\n%s\n```\n", out)
 		}
 	}
-	b.WriteString("\nFirst inspect current instructions, every wait outcome, and the actual result or review verdict. A met condition or exit 0 does not establish task success or review ACCEPT. Handle failures, cancellations, gave-up outcomes and deadlines by repairing, replanning or reporting as appropriate; an expected deadline is not proof of success. Continue only unfinished work that is still authorized. Cancellation and pause instructions take precedence.")
+	b.WriteString("\n" + wakeGuidance)
 	return b.String()
 }
 

@@ -119,7 +119,12 @@ func ExportCommitBundle(ctx context.Context, p CommitProvenance, branch string, 
 	if err != nil {
 		return result, fmt.Errorf("commit export: %w", err)
 	}
-	if len(heads) != 1 || heads[0].commit != p.Commit || heads[0].ref != p.Ref {
+	// A review-declared task's staged commit is bundled under its staging.
+	sourceRef, err := bundleRef(p)
+	if err != nil {
+		return result, fmt.Errorf("commit export: %w", err)
+	}
+	if len(heads) != 1 || heads[0].commit != p.Commit || heads[0].ref != sourceRef {
 		return result, errors.New("commit export: bundle must advertise exactly its declared commit and ref")
 	}
 	if (p.Commit != p.Base && (len(prerequisites) != 1 || prerequisites[0] != p.Base)) ||

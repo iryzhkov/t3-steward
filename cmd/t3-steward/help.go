@@ -387,6 +387,10 @@ func (p helpPage) renderShort() string {
 	if p.Path == "task result" {
 		fmt.Fprintln(&b, "\nCollect files under <state>/results; --output DIR overrides it.")
 		fmt.Fprintln(&b, "Exit: 0 succeeded/skipped; 1 still running; 2 failed/cancelled.")
+	} else if p.Path == "lease" {
+		fmt.Fprintln(&b, "Exit: 0 held by caller or done; 10 conflict, fencing or authority refusal;")
+		fmt.Fprintln(&b, "11 check found free or expired; 3..8 transport failure (fails closed); 1 other")
+		fmt.Fprintln(&b, "refusal.")
 	} else {
 		fmt.Fprintln(&b, "Exit: 0 accepted/done; nonzero refused or failed.")
 	}

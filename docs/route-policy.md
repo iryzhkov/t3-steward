@@ -43,8 +43,8 @@ catalog family metadata; missing metadata cannot satisfy an exclusion.
 Cost tiers correspond to review metadata economy, executor and critical.
 A candidate's cost tier never grants review authority.
 
-`task run --role execute --no-notify -- "prompt"` chooses the first candidate
-advertised by a ready eligible worker of the project. `--worker` narrows that
+`task run --role execute --no-notify -- "prompt"` ranks eligible candidates
+advertised by ready workers of the project using `route-ranking/v1`. `--worker` narrows that
 set. `--policy-file PATH` chooses an explicit policy file. `--dry-run --json`
 shows the selection without submitting. Roles do not expand a route into multiple
 routes; specialty roles remain one candidate. Explicit prompt fan-out remains
@@ -82,15 +82,52 @@ explicit provider-diverse example when the catalog has suitable routes:
 Use catalog-authorized executor/critical routes from distinct families and omit
 `--role` for this explicit round. Alternatively specify a provider-diverse judge
 of executor tier together with an economy swarm where supported. Roles select
-one first-eligible candidate, including specialty and single-candidate roles;
+one ranked eligible candidate, including specialty and single-candidate roles;
 they never automatically fan out reviewers or select judges. Every reviewer remains a new isolated task;
 independent reviewers have no dependencies on other reviewers. Roles do not
 authorize in-task review or self-use of the caller's session. Existing signed
 verdict validation and gate authority remain unchanged.
 
+## Ranking
+
+Automatic task and review role selection uses `route-ranking/v1`. Eligibility
+still checks project readiness, catalog tiers, role constraints and review
+diversity. Explicit model/reviewer pins use policy order and never rank.
+The quota view merges snapshots from all coordinator-reported workers, then reads
+each serving pool with the configured `quota_stale_after`. The best pool among
+the candidate's ready, advertising project workers determines its band.
+
+Bands, in order, are reset-soon, healthy, unknown, gated. A fresh pool is gated
+when any window is exhausted, the short window (Claude five_hour or Codex
+primary) is at least 90% used, or admission is draining/closed. A fresh,
+ungated long window (Claude seven_day or Codex secondary) resetting within
+24 hours, including exactly 24 hours, with at most 95% used is reset-soon.
+Codex with only primary can be healthy but cannot receive reset-soon preference.
+Missing, stale or unknown telemetry fails closed for preference: unknown never
+outranks known healthy headroom. An unsupported or failed quota query makes all
+candidates unknown and falls back to policy order with an explicit reason.
+Ranking itself never refuses admission; even a gated last remaining candidate
+stays eligible for the coordinator's admission decision.
+
+The lexicographic keys are band, policy ordinal, smaller maximum used percentage
+across both windows, higher optional worker score, then ascending route string.
+The CLI supplies no worker score; absent scores contribute zero. Two reset-soon candidates therefore retain
+policy order; an earlier reset alone never wins. V1 uses raw percentages, not
+spendable budget after forecasts and reservations, burn-rate projections or
+budget pacing. These constants and key order are versioned; changes require v2.
+Planner adoption for explicit campaign routes remains M17-2b.
+
+Text, JSON and task dry-run receipts show the ranking version, chosen route and
+candidate eligibility, band, pool and reason. The pinned `route-selection.json`
+keeps stable provenance plus the ranking version and chosen route; live reasons
+and candidate telemetry are excluded. Changed readings selecting the same route
+therefore retain the same run key. Changing the ranking version changes run keys
+once. Unknown quota falls back to policy order while still recording v1 as the
+ranking used.
+
 Provenance is `route-selection/v1`: role, actual route, raw-policy SHA-256 digest,
 reason and effective effort. The reason distinguishes an explicit model override
-from a configured default model and from the first eligible policy candidate. Task receipts/dry-run add optional `selection`;
+from a configured default model and from the ranked policy candidate. Task receipts/dry-run add optional `selection`;
 review-submit/v1 adds optional `selections`. Existing fields and versions
 remain compatible. Exact policy bytes and selection records are also retained
 as bounded pinned inputs named `route-policy.yaml` and `route-selection.json`.
@@ -119,5 +156,5 @@ Unknown selection/observations print unknown. JSON schemaVersion 1 preserves
 the existing aggregate percent/phase/earliest-reset fields and adds optional
 per-instance `windows`; aggregates must not be treated as a single quota window.
 Consumers comparing windows should use windows[]. The dispatcher/admission,
-quota ranking, failover, fleet policy installation and generated instructions
-are unchanged and remain later milestones.
+failover, fleet policy installation and generated instructions
+remain later milestones.

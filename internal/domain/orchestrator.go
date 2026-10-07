@@ -121,13 +121,48 @@ type Workflow struct {
 	CreatedAt time.Time       `json:"createdAt"`
 }
 
+// QuotaAdmissionReceipt records the quota truth and routes used when a submission
+// was admitted. Its ceiling is informational; descendants reserve at dispatch.
+type QuotaAdmissionReceipt struct {
+	AdmittedAt time.Time                   `json:"admittedAt"`
+	Pools      []QuotaAdmissionPoolReceipt `json:"pools,omitempty"`
+	Roots      []QuotaAdmissionRootReceipt `json:"roots,omitempty"`
+}
+
+type QuotaAdmissionPoolReceipt struct {
+	PoolID                string                        `json:"poolId"`
+	WindowSet             QuotaWindowSet                `json:"windowSet"`
+	Windows               []QuotaAdmissionWindowReceipt `json:"windows,omitempty"`
+	RootCost              float64                       `json:"rootCost"`
+	AlreadyAdmittedDemand float64                       `json:"alreadyAdmittedDemand"`
+	CampaignBudgetCeiling float64                       `json:"campaignBudgetCeiling"`
+	Decision              string                        `json:"decision"`
+}
+
+type QuotaAdmissionWindowReceipt struct {
+	Key                   BucketKey `json:"key"`
+	UsedPercent           float64   `json:"usedPercent"`
+	AvailableHeadroom     float64   `json:"availableHeadroom"`
+	AlreadyAdmittedDemand float64   `json:"alreadyAdmittedDemand"`
+	SafetyMarginPercent   float64   `json:"safetyMarginPercent"`
+}
+
+type QuotaAdmissionRootReceipt struct {
+	TaskID   string        `json:"taskId"`
+	TaskName string        `json:"taskName,omitempty"`
+	Route    ProviderRoute `json:"route"`
+	Cost     float64       `json:"cost"`
+	Decision string        `json:"decision"`
+}
+
 // WorkflowRun is one execution of a workflow definition.
 type WorkflowRun struct {
-	Graph         *GraphDefinition `json:"graph,omitempty"`
-	ID            string           `json:"id"`
-	WorkflowID    string           `json:"workflowId"`
-	GraphRevision int64            `json:"graphRevision,omitempty"`
-	Sink          *SinkTask        `json:"sink,omitempty"`
+	QuotaAdmission *QuotaAdmissionReceipt `json:"quotaAdmission,omitempty"`
+	Graph          *GraphDefinition       `json:"graph,omitempty"`
+	ID             string                 `json:"id"`
+	WorkflowID     string                 `json:"workflowId"`
+	GraphRevision  int64                  `json:"graphRevision,omitempty"`
+	Sink           *SinkTask              `json:"sink,omitempty"`
 	// Supervision is the run's durable supervision record, or nil for an
 	// unsupervised run, which is every run that exists today. It sits beside
 	// the sink because both are coordinator-owned state that belongs to the
@@ -175,6 +210,12 @@ type ProviderRoute struct {
 	QuotaPoolID        string            `json:"quotaPoolId,omitempty"`
 }
 
+// TaskGate is the worker-owned final gate, after ordinary verification.
+type TaskGate struct {
+	Commands []string      `json:"commands" yaml:"commands"`
+	Timeout  time.Duration `json:"timeout" yaml:"timeout"`
+}
+
 // Task is an immutable node in a workflow definition.
 type Task struct {
 	ReviewOutput       *ReviewOutput           `json:"reviewOutput,omitempty"`
@@ -205,6 +246,7 @@ type Task struct {
 	Context      *ProjectContext       `json:"context,omitempty"`
 	Outputs      []ArtifactDeclaration `json:"outputs,omitempty"`
 	Verification []string              `json:"verification,omitempty"`
+	Gate         *TaskGate             `json:"gate,omitempty"`
 	Placement    Placement             `json:"placement"`
 	// ResourceDemand sizes the task independently of the eligibility rules in
 	// Placement, which is why it is a sibling field rather than a member.
@@ -266,9 +308,12 @@ type Attempt struct {
 	AdminNotBefore             *time.Time        `json:"adminNotBefore,omitempty"`
 	AdminForceStart            bool              `json:"adminForceStart,omitempty"`
 	Failure                    string            `json:"failure,omitempty"`
-	StartedAt                  *time.Time        `json:"startedAt,omitempty"`
-	UpdatedAt                  time.Time         `json:"updatedAt"`
-	CompletedAt                *time.Time        `json:"completedAt,omitempty"`
+	// ReviewGate is the completion gate's decision for a review-declared
+	// task's finished turn: the heads compared and why it passed or failed.
+	ReviewGate  *ReviewCompletionGate `json:"reviewGate,omitempty"`
+	StartedAt   *time.Time            `json:"startedAt,omitempty"`
+	UpdatedAt   time.Time             `json:"updatedAt"`
+	CompletedAt *time.Time            `json:"completedAt,omitempty"`
 }
 
 // TurnLive reports whether this attempt currently has a turn that a thread is
@@ -314,6 +359,15 @@ type WorkerQuotaObservation struct {
 	Epoch         string     `json:"epoch,omitempty"`
 	LimitName     string     `json:"limitName,omitempty"`
 	ModelSelector string     `json:"modelSelector,omitempty"`
+	// Runway metadata is optional so observations from older workers retain
+	// their existing admission behaviour. DrainsAt crosses the host ladder,
+	// while DrainDeadline is the grace deadline after draining begins. An rc.115
+	// coordinator decodes snapshots strictly and would reject them, so a worker
+	// sends them only to a coordinator that asked through quota-runway-v1.
+	RatePerMinute float64    `json:"ratePerMinute,omitempty"`
+	DrainPercent  float64    `json:"drainPercent,omitempty"`
+	DrainsAt      *time.Time `json:"drainsAt,omitempty"`
+	DrainDeadline *time.Time `json:"drainDeadline,omitempty"`
 }
 
 // AssignmentState is the coordinator's knowledge of an assignment lease.
@@ -503,6 +557,7 @@ const (
 	ArtifactSummary      ArtifactKind = "summary"
 	ArtifactGitState     ArtifactKind = "git-state"
 	ArtifactVerification ArtifactKind = "verification"
+	ArtifactGate         ArtifactKind = "gate"
 )
 
 // Artifact is immutable metadata for retained content.

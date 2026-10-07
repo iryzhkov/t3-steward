@@ -34,15 +34,19 @@ writes. The two run in different processes on the same host (`t3-steward run` an
 `t3-steward worker serve`), so the journal on disk, not memory, is the seam. A host without a
 worker bootstrap owns nothing.
 
-Ownership read from the journal is bounded by freshness. Only a live worker advances the
-journal, and the assignment lease in each record is renewed only through that worker by the
-coordinator, so a record owns its thread only while its lease has not expired
-(`ownershipStale` in `internal/workerruntime/ownership.go`). A record without a lease expiry is
-bounded by `OwnershipMaxAge` (one hour) since its last update. A worker that crashes or is
-stopped with running attempts therefore hands its threads back to the watchdog once the leases
-lapse (two minutes by default, `backlog_v2.leases.duration`), instead of leaving them immune
-until the provider's 100 %. The watchdog logs once when it ignores stale records and once when
-none remain.
+Ownership read from the journal is bounded by freshness. The worker records liveness after
+every reconcile pass, including passes that change no attempts and passes that fail, at most
+once per `LivenessRefreshInterval` (one minute) so that an exchange does not pay a synced
+journal write each time; a failed liveness write is logged, not returned. A leased record owns
+its thread while its lease is valid or that worker liveness is within `OwnershipLivenessGrace`
+(ten minutes), so a brief lease lapse during a host drain does not hand a live campaign thread
+to the watchdog (`ownershipStale` in `internal/workerruntime/ownership.go`). Liveness bridges an
+expired lease for at most `OwnershipMaxAge` (one hour) past its expiry, so a worker that keeps
+running but no longer renews an assignment does not hold its thread forever. A record without a
+lease expiry keeps the `OwnershipMaxAge` (one hour) bound since its last update. A crashed
+worker's leased threads return to the watchdog once both the lease and liveness grace expire.
+Older workers that omit the liveness timestamp keep the lease-only bound. The watchdog logs
+once when it ignores stale records, names the liveness grace, and logs once when none remain.
 
 **The host watchdog's bucket table stays the authority on quota phase.** The worker does not
 reconstruct policy; it reads the same bucket states from the same state database and applies the
@@ -70,11 +74,22 @@ Must:
    <attempt id>`: such an intent can only predate this rule, and nothing would use the resumed
    turn. If ownership cannot be read, the watchdog logs once and treats every thread as
    unowned, never the reverse.
-2. The worker observes the thread before deciding on a pause, and pauses only a thread that is
-   still working: a thread that already ended its turn is finished work, spends no quota to
-   collect, and takes the collection path as before. When the bucket governing a working
-   attempt's route is draining, the worker sends the drain notice through the driver's
-   checkpoint path once and then observes. When it is stopped, the worker still sends the
+2. The worker observes the thread before deciding on a pause. When the bucket governing a
+   working attempt's route is draining, it durably records the request and sends the drain
+   notice without waiting for the turn to stop, so reconciliation and lease exchanges continue.
+   A later pass observes the stop and reads optional checkpoint evidence; a missing checkpoint
+   file still records the pause. A queued notice's intent survives quota recovery while the
+   turn remains active; its later stop is still a pause. The kept intent is marked recovered,
+   and its notice is no evidence for a later episode. When the bucket drains again, when the
+   paused window has reset (even if no pass saw the recovery), or when a different bucket
+   governs the route after a delivered notice, the pause starts over with its own notice and
+   its own escalation window. An undelivered notice or a stop already decided carries over a
+   change of governing bucket with its request time, so the change cannot postpone the stop. Missing or failed stopped-turn identity
+   lookups defer completion and resume until the worker can fence the stopped turn.
+   If a thread ended during a host drain before the worker recorded
+   a request, it is parked with reason `turn ended during a host quota drain`. An explicit
+   completion marker from the exact stopped turn, verified through the existing provider
+   completion gate, takes the normal collection path instead of spending quota on a resume. When it is stopped, the worker still sends the
    drain notice first (a session that checkpoints on request loses nothing; an interrupted one
    loses its subagents) and escalates to the driver's stop path only when the thread is still
    working after the daemon's `policy.stop_verify_timeout` (`Config.PauseEscalation`); the
@@ -92,11 +107,24 @@ Must:
    snapshot exchange, for its host's bucket observations, and the quota bridge merges them with
    the coordinator's own by bucket key, keeping the freshest. A pool closes at its stop threshold
    whichever host observed it, and `snapshot-stale` clears while any worker has a fresh reading.
+   Draining and stopped observations close admission for new starts. Planning blocks a task
+   whose expected runtime plus checkpoint margin reaches the bucket's drain crossing: the
+   earliest of the projected crossing of the drain threshold, the drain deadline and
+   exhaustion bounds the runway. The coordinator decodes optional burn rate, drain threshold,
+   projected drain crossing and drain deadline fields on worker observations, and absent
+   fields preserve today's behavior. Workers send them only when asked (see below).
    The wire version is unchanged: an older worker is never asked and never sends, an older
    coordinator never asks, so neither meets the field. The pause reason and thread state in the
    journal excerpt of each assignment observation are gated by the same ask: both sides decode
    snapshots strictly, so any field added to the snapshot is sent only to a coordinator that
-   asked for `quota-observations-v1` on that exchange.
+   asked for `quota-observations-v1` on that exchange. The runway fields have their own ask:
+   an rc.115 coordinator asks for `quota-observations-v1` and rejects any unknown field
+   through its strict decoder, so a worker that sent them unasked would have every snapshot
+   refused. A worker advertises `quota-runway-v1` (`workerproto.CapabilityQuotaRunway`), a
+   coordinator that sees it sets `quotaRunwayWanted` on the snapshot request, and only then
+   does the worker add the runway fields (`HostQuotaGuard.RunwayObservations`). With an older
+   coordinator or an older worker the projected crossing bounds the runway only for buckets
+   the coordinator observes itself.
 5. `t3-steward thread stop <thread-id> [--session]` dispatches `thread.turn.interrupt` and, with
    `--session`, `thread.session.stop` through the local T3 control client and prints what it
    sent. `t3-steward backlog rewake <run>/<task> --reason TEXT` resumes an attempt that is
@@ -142,9 +170,8 @@ May: reuse the throttle command kinds drain, hard-stop and resume for the local 
 
 Does not guarantee: coordination across hosts for a pool no worker observes; resumption while
 the coordinator is unreachable (the pause stays, the lease expires, and lease expiry handles the
-rest as today); ownership of a thread whose assignment lease has expired (a coordinator outage
-longer than the lease duration makes a running attempt's thread the watchdog's again until the
-next renewal, which is the coordinator's own view of that lease); that the coordinator counts a locally paused attempt's remaining cost as a
+rest as today); ownership after both the assignment lease and worker liveness grace expire;
+that the coordinator counts a locally paused attempt's remaining cost as a
 reservation (it has no coordinator-side throttle record, and quota planning skips it with a
 warning as it does today for any paused attempt without one).
 

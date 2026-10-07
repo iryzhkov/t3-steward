@@ -72,12 +72,39 @@ type NodeGroupClaimer interface {
 
 // nodeWakeProse is the human part of a node or quota wake, after the trailer.
 func nodeWakeProse(w domain.NodeWait) string {
+	rows := summaryTableRows
+	return nodeWakeProseWith(w, nil, &rows)
+}
+
+// nodeWakeProseWith is nodeWakeProse with the wake's summary, when one was
+// built. A summary replaces the generic sentence with the answer; one that
+// could not be built leaves the generic prose and says so in one fixed line.
+func nodeWakeProseWith(w domain.NodeWait, summary *WakeSummary, rows *int) string {
 	if w.Request.Quota != nil {
-		return fmt.Sprintf("Wait finished (T3 steward): %q. Quota pool %s: %s.\nFirst inspect current instructions, every wait outcome, and the actual result or review verdict. A met condition or exit 0 does not establish task success or review ACCEPT. Handle failures, cancellations, gave-up outcomes and deadlines by repairing, replanning or reporting as appropriate; an expected deadline is not proof of success. Continue only unfinished work that is still authorized. Cancellation and pause instructions take precedence. Recheck authentic fresh quota eligibility before provider work; a reset deadline alone does not confirm recovery.",
-			w.Request.Name, w.Request.Quota.Pool, w.Observation.Reason)
+		return fmt.Sprintf("Wait finished (T3 steward): %q. Quota pool %s: %s. Recheck authentic fresh quota eligibility before provider work; a reset deadline alone does not confirm recovery.\n%s",
+			w.Request.Name, w.Request.Quota.Pool, w.Observation.Reason, wakeGuidance)
 	}
-	return fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d).%s%s\nFirst inspect current instructions, every wait outcome, and the actual result or review verdict. A met condition or exit 0 does not establish task success or review ACCEPT. Handle failures, cancellations, gave-up outcomes and deadlines by repairing, replanning or reporting as appropriate; an expected deadline is not proof of success. Continue only unfinished work that is still authorized. Cancellation and pause instructions take precedence.",
+	if summary != nil && summary.Unavailable == "" {
+		// The coordinator's review verdict on the observation is evidence the
+		// summary's reading of result files does not carry, so it stays.
+		text := summary.nodeProse(rows)
+		if review := nodeWakeReview(w); review != "" {
+			text += strings.TrimPrefix(review, "\n") + "\n"
+		}
+		return text + wakeGuidance
+	}
+	text := fmt.Sprintf("Wait finished (T3 steward): %q. Node %s: %s (exit %d).%s%s\n",
 		w.Request.Name, w.Request.Target.String(), w.Observation.Reason, w.Observation.ExitCode, nodeWakeObservation(w), nodeWakeReview(w)+nodeWakeResult(w))
+	if summary != nil {
+		text += summary.unavailableLine() + "\n"
+	}
+	return text + wakeGuidance
+}
+
+// nodeWakeMessage is the whole wake of one node or quota wait.
+func nodeWakeMessage(w domain.NodeWait, summary *WakeSummary) string {
+	rows := summaryTableRows
+	return nodeTrailerWith(w, summary) + "\n\n" + nodeWakeProseWith(w, summary, &rows)
 }
 
 // nodeWakeResult renders only a bounded, command-safe terminal run identity.
@@ -94,15 +121,24 @@ func nodeWakeResult(w domain.NodeWait) string {
 		return ""
 	}
 	run := w.Observation.Target.RunID
-	if run == "" || len(run) > 128 || !(run[0] >= 'a' && run[0] <= 'z' || run[0] >= 'A' && run[0] <= 'Z' || run[0] >= '0' && run[0] <= '9') {
+	if !commandSafeRunID(run) {
 		return ""
+	}
+	return "\nCollect and inspect the actual run result with `t3-steward task result " + run + "` before deciding what to do next."
+}
+
+// commandSafeRunID reports whether a run ID can be printed inside a command
+// line: bounded, alphanumeric first, then only - _ and dots.
+func commandSafeRunID(run string) bool {
+	if run == "" || len(run) > 128 || !(run[0] >= 'a' && run[0] <= 'z' || run[0] >= 'A' && run[0] <= 'Z' || run[0] >= '0' && run[0] <= '9') {
+		return false
 	}
 	for _, c := range run {
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
-			return ""
+			return false
 		}
 	}
-	return "\nCollect and inspect the actual run result with `t3-steward task result " + run + "` before deciding what to do next."
+	return true
 }
 
 // nodeWakeObservation is the evidence clause, and is empty when there is no
@@ -229,13 +265,36 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			}
 			continue
 		}
-		text := nodeTrailer(w) + "\n\n" + nodeWakeProse(w)
+		var text string
 		memberIDs := []string{w.Request.ID}
 		if grouped {
-			text = nodeGroupMessage(members)
 			memberIDs = memberIDs[:0]
 			for _, member := range members {
 				memberIDs = append(memberIDs, member.Request.ID)
+			}
+		}
+		if w.DeliveryPayload != "" {
+			// An earlier attempt froze this wake and is known to have had no
+			// effect (offline, busy). The retry sends the same bytes: the
+			// summary reads live coordinator state, so rebuilding it could
+			// differ, and the store refuses a claim that differs from the
+			// frozen payload, which would leave the wake unsendable.
+			text = w.DeliveryPayload
+			if len(w.DeliveryGroupMembers) != 0 {
+				memberIDs = append([]string(nil), w.DeliveryGroupMembers...)
+			}
+		} else {
+			// The summary is built here, once, before the payload is frozen
+			// below: a wake already sending or awaiting recovery was handled
+			// above with its frozen bytes and never reaches this point.
+			wake := []domain.NodeWait{w}
+			if grouped {
+				wake = members
+			}
+			summaries := buildNodeSummaries(ctx, r.NodeSummary, wake)
+			text = nodeWakeMessage(w, summaries[0])
+			if grouped {
+				text = nodeGroupMessageWith(members, summaries)
 			}
 		}
 		var claimed bool
@@ -558,16 +617,23 @@ func nodeGroupSettled(members []domain.NodeWait) bool {
 // nodeGroupMessage is the one wake of a settled group: the earliest member's
 // trailer with the member count, then each member's prose.
 func nodeGroupMessage(members []domain.NodeWait) string {
+	return nodeGroupMessageWith(members, make([]*WakeSummary, len(members)))
+}
+
+// nodeGroupMessageWith is nodeGroupMessage with each member's summary, in
+// member order. The members' tables share one row allowance.
+func nodeGroupMessageWith(members []domain.NodeWait, summaries []*WakeSummary) string {
 	var b strings.Builder
-	b.WriteString(nodeTrailer(members[0]))
+	b.WriteString(nodeTrailerWith(members[0], summaries[0]))
 	fmt.Fprintf(&b, " count=%d\n\nWaits finished (T3 steward): %d conditions of group %q settled.\n", len(members), len(members), members[0].Request.Group)
-	for _, member := range members {
+	rows := summaryGroupRows
+	for i, member := range members {
 		b.WriteString("\n## ")
 		b.WriteString(member.Request.ID)
 		b.WriteString("\n")
-		b.WriteString(nodeTrailer(member))
+		b.WriteString(nodeTrailerWith(member, summaries[i]))
 		b.WriteString("\n")
-		b.WriteString(nodeWakeProse(member))
+		b.WriteString(nodeWakeProseWith(member, summaries[i], &rows))
 		b.WriteString("\n")
 	}
 	return b.String()

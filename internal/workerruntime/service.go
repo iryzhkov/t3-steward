@@ -129,8 +129,14 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	if err != nil {
 		return nil, fmt.Errorf("worker service executable: %w", err)
 	}
+	// The journal root exists by now, so its symlinks are resolved once here and
+	// the contained storage checks can compare canonical paths.
+	supervisorRoot, err := providercontainment.CanonicalRoot(filepath.Join(journalRoot, "contained"))
+	if err != nil {
+		return nil, fmt.Errorf("worker service supervisor storage: %w", err)
+	}
 	scoped := ContainedT3{
-		Supervisor: providercontainment.Supervisor{Root: filepath.Join(journalRoot, "contained"), Executable: executable},
+		Supervisor: providercontainment.Supervisor{Root: supervisorRoot, Executable: executable},
 		Timeout:    options.Settings.Transport.RequestTimeout.D(),
 	}
 	if profile := options.Settings.Workers[options.WorkerID].Containment; profile != nil {

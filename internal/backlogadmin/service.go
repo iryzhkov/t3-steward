@@ -63,6 +63,7 @@ type QuarantineReader interface {
 }
 
 type Service struct {
+	planning         *PlanningSnapshotHolder
 	enrollWorker     WorkerEnrollmentHandler
 	graphInputRoot   string
 	graphValidator   func(domain.Workflow, domain.Task) error
@@ -274,21 +275,29 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	response, err := s.query(ctx, query)
 	// A progress mirror is asked for only by a client of this release, which
 	// reads the whole response.
-	if err != nil || query.Version != Version || query.ProgressMirror != nil {
+	if err != nil || query.ProgressMirror != nil {
 		return response, err
 	}
 	// A strict older client rejects every field its release did not declare,
-	// so a v1 read keeps the shape v1 had; this release's clients ask for
-	// ExtendedReadVersion.
-	if err := projectV1Response(&response); err != nil {
-		return Response{}, fmt.Errorf("project the v1 %s response: %w", query.Kind, err)
+	// so a v1 read keeps the shape v1 had, and an ExtendedReadVersion read the
+	// shape it had in rc.116; this release's clients ask for
+	// CurrentReadVersion.
+	switch query.Version {
+	case Version:
+		if err := projectV1Response(&response); err != nil {
+			return Response{}, fmt.Errorf("project the v1 %s response: %w", query.Kind, err)
+		}
+	case ExtendedReadVersion:
+		if err := projectRC116ExtendedResponse(&response); err != nil {
+			return Response{}, fmt.Errorf("project the rc.116 extended %s response: %w", query.Kind, err)
+		}
 	}
 	return response, nil
 }
 
 func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	extendedRead := query.Version == ExtendedReadVersion && query.Kind != QueryStatus
+	extendedRead := (query.Version == ExtendedReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
 	if query.Version != Version && !intakeStatus && !extendedRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}
@@ -366,6 +375,7 @@ func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 		if !ok {
 			return Response{}, notFound("task", query.WorkflowRunID+"/"+query.TaskID)
 		}
+		s.addGateExplanation(ctx, query.Principal, &explanation)
 		response.Explanation = &explanation
 	case QueryEvents:
 		if _, ok := view.runs[query.WorkflowRunID]; !ok {
@@ -525,6 +535,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 	loaded.supervisorClientConfigured = s.supervisorClientConfigured
 	loaded.workerProviders = s.workerProviders
 	loaded.resourcePolicy = s.viabilitySettings.ResourcePolicy
+	loaded.planning = s.planning.load()
 	if loaded.supervision, err = s.supervisionSnapshots(ctx, records, workers); err != nil {
 		return view{}, err
 	}
@@ -598,6 +609,7 @@ func notFound(kind, id string) error {
 }
 
 type view struct {
+	planning        planningSnapshot
 	resourcePolicy  domain.ResourcePlacementPolicy
 	requirements    []domain.WorkerRequirement
 	enrollments     []domain.WorkerEnrollment
@@ -1015,6 +1027,7 @@ func (v view) taskDetail(runID, taskID string) (TaskDetail, bool) {
 		detail.Sink = domain.CloneSink(sink)
 		return detail, true
 	}
+	detail.Checkpoint = v.continuationCheckpoint(runID, task.ID)
 	if attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID]); attempt != nil {
 		detail.Attempt = attempt
 		if assignment, ok := v.assignments[attempt.AssignmentID]; ok {
@@ -1079,7 +1092,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	if !ok {
 		return Explanation{}, false
 	}
-	explanation := Explanation{WorkflowRunID: runID, TaskID: task.ID, Blockers: make([]Blocker, 0)}
+	explanation := Explanation{WorkflowRunID: runID, TaskID: task.ID, Blockers: make([]Blocker, 0), Checkpoint: v.continuationCheckpoint(runID, task.ID)}
 	if project := v.workflows[v.runs[runID].WorkflowID].Project; slices.Contains(v.defaultedProjects, project) {
 		explanation.Details = append(explanation.Details, projectBindingDefaultedDetail(project))
 	}
@@ -1110,6 +1123,18 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		for _, assignment := range v.records.Assignments {
 			if assignment.AttemptID == attempt.ID && assignment.Placement != nil {
 				explanation.Placement = assignment.Placement
+				break
+			}
+		}
+		if gate := attempt.ReviewGate; gate != nil {
+			decided := *gate
+			explanation.ReviewGate = &decided
+			explanation.Details = append(explanation.Details, gate.Summary())
+		}
+		for _, artifact := range v.records.Artifacts {
+			if artifact.WorkflowRunID == runID && artifact.TaskID == task.ID && artifact.AttemptID == attempt.ID && artifact.Kind == domain.ArtifactGate && artifact.Name == "gate" {
+				explanation.GateArtifactID = artifact.ID
+				explanation.Details = append(explanation.Details, "worker gate evidence: "+artifact.ID)
 				break
 			}
 		}
@@ -1200,6 +1225,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	default:
 		explanation.Summary = fmt.Sprintf("task has %d blocker(s)", len(explanation.Blockers))
 	}
+	v.addPlanningExplanation(&explanation, attempt)
 	return explanation, true
 }
 
@@ -1407,6 +1433,16 @@ func (v view) artifacts(query Query) []Artifact {
 		return result[i].Metadata.CreatedAt.Before(result[j].Metadata.CreatedAt)
 	})
 	return result
+}
+
+// continuationCheckpoint is the task's latest continuation.md checkpoint, or
+// nil when the coordinator holds none.
+func (v view) continuationCheckpoint(runID, taskID string) *ContinuationCheckpoint {
+	latest := backlog.LatestContinuationArtifact(v.records.Artifacts, v.records.Attempts, runID, taskID)
+	if latest == nil {
+		return nil
+	}
+	return &ContinuationCheckpoint{AttemptID: latest.AttemptID, ArtifactID: latest.ID, Size: latest.Size, CapturedAt: latest.CreatedAt.UTC()}
 }
 
 func (v view) artifact(id string) (Artifact, bool) {

@@ -57,22 +57,75 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 	if err != nil {
 		return domain.Artifact{}, fmt.Errorf("%w: load assignment: %v", ErrStaleArtifactPublication, err)
 	}
-	if assignment.AttemptID != artifact.AttemptID ||
-		assignment.WorkerID != publication.WorkerID ||
-		assignment.WorkerEpoch != publication.WorkerEpoch ||
-		assignment.Epoch != publication.AssignmentEpoch ||
-		(assignment.State != domain.AssignmentClaimed && assignment.State != domain.AssignmentCompleted) {
-		return domain.Artifact{}, fmt.Errorf("%w: assignment identity or state changed", ErrStaleArtifactPublication)
+	// A continuation snapshot a running attempt handed on is evidence of what
+	// that execution already did, not an effect it may still have, so it is
+	// fenced to the execution that took it rather than to the assignment's
+	// current state: the exact dispatch (assignment, epoch, worker, worker
+	// epoch) of the attempt, whether that dispatch still runs, lost its lease,
+	// was released or completed. That lets a superseded attempt hand on the
+	// snapshot it queued before its lease ended. A dispatch that was never
+	// claimed still refuses it.
+	//
+	// When the assignment has since been offered again at a later epoch, the
+	// current row no longer names the dispatch, so the snapshot is
+	// authenticated against that epoch's frozen V39 row instead: the worker
+	// process it was offered to, with the continuation capability, for the
+	// attempt the assignment still runs. That row proves the offer, not the
+	// claim; the worker can upload only through its own authenticated session,
+	// and the snapshot grants nothing but evidence.
+	historical := publication.LiveContinuation
+	if historical && !isLiveContinuationSnapshot(artifact) {
+		return domain.Artifact{}, errors.New("live continuation publication is not a continuation snapshot")
+	}
+	// A live snapshot names the epoch of the dispatch that took it, and the
+	// latest is ordered by that epoch, so it must be this publication's.
+	if labelled, _, _ := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID); historical && labelled != publication.AssignmentEpoch {
+		return domain.Artifact{}, fmt.Errorf("%w: snapshot labelled with assignment epoch %d, published under %d", ErrStaleArtifactPublication, labelled, publication.AssignmentEpoch)
+	}
+	if historical && publication.AssignmentEpoch < assignment.Epoch {
+		dispatch, found, err := loadContinuationDispatch(ctx, tx, publication.AssignmentID, publication.AssignmentEpoch)
+		if err != nil {
+			return domain.Artifact{}, err
+		}
+		if !found || !dispatch.Offered ||
+			dispatch.Assignment.WorkerID != publication.WorkerID ||
+			dispatch.Assignment.WorkerEpoch != publication.WorkerEpoch ||
+			dispatch.Assignment.AttemptID != artifact.AttemptID ||
+			assignment.AttemptID != artifact.AttemptID {
+			return domain.Artifact{}, fmt.Errorf("%w: no dispatch of this worker process at assignment epoch %d", ErrStaleArtifactPublication, publication.AssignmentEpoch)
+		}
+	} else {
+		stateAdmits := assignment.State == domain.AssignmentClaimed || assignment.State == domain.AssignmentCompleted
+		if historical {
+			stateAdmits = assignment.State != domain.AssignmentOffered
+		}
+		if assignment.AttemptID != artifact.AttemptID ||
+			assignment.WorkerID != publication.WorkerID ||
+			assignment.WorkerEpoch != publication.WorkerEpoch ||
+			assignment.Epoch != publication.AssignmentEpoch || !stateAdmits {
+			return domain.Artifact{}, fmt.Errorf("%w: assignment identity or state changed", ErrStaleArtifactPublication)
+		}
 	}
 	attempt, err := loadAttemptTx(ctx, tx, artifact.AttemptID)
 	if err != nil {
 		return domain.Artifact{}, fmt.Errorf("%w: load attempt: %v", ErrStaleArtifactPublication, err)
 	}
-	if attempt.WorkflowRunID != artifact.WorkflowRunID || attempt.TaskID != artifact.TaskID ||
-		attempt.AssignmentID != assignment.ID || attempt.Revision != publication.AttemptRevision {
+	if attempt.WorkflowRunID != artifact.WorkflowRunID || attempt.TaskID != artifact.TaskID {
 		return domain.Artifact{}, fmt.Errorf("%w: attempt identity or revision changed", ErrStaleArtifactPublication)
 	}
-	if assignment.State == domain.AssignmentCompleted &&
+	if historical {
+		if attempt.AssignmentID != assignment.ID && attempt.AssignmentID != "" {
+			return domain.Artifact{}, fmt.Errorf("%w: attempt moved to another assignment", ErrStaleArtifactPublication)
+		}
+		// A supervision activation hands no checkpoint on; the importer
+		// refuses it too.
+		if attempt.IsSupervisionActivation() {
+			return domain.Artifact{}, fmt.Errorf("%w: supervision activation", ErrStaleArtifactPublication)
+		}
+	} else if attempt.AssignmentID != assignment.ID || attempt.Revision != publication.AttemptRevision {
+		return domain.Artifact{}, fmt.Errorf("%w: attempt identity or revision changed", ErrStaleArtifactPublication)
+	}
+	if !historical && assignment.State == domain.AssignmentCompleted &&
 		attempt.Progress != domain.ProgressVerifying && !attempt.Progress.Terminal() {
 		return domain.Artifact{}, fmt.Errorf("%w: completed assignment is not ready for result publication", ErrStaleArtifactPublication)
 	}
@@ -93,6 +146,13 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 		return domain.Artifact{}, fmt.Errorf("commit artifact %q: %w", artifact.ID, err)
 	}
 	return artifact, nil
+}
+
+// isLiveContinuationSnapshot reports whether an artifact is a continuation.md
+// snapshot its attempt handed on while it ran, under its own live identity.
+func isLiveContinuationSnapshot(artifact domain.Artifact) bool {
+	_, _, live := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID)
+	return live && artifact.Kind == domain.ArtifactCheckpoint && artifact.Name == domain.ContinuationArtifactName
 }
 
 func insertArtifactPublicationAuditEvent(ctx context.Context, tx *sql.Tx, publication domain.ArtifactPublication) (domain.AuditEvent, error) {
@@ -299,7 +359,7 @@ func validateArtifactPublication(publication domain.ArtifactPublication) error {
 	switch artifact.Kind {
 	case domain.ArtifactInput, domain.ArtifactOutput, domain.ArtifactCheckpoint,
 		domain.ArtifactLog, domain.ArtifactSummary, domain.ArtifactGitState,
-		domain.ArtifactVerification:
+		domain.ArtifactVerification, domain.ArtifactGate:
 	default:
 		return fmt.Errorf("artifact kind %q is invalid", artifact.Kind)
 	}

@@ -81,7 +81,7 @@ func (v coordinatorPermanentValidator) ValidatePermanent(ctx context.Context, ma
 	response, err := v.admin.Query(ctx, backlogadmin.Query{
 		// The coordinator reads its own whole matrix, not the v1 shape kept
 		// for older clients.
-		Version: backlogadmin.ExtendedReadVersion,
+		Version: backlogadmin.CurrentReadVersion,
 		Kind:    backlogadmin.QueryViability,
 		// Acceptance is the coordinator checking its own decision, so the
 		// principal is the coordinator itself rather than the submitter.

@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,58 +34,7 @@ func (s *Store) FreezeAssignmentDisplay(ctx context.Context, epoch int64, coordi
 		return nil, err
 	}
 	defer tx.Rollback()
-	// Acquire the SQLite writer lock before reading. Concurrent connections must
-	// see the winner rather than upgrading stale read snapshots into writers.
-	result, err := tx.ExecContext(ctx, "UPDATE coordinator_assignments SET record = record WHERE id = ?", assignment.ID)
-	if err != nil {
-		return nil, fmt.Errorf("lock assignment display: %w", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil || count != 1 {
-		return nil, errors.New("assignment display: durable assignment missing")
-	}
-	if err := requireCoordinatorEpoch(ctx, tx, epoch); err != nil {
-		return nil, err
-	}
-	current, err := loadAssignmentTx(ctx, tx, assignment.ID)
-	if err != nil {
-		return nil, err
-	}
-	normalize := func(a domain.Assignment) domain.Assignment {
-		a.LeaseExpiresAt = time.Time{}
-		a.UpdatedAt = time.Time{}
-		return a
-	}
-	if current.State != domain.AssignmentOffered || !reflect.DeepEqual(normalize(current), normalize(assignment)) {
-		return nil, errors.New("assignment display: durable assignment binding mismatch")
-	}
-	attempt, err := loadAttemptTx(ctx, tx, assignment.AttemptID)
-	if err != nil {
-		return nil, err
-	}
-	if identity.AssignmentID != current.ID || identity.AssignmentEpoch != current.Epoch ||
-		identity.AttemptID != current.AttemptID || identity.DispatchToken != current.DispatchToken ||
-		identity.ThreadID != current.ThreadID || identity.AttemptRevision != attempt.Revision ||
-		identity.WorkflowRunID != attempt.WorkflowRunID || identity.TaskID != attempt.TaskID ||
-		attempt.AssignmentID != current.ID {
-		return nil, errors.New("assignment display: execution identity mismatch")
-	}
-	var runRaw string
-	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id = ?", identity.WorkflowRunID).Scan(&runRaw); err != nil {
-		return nil, err
-	}
-	var run domain.WorkflowRun
-	if err := json.Unmarshal([]byte(runRaw), &run); err != nil {
-		return nil, err
-	}
-	if identity.WorkflowID != run.WorkflowID || coordinatorID == "" {
-		return nil, errors.New("assignment display: workflow/coordinator binding mismatch")
-	}
-	binding, err := json.Marshal(struct {
-		CoordinatorID string
-		Assignment    domain.Assignment
-		Identity      workerproto.ExecutionIdentity
-	}{coordinatorID, normalize(current), identity})
+	current, binding, err := bindAssignmentDecision(ctx, tx, epoch, coordinatorID, assignment, identity, "assignment display")
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +50,7 @@ func (s *Store) FreezeAssignmentDisplay(ctx context.Context, epoch int64, coordi
 	if err := tx.QueryRowContext(ctx, "SELECT binding, display FROM coordinator_assignment_displays WHERE assignment_id = ? AND assignment_epoch = ?", current.ID, current.Epoch).Scan(&retainedBinding, &retained); err != nil {
 		return nil, err
 	}
-	if retainedBinding != string(binding) {
+	if retainedBinding != binding {
 		return nil, errors.New("assignment display: frozen binding mismatch")
 	}
 	var display *workerproto.SessionDisplay
@@ -111,4 +61,68 @@ func (s *Store) FreezeAssignmentDisplay(ctx context.Context, epoch int64, coordi
 		return nil, err
 	}
 	return display, nil
+}
+
+// bindAssignmentDecision is the shared opening of a frozen per-assignment
+// decision: it takes the writer lock, fences coordinator authority, checks
+// that the offered assignment and execution identity are the durable ones,
+// and returns the binding the decision is stored under. subject prefixes
+// every refusal.
+func bindAssignmentDecision(ctx context.Context, tx *sql.Tx, epoch int64, coordinatorID string, assignment domain.Assignment, identity workerproto.ExecutionIdentity, subject string) (domain.Assignment, string, error) {
+	// Acquire the SQLite writer lock before reading. Concurrent connections must
+	// see the winner rather than upgrading stale read snapshots into writers.
+	result, err := tx.ExecContext(ctx, "UPDATE coordinator_assignments SET record = record WHERE id = ?", assignment.ID)
+	if err != nil {
+		return domain.Assignment{}, "", fmt.Errorf("lock %s: %w", subject, err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count != 1 {
+		return domain.Assignment{}, "", fmt.Errorf("%s: durable assignment missing", subject)
+	}
+	if err := requireCoordinatorEpoch(ctx, tx, epoch); err != nil {
+		return domain.Assignment{}, "", err
+	}
+	current, err := loadAssignmentTx(ctx, tx, assignment.ID)
+	if err != nil {
+		return domain.Assignment{}, "", err
+	}
+	normalize := func(a domain.Assignment) domain.Assignment {
+		a.LeaseExpiresAt = time.Time{}
+		a.UpdatedAt = time.Time{}
+		return a
+	}
+	if current.State != domain.AssignmentOffered || !reflect.DeepEqual(normalize(current), normalize(assignment)) {
+		return domain.Assignment{}, "", fmt.Errorf("%s: durable assignment binding mismatch", subject)
+	}
+	attempt, err := loadAttemptTx(ctx, tx, assignment.AttemptID)
+	if err != nil {
+		return domain.Assignment{}, "", err
+	}
+	if identity.AssignmentID != current.ID || identity.AssignmentEpoch != current.Epoch ||
+		identity.AttemptID != current.AttemptID || identity.DispatchToken != current.DispatchToken ||
+		identity.ThreadID != current.ThreadID || identity.AttemptRevision != attempt.Revision ||
+		identity.WorkflowRunID != attempt.WorkflowRunID || identity.TaskID != attempt.TaskID ||
+		attempt.AssignmentID != current.ID {
+		return domain.Assignment{}, "", fmt.Errorf("%s: execution identity mismatch", subject)
+	}
+	var runRaw string
+	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id = ?", identity.WorkflowRunID).Scan(&runRaw); err != nil {
+		return domain.Assignment{}, "", err
+	}
+	var run domain.WorkflowRun
+	if err := json.Unmarshal([]byte(runRaw), &run); err != nil {
+		return domain.Assignment{}, "", err
+	}
+	if identity.WorkflowID != run.WorkflowID || coordinatorID == "" {
+		return domain.Assignment{}, "", fmt.Errorf("%s: workflow/coordinator binding mismatch", subject)
+	}
+	binding, err := json.Marshal(struct {
+		CoordinatorID string
+		Assignment    domain.Assignment
+		Identity      workerproto.ExecutionIdentity
+	}{coordinatorID, normalize(current), identity})
+	if err != nil {
+		return domain.Assignment{}, "", err
+	}
+	return current, string(binding), nil
 }

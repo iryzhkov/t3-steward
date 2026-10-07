@@ -70,6 +70,12 @@ func (s *Store) ReserveSubmission(ctx context.Context, proposed domain.Submissio
 	if !sameSubmissionRequest(record, proposed) {
 		return domain.SubmissionRecord{}, false, fmt.Errorf("%w: %q", ErrSubmissionConflict, proposed.Key)
 	}
+	if inserted == 0 && record.State == domain.SubmissionPending {
+		record, err = recoverQuotaAdmissionSubmissionTx(ctx, tx, record)
+		if err != nil {
+			return domain.SubmissionRecord{}, false, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return domain.SubmissionRecord{}, false, fmt.Errorf("commit submission %q reservation: %w", proposed.Key, err)
 	}
@@ -106,12 +112,24 @@ func (s *Store) CompleteSubmission(ctx context.Context, key, digest string, acce
 	if record.State != domain.SubmissionPending {
 		return domain.SubmissionRecord{}, false, fmt.Errorf("submission %q has invalid state %q", key, record.State)
 	}
+	record, err = completePendingSubmissionTx(ctx, tx, record, acceptedAt)
+	if err != nil {
+		return domain.SubmissionRecord{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.SubmissionRecord{}, false, fmt.Errorf("commit submission %q completion: %w", key, err)
+	}
+	return record, false, nil
+}
+
+func completePendingSubmissionTx(ctx context.Context, tx *sql.Tx, record domain.SubmissionRecord, acceptedAt time.Time) (domain.SubmissionRecord, error) {
+	key, digest := record.Key, record.Digest
 	at := acceptedAt.UTC()
 	record.State = domain.SubmissionAccepted
 	record.AcceptedAt = &at
 	raw, err := json.Marshal(record)
 	if err != nil {
-		return domain.SubmissionRecord{}, false, fmt.Errorf("encode completed submission %q: %w", key, err)
+		return domain.SubmissionRecord{}, fmt.Errorf("encode completed submission %q: %w", key, err)
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE coordinator_submissions
@@ -119,22 +137,20 @@ func (s *Store) CompleteSubmission(ctx context.Context, key, digest string, acce
 		WHERE key = ? AND digest = ? AND state = ?
 	`, record.State, at.Format(time.RFC3339Nano), raw, key, digest, domain.SubmissionPending)
 	if err != nil {
-		return domain.SubmissionRecord{}, false, fmt.Errorf("complete submission %q: %w", key, err)
+		return domain.SubmissionRecord{}, fmt.Errorf("complete submission %q: %w", key, err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil || affected != 1 {
 		if err == nil {
 			err = fmt.Errorf("updated %d rows", affected)
 		}
-		return domain.SubmissionRecord{}, false, fmt.Errorf("complete submission %q: %w", key, err)
+		return domain.SubmissionRecord{}, fmt.Errorf("complete submission %q: %w", key, err)
 	}
 	if _, err := insertSubmissionAcceptedAuditEvent(ctx, tx, record); err != nil {
-		return domain.SubmissionRecord{}, false, err
+		return domain.SubmissionRecord{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return domain.SubmissionRecord{}, false, fmt.Errorf("commit submission %q completion: %w", key, err)
-	}
-	return record, false, nil
+
+	return record, nil
 }
 
 func insertSubmissionAcceptedAuditEvent(

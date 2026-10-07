@@ -28,6 +28,7 @@ type RerunProvenance struct {
 // written to expect it. ArtifactID names a reference artifact in the new run
 // whose content address is the source artifact's, so no content is copied.
 type CarriedInput struct {
+	SourceKind ArtifactKind `json:"sourceKind,omitempty"`
 	// Producer is the source producer's manifest task name.
 	Producer string `json:"producer"`
 	// ProducerNamespace is the collision-free dependency directory. It is empty

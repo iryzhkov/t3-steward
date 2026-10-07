@@ -11,7 +11,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/review"
 )
 
-const currentSchemaVersion = 37
+const currentSchemaVersion = 42
 
 // CurrentSchemaVersion is the newest coordinator schema this binary can open.
 // Snapshot verification uses it without migrating the inspected database.
@@ -173,7 +173,18 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 		return fmt.Errorf("begin coordinator save: %w", err)
 	}
 	defer tx.Rollback()
+	if err := s.saveCoordinatorRecordsTx(ctx, tx, records); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit coordinator records: %w", err)
+	}
+	return nil
+}
 
+// saveCoordinatorRecordsTx shares insertion with admission so the gate and all
+// records belong to the same transaction.
+func (s *Store) saveCoordinatorRecordsTx(ctx context.Context, tx *sql.Tx, records CoordinatorRecords) error {
 	for _, round := range records.ReviewRounds {
 		at := round.CreatedAt
 		if at.IsZero() {
@@ -338,9 +349,6 @@ func (s *Store) SaveCoordinatorRecords(ctx context.Context, records CoordinatorR
 		if err := ensureInitialGraphsTx(ctx, tx); err != nil {
 			return err
 		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit coordinator records: %w", err)
 	}
 	return nil
 }

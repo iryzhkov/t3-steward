@@ -3,6 +3,7 @@ package workerruntime
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -242,8 +243,39 @@ func (g HostQuotaGuard) probe(ctx context.Context, st domain.BucketState, now ti
 	return true, why, nil
 }
 
-// Observations implements QuotaGuard.
+// quotaRunwayObserver is a QuotaGuard that can also report the dispatch
+// runway of each bucket.
+type quotaRunwayObserver interface {
+	RunwayObservations(ctx context.Context) ([]domain.WorkerQuotaObservation, error)
+}
+
+// quotaObservations answers the coordinator's request for bucket
+// observations, with the runway fields only when it asked for them (see
+// workerproto.CapabilityQuotaRunway).
+func quotaObservations(ctx context.Context, guard QuotaGuard, runway bool) ([]domain.WorkerQuotaObservation, error) {
+	if observer, ok := guard.(quotaRunwayObserver); ok && runway {
+		return observer.RunwayObservations(ctx)
+	}
+	return guard.Observations(ctx)
+}
+
+// Observations implements QuotaGuard. The runway fields of
+// WorkerQuotaObservation stay unset: a coordinator that asks for observations
+// through quota-observations-v1 alone decodes them strictly and would reject
+// the whole snapshot.
 func (g HostQuotaGuard) Observations(ctx context.Context) ([]domain.WorkerQuotaObservation, error) {
+	return g.observations(ctx, false)
+}
+
+// RunwayObservations is Observations with the runway the coordinator's
+// dispatch admission uses: the burn rate, the host's drain threshold, the
+// projected crossing of that threshold and the drain deadline. It answers a
+// coordinator that asked through quota-runway-v1.
+func (g HostQuotaGuard) RunwayObservations(ctx context.Context) ([]domain.WorkerQuotaObservation, error) {
+	return g.observations(ctx, true)
+}
+
+func (g HostQuotaGuard) observations(ctx context.Context, runway bool) ([]domain.WorkerQuotaObservation, error) {
 	if g.Buckets == nil {
 		return nil, nil
 	}
@@ -256,11 +288,37 @@ func (g HostQuotaGuard) Observations(ctx context.Context) ([]domain.WorkerQuotaO
 		if st.ObservedAt.IsZero() {
 			continue
 		}
-		out = append(out, domain.WorkerQuotaObservation{
+		observation := domain.WorkerQuotaObservation{
 			Key: st.Key, Phase: st.Phase, UsedPercent: st.UsedPercent, Healthy: st.Healthy,
 			ObservedAt: st.ObservedAt, ResetsAt: st.ResetsAt, Epoch: st.Epoch,
 			LimitName: st.LimitName, ModelSelector: st.ModelSelector,
-		})
+		}
+		if runway {
+			thresholds := daemon.ThresholdsFor(g.Config, st.Key, st.LimitName, st.WindowDuration)
+			drainPercent := thresholds.DrainPercent
+			if st.AppliedThresholds != nil {
+				drainPercent = st.AppliedThresholds.DrainPercent
+			}
+			observation.RatePerMinute = st.RatePerMinute
+			observation.DrainPercent = drainPercent
+			observation.DrainsAt = projectedDrain(st, drainPercent)
+			observation.DrainDeadline = st.DrainDeadline
+		}
+		out = append(out, observation)
 	}
 	return out, nil
+}
+
+// projectedDrain is when the bucket reaches drainPercent at its current burn
+// rate, set only for a positive rate below the threshold.
+func projectedDrain(st domain.BucketState, drainPercent float64) *time.Time {
+	if st.RatePerMinute <= 0 || st.UsedPercent >= drainPercent {
+		return nil
+	}
+	nanos := (drainPercent - st.UsedPercent) / st.RatePerMinute * float64(time.Minute)
+	if math.IsNaN(nanos) || math.IsInf(nanos, 0) || nanos <= 0 || nanos >= float64(math.MaxInt64) {
+		return nil
+	}
+	at := st.ObservedAt.Add(time.Duration(nanos)).UTC()
+	return &at
 }

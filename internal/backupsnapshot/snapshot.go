@@ -578,6 +578,13 @@ func inspectDatabase(ctx context.Context, path string) (int, error) {
 	if version > storesqlite.CurrentSchemaVersion() {
 		return 0, fmt.Errorf("%w: database schema version %d is newer than supported version %d", ErrInvalidSnapshot, version, storesqlite.CurrentSchemaVersion())
 	}
+	pending, err := store.PendingSchemaVersions(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %v", ErrInvalidSnapshot, err)
+	}
+	if len(pending) > 0 {
+		return 0, fmt.Errorf("%w: database has pending schema migrations %v", ErrInvalidSnapshot, pending)
+	}
 	return version, nil
 }
 

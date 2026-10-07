@@ -224,10 +224,14 @@ func resultObjects(pkg workerproto.ExecutionPackage, result PublishedResult) ([]
 	objects := make([]resultObject, 0, len(result.Finalized.Artifacts)+5)
 	for index := range result.Finalized.Artifacts {
 		artifact := &result.Finalized.Artifacts[index]
+		transferName := artifact.Name
+		if artifact.Kind == domain.ArtifactGate && artifact.Name == "gate" {
+			transferName = "gate/report.json"
+		}
 		objects = append(objects, resultObject{
 			object: workerproto.ArtifactObject{
 				ID:        artifact.ID,
-				Path:      "results/" + filepath.ToSlash(artifact.Name),
+				Path:      "results/" + filepath.ToSlash(transferName),
 				Kind:      string(artifact.Kind),
 				MediaType: artifact.MediaType,
 				Size:      artifact.Size,
@@ -275,6 +279,25 @@ func resultObjects(pkg workerproto.ExecutionPackage, result PublishedResult) ([]
 		bundle := objectForBytes(backlog.WorkInProgressBundleID(pkg.Identity.AttemptID), "results/"+backlog.WorkInProgressBundleName,
 			string(domain.ArtifactGitState), backlog.CommitBundleMediaType, result.WorkInProgressBundle)
 		objects = append(objects, resultObject{object: bundle, data: result.WorkInProgressBundle, failure: "publish work-in-progress bundle"})
+	}
+	if continuation := result.Continuation; continuation != nil {
+		if continuation.Checkpoint.AttemptID != pkg.Identity.AttemptID {
+			return nil, errors.New("publish result: continuation checkpoint belongs to another attempt")
+		}
+		snapshot := objectForBytes(domain.ContinuationArtifactID(pkg.Identity.AttemptID),
+			"results/"+domain.ContinuationArtifactName, string(domain.ArtifactCheckpoint), "text/markdown", continuation.Data)
+		if snapshot.SHA256 != continuation.Checkpoint.SHA256 || snapshot.Size != continuation.Checkpoint.Size {
+			return nil, errors.New("publish result: continuation snapshot does not match its checkpoint")
+		}
+		raw, err := json.Marshal(continuation.Checkpoint)
+		if err != nil {
+			return nil, err
+		}
+		metadata := objectForBytes(domain.ContinuationMetadataArtifactID(pkg.Identity.AttemptID),
+			"results/"+domain.ContinuationMetadataArtifactName, string(domain.ArtifactCheckpoint), "application/json", raw)
+		objects = append(objects,
+			resultObject{object: snapshot, data: continuation.Data, failure: "publish continuation checkpoint"},
+			resultObject{object: metadata, data: raw, failure: "publish continuation checkpoint metadata"})
 	}
 	for _, extra := range []struct {
 		id, path, kind, media string
@@ -519,6 +542,51 @@ func (s *CustodyStore) PublishCheckpoint(ctx context.Context, pkg workerproto.Ex
 		Size:       object.Size,
 		CapturedAt: s.now(),
 	}, nil
+}
+
+// PublishContinuation retains a continuation.md snapshot a running attempt
+// took and advertises it, with its metadata, as an immutable upload on the
+// checkpoint channel. The manifest and both objects are named by the
+// attempt and the snapshot's sequence, so a replay is the same upload and a
+// newer snapshot is a new one.
+func (s *CustodyStore) PublishContinuation(ctx context.Context, pkg workerproto.ExecutionPackage, snapshot ContinuationSnapshot) error {
+	checkpoint := snapshot.Checkpoint
+	epoch := pkg.Identity.AssignmentEpoch
+	if checkpoint.AttemptID != pkg.Identity.AttemptID || checkpoint.Sequence < 1 || epoch < 1 {
+		return errors.New("publish continuation checkpoint: the snapshot belongs to another attempt")
+	}
+	raw, err := json.Marshal(checkpoint)
+	if err != nil {
+		return err
+	}
+	snapshotID := domain.ContinuationLiveArtifactID(checkpoint.AttemptID, epoch, checkpoint.Sequence)
+	metadataID := domain.ContinuationLiveMetadataArtifactID(checkpoint.AttemptID, epoch, checkpoint.Sequence)
+	objects := []workerproto.ArtifactObject{
+		objectForBytes(snapshotID, "checkpoints/"+snapshotID+".md", string(domain.ArtifactCheckpoint), "text/markdown", snapshot.Data),
+		objectForBytes(metadataID, "checkpoints/"+metadataID+".json", string(domain.ArtifactCheckpoint), "application/json", raw),
+	}
+	if objects[0].SHA256 != checkpoint.SHA256 || objects[0].Size != checkpoint.Size {
+		return errors.New("publish continuation checkpoint: the snapshot does not match its checkpoint")
+	}
+	// The task wrote continuation.md, and the snapshot reaches the
+	// coordinator while the attempt runs, so it passes the same scan as every
+	// other checkpoint; a refused snapshot stays on the worker.
+	scanner, _, err := s.executionScanner(ctx, pkg)
+	if err != nil {
+		return err
+	}
+	if err := scanner.scan(objects[0].Path, "checkpoint", bytes.NewReader(snapshot.Data)); err != nil {
+		return err
+	}
+	for index, data := range [][]byte{snapshot.Data, raw} {
+		if err := s.storeObject(bytes.NewReader(data), objects[index]); err != nil {
+			return fmt.Errorf("publish continuation checkpoint: %w", err)
+		}
+	}
+	// The purpose contains "checkpoint-", so the coordinator polls it with the
+	// other checkpoints; the zero-padded epoch and sequence keep snapshots in
+	// order and apart from another dispatch's.
+	return s.publishManifest(ctx, pkg, fmt.Sprintf("checkpoint-continuation-%020d-%020d", epoch, checkpoint.Sequence), objects)
 }
 
 // BuildUpload opens one complete immutable outbox manifest for authenticated transfer.

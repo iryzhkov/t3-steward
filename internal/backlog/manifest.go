@@ -98,6 +98,7 @@ type ManifestTask struct {
 	Outputs            []string                    `yaml:"outputs"`
 	Commits            []ManifestCommit            `yaml:"commits"`
 	Verify             []string                    `yaml:"verify"`
+	Gate               *domain.TaskGate            `yaml:"gate"`
 	Placement          ManifestPlacement           `yaml:"placement"`
 	Resources          ManifestResources           `yaml:"resources"`
 	Preflight          ManifestPreflight           `yaml:"preflight"`
@@ -365,8 +366,36 @@ func applyManifestDefaults(manifest *Manifest) {
 		expandResourcePreset(&task.Resources)
 		task.Preflight = effectivePreflight(manifest.Preflight, task.Preflight)
 		applyPreflightDefaults(&task.Preflight)
+		if task.Gate != nil && task.Gate.Timeout == 0 {
+			task.Gate.Timeout = DefaultGateTimeout
+		}
 		manifest.Tasks[name] = task
 	}
+}
+
+// DefaultGateTimeout is the per-command gate timeout when a task names none.
+// It equals the default backlog_v2.verification.command_timeout, which bounds
+// every gate command at dispatch, so a gate declared with no timeout dispatches
+// on a coordinator running its default configuration.
+const DefaultGateTimeout = 30 * time.Minute
+
+// ValidateGateTimeouts refuses a manifest whose gate timeout exceeds the
+// coordinator's verification.command_timeout. Such a task could never be
+// packaged: accepting it left the assignment withheld on every dispatch cycle
+// with the reason visible only in a coordinator log.
+func ValidateGateTimeouts(manifest Manifest, maximum time.Duration) error {
+	names := make([]string, 0, len(manifest.Tasks))
+	for name := range manifest.Tasks {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		gate := manifest.Tasks[name].Gate
+		if gate != nil && gate.Timeout > maximum {
+			return fmt.Errorf("task %q gate timeout %s exceeds this coordinator's backlog_v2.verification.command_timeout %s; lower the gate timeout or raise command_timeout; a changed campaign needs a new idempotency key", name, gate.Timeout, maximum)
+		}
+	}
+	return nil
 }
 
 func cloneRoutes(routes []ManifestRoute) []ManifestRoute {
@@ -605,6 +634,32 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 	if err := validateManifestCommits(prefix, task); err != nil {
 		return err
 	}
+	if task.Gate != nil {
+		if err := (domain.TaskGate{Commands: task.Gate.Commands, Timeout: task.Gate.Timeout}).Validate(); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+		if len(task.Gate.Commands) == 0 || task.Gate.Timeout <= 0 || task.Gate.Timeout > 6*time.Hour {
+			return fmt.Errorf("%s gate requires commands and timeout in (0, 6h]", prefix)
+		}
+		if err := validateNonEmptyUnique(prefix+" gate command", task.Gate.Commands); err != nil {
+			return err
+		}
+		for _, command := range task.Gate.Commands {
+			if strings.ContainsRune(command, 0) {
+				return fmt.Errorf("%s gate command contains NUL", prefix)
+			}
+		}
+		for _, output := range task.Outputs {
+			if output == "gate" || strings.HasPrefix(output, "gate/") {
+				return fmt.Errorf("%s gate artifact name is reserved", prefix)
+			}
+		}
+		for _, commit := range task.Commits {
+			if commit.Name == "gate" {
+				return fmt.Errorf("%s gate artifact name is reserved", prefix)
+			}
+		}
+	}
 	if err := validateNonEmptyUnique(prefix+" verification command", task.Verify); err != nil {
 		return err
 	}
@@ -652,6 +707,10 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		outputs := make(map[string]struct{})
 		if !external {
 			outputs = make(map[string]struct{}, len(tasks[producer].Outputs)+len(tasks[producer].Commits))
+			if tasks[producer].Gate != nil {
+				outputs["gate"] = struct{}{}
+				outputs["gate/log.txt"] = struct{}{}
+			}
 			for _, output := range tasks[producer].Outputs {
 				outputs[output] = struct{}{}
 			}

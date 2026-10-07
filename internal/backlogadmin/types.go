@@ -16,10 +16,17 @@ const Version = "backlog.admin/v1"
 const StatusIntakeVersion = "backlog.admin/v1-status-intake"
 
 // ExtendedReadVersion opts any read but status, which has
-// StatusIntakeVersion, into the fields added to v1 responses since
-// v0.11.0-rc.115. A v1 response keeps the shape recorded in
-// v1_response_schema.txt for strict older clients.
+// StatusIntakeVersion, into the fields added to v1 responses between
+// v0.11.0-rc.115 and v0.11.0-rc.116. A v1 response keeps the shape recorded
+// in v1_response_schema.txt, and an ExtendedReadVersion response the shape
+// recorded in rc116_extended_response_schema.txt, for the strict clients of
+// those releases.
 const ExtendedReadVersion = "backlog.admin/v1-extended-read"
+
+// CurrentReadVersion opts any read but status into every field this release
+// answers with. A later release that adds fields freezes this shape the way
+// ExtendedReadVersion is frozen and names a new version.
+const CurrentReadVersion = "backlog.admin/v1-extended-read-rc117"
 
 type QueryKind string
 
@@ -473,6 +480,20 @@ type TaskDetail struct {
 	Evidence      *AttemptEvidence `json:"evidence,omitempty"`
 	Artifacts     []Artifact       `json:"artifacts,omitempty"`
 	ResourceLocks []string         `json:"resourceLocks,omitempty"`
+	// Checkpoint is the latest continuation.md checkpoint the coordinator
+	// holds for the task; absent means no checkpoint.
+	Checkpoint *ContinuationCheckpoint `json:"checkpoint,omitempty"`
+}
+
+// ContinuationCheckpoint is when the task's latest continuation.md snapshot
+// was taken, by which attempt, and how large it is; never its content. The
+// coordinator receives a snapshot with each attempt's result, so a running
+// attempt's newer turn-end snapshots stay in its worker's journal until then.
+type ContinuationCheckpoint struct {
+	AttemptID  string    `json:"attemptId"`
+	ArtifactID string    `json:"artifactId"`
+	Size       int64     `json:"size"`
+	CapturedAt time.Time `json:"capturedAt"`
 }
 
 // AttemptEvidence is the worker's last word on an attempt, as carried by its
@@ -562,19 +583,28 @@ type Blocker struct {
 }
 
 type Explanation struct {
-	ReviewVerdict *domain.ReviewVerdict     `json:"reviewVerdict,omitempty"`
-	Placement     *domain.PlacementDecision `json:"placement,omitempty"`
-	WorkflowRunID string                    `json:"workflowRunId"`
-	TaskID        string                    `json:"taskId"`
-	AttemptID     string                    `json:"attemptId,omitempty"`
-	Eligible      bool                      `json:"eligible"`
-	Summary       string                    `json:"summary"`
-	EarliestAt    *time.Time                `json:"earliestAt,omitempty"`
-	Blockers      []Blocker                 `json:"blockers"`
+	ReviewVerdict  *domain.ReviewVerdict     `json:"reviewVerdict,omitempty"`
+	Placement      *domain.PlacementDecision `json:"placement,omitempty"`
+	GateArtifactID string                    `json:"gateArtifactId,omitempty"`
+	Gate           *backlog.GateReport       `json:"gate,omitempty"`
+	WorkflowRunID  string                    `json:"workflowRunId"`
+	TaskID         string                    `json:"taskId"`
+	AttemptID      string                    `json:"attemptId,omitempty"`
+	Eligible       bool                      `json:"eligible"`
+	Summary        string                    `json:"summary"`
+	EarliestAt     *time.Time                `json:"earliestAt,omitempty"`
+	Blockers       []Blocker                 `json:"blockers"`
 	// Details are informational findings that block nothing, such as
 	// project-binding-defaulted. They never influence Eligible; a detail that
 	// changed eligibility would be a blocker wearing an informational label.
 	Details []string `json:"details,omitempty"`
+	// ReviewGate is the review completion gate's decision for the attempt's
+	// finished turn, with the heads it compared. It is absent until a
+	// review-declared task's result has been judged.
+	ReviewGate *domain.ReviewCompletionGate `json:"reviewGate,omitempty"`
+	// Checkpoint is the task's latest continuation.md checkpoint; absent
+	// means no checkpoint.
+	Checkpoint *ContinuationCheckpoint `json:"checkpoint,omitempty"`
 }
 
 type Event struct {

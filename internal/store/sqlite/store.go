@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	modernsqlite "modernc.org/sqlite"
@@ -295,6 +296,61 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	return version, nil
 }
 
+// legacyContiguousSchemaVersion is the last release whose runner advanced only
+// through a contiguous registered prefix. Its missing rows must not be replayed.
+const legacyContiguousSchemaVersion = 37
+
+// PendingSchemaVersions reports missing registered versions without modifying
+// the database. Legacy versions are inferred from the highest recorded version.
+// Applied post-legacy versions unknown to this binary are refused.
+func (s *Store) PendingSchemaVersions(ctx context.Context) ([]int, error) {
+	_, pending, err := s.pendingSchemaVersions(ctx)
+	return pending, err
+}
+
+func (s *Store) pendingSchemaVersions(ctx context.Context) (int, []int, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT version FROM schema_version")
+	if err != nil {
+		return 0, nil, fmt.Errorf("read applied schema versions: %w", err)
+	}
+	defer rows.Close()
+	applied := make(map[int]bool)
+	highest := 0
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			return 0, nil, fmt.Errorf("read applied schema version: %w", err)
+		}
+		applied[v] = true
+		if v > highest {
+			highest = v
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, nil, fmt.Errorf("iterate applied schema versions: %w", err)
+	}
+	registered := make(map[int]bool, len(versionedMigrations))
+	var pending []int
+	for _, m := range versionedMigrations {
+		registered[m.version] = true
+		if !applied[m.version] && !(m.version <= legacyContiguousSchemaVersion && m.version <= highest) {
+			pending = append(pending, m.version)
+		}
+	}
+	var unknown []int
+	for v := range applied {
+		if v > legacyContiguousSchemaVersion && !registered[v] {
+			unknown = append(unknown, v)
+		}
+	}
+	sort.Ints(unknown)
+	if len(unknown) > 0 {
+		return highest, nil, fmt.Errorf("state database has unregistered applied schema versions %v", unknown)
+	}
+	sort.Ints(pending)
+	return highest, pending, nil
+}
+
 // IntegrityCheck performs SQLite's complete read-only consistency check.
 func (s *Store) IntegrityCheck(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `PRAGMA integrity_check`)
@@ -323,8 +379,9 @@ func (s *Store) Migrate() error {
 	return s.migrateThrough(currentSchemaVersion)
 }
 
-// migrateThrough applies every migration up to and including target and stops
-// there. Production always passes currentSchemaVersion; a compatibility test
+// migrateThrough applies every missing registered migration through target in
+// ascending order, including gaps below the highest applied version.
+// Production always passes currentSchemaVersion; a compatibility test
 // passes an older version to build a database exactly as a previous release
 // left it, so that the forward migration under test runs against real state
 // rather than a reconstruction of it.
@@ -333,6 +390,12 @@ func (s *Store) Migrate() error {
 // currentSchemaVersion and not against target, because that refusal is a
 // statement about what this build can understand at all.
 func (s *Store) migrateThrough(target int) error {
+	return s.migrateThroughSupported(target, currentSchemaVersion)
+}
+
+// migrateThroughSupported keeps the production ceiling explicit while allowing
+// compatibility tests to simulate future registered releases.
+func (s *Store) migrateThroughSupported(target, supported int) error {
 	for _, stmt := range migrations {
 		if _, err := s.db.Exec(stmt); err != nil {
 			return fmt.Errorf("migrate state database: %w", err)
@@ -365,24 +428,42 @@ func (s *Store) migrateThrough(target int) error {
 	if err := s.db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version > currentSchemaVersion {
-		return fmt.Errorf("state database schema version %d is newer than supported version %d", version, currentSchemaVersion)
+	if version > supported {
+		return fmt.Errorf("state database schema version %d is newer than supported version %d", version, supported)
 	}
-	for _, migration := range versionedMigrations {
-		if version >= migration.version || migration.version > target {
+	_, pending, err := s.pendingSchemaVersions(context.Background())
+	if err != nil {
+		return err
+	}
+	// Sort a copy so reordered registrations cannot change application order.
+	ordered := append([]struct {
+		version int
+		ddl     string
+	}(nil), versionedMigrations...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].version < ordered[j].version })
+	missing := make(map[int]bool, len(pending))
+	for _, v := range pending {
+		missing[v] = true
+	}
+	for _, migration := range ordered {
+		if !missing[migration.version] || migration.version > target {
 			continue
 		}
 		if err := s.applyVersionedMigration(migration.version, migration.ddl); err != nil {
-			return err
+			return fmt.Errorf("apply missing schema migration %d with highest applied version %d: %w", migration.version, version, err)
 		}
-		version = migration.version
+		missing[migration.version] = false
+		if migration.version > version {
+			version = migration.version
+		}
 	}
 	return s.backfillGraphHistory(context.Background())
 }
 
 // versionedMigrations is the ordered list of schema versions above 1 and the
-// DDL that reaches each one. Migrate walks it in order and stops at
-// currentSchemaVersion, which is the newest entry this binary knows about.
+// DDL that reaches each one. Versions may arrive in different releases out of
+// order; Migrate sorts a copy and applies every missing version through its
+// target. Legacy versions through 37 are inferred from the recorded maximum.
 //
 // The list is a package variable rather than a literal inside Migrate so that a
 // compatibility test can build a database at an older version and then migrate
@@ -425,6 +506,11 @@ var versionedMigrations = []struct {
 	{33, coordinatorMigrationV33},
 	{34, coordinatorMigrationV34},
 	{37, coordinatorMigrationV37},
+	// V35, V36 and V40 are unused; V38 is reserved for the deferred M16-8;
+	// V41 is unused. V39 (M16-6) and V42 (C1 leases) may arrive in either
+	// order, which the gap-filling runner applies.
+	{39, coordinatorMigrationV39},
+	{42, coordinatorMigrationV42},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {

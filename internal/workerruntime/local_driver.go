@@ -40,6 +40,9 @@ type PublishedResult struct {
 	// WorkInProgressBundle is the snapshot of uncommitted work a failed
 	// attempt uploads when its commands were still running at turn end.
 	WorkInProgressBundle []byte
+	// Continuation is the attempt's latest continuation.md snapshot, carried
+	// only when the package declares that the coordinator accepts it.
+	Continuation *ContinuationSnapshot
 }
 
 type ArtifactPublisher interface {
@@ -205,6 +208,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	inputs := make([]domain.Artifact, 0, len(pkg.StaticInputs))
 	dependencyTasks := make([]domain.Task, 0, len(pkg.Dependencies))
 	dependencyArtifacts := make([]domain.Artifact, 0)
+	var acceptedCommits map[string][]string
 	objects := append([]workerproto.ArtifactObject{pkg.Prompt}, pkg.StaticInputs...)
 	for _, dependency := range pkg.Dependencies {
 		objects = append(objects, dependency.Artifacts...)
@@ -239,6 +243,12 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 			producer = strings.Split(filepath.ToSlash(relative), "/")[0]
 		}
 		dependencyTask := domain.Task{ID: dependency.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: producer}
+		// The producer's declared commit outputs are what preparation
+		// resolves commit records from, and the package is the only
+		// trusted source of them.
+		for _, name := range pkg.DependencyCommitOutputs(dependency) {
+			dependencyTask.Outputs = append(dependencyTask.Outputs, domain.ArtifactDeclaration{Name: name, Commit: &domain.CommitOutput{}})
+		}
 		names := make([]string, 0, len(dependency.Artifacts))
 		for _, object := range dependency.Artifacts {
 			parts := strings.Split(filepath.ToSlash(object.Path), "/")
@@ -261,6 +271,12 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		}
 		task.DependencyInputs[producer] = names
 		dependencyTasks = append(dependencyTasks, dependencyTask)
+		if len(dependency.AcceptedCommits) != 0 {
+			if acceptedCommits == nil {
+				acceptedCommits = make(map[string][]string)
+			}
+			acceptedCommits[dependency.TaskID] = append([]string(nil), dependency.AcceptedCommits...)
+		}
 	}
 	if d.Config.DryRun {
 		path := d.workspacePath(pkg)
@@ -283,7 +299,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		WorkflowRunID: pkg.Identity.WorkflowRunID, Task: task, Attempt: attempt,
 		Environment: environment, InputArtifacts: inputs, DependencyTasks: dependencyTasks,
 		DependencyArtifacts: dependencyArtifacts, CommitBundles: commitBundles,
-		DependencySources: dependencySources(pkg),
+		DependencySources: dependencySources(pkg), AcceptedCommits: acceptedCommits,
 	})
 	if err != nil {
 		return "", err
@@ -835,6 +851,9 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 			prompt += "\nReview retained checkpoint `" + checkpoint + "`."
 		}
 	}
+	if pkg.Continuation != nil {
+		prompt += "\n\n## Previous checkpoint\n" + continuationPromptSentence(*pkg.Continuation)
+	}
 	// T3 refuses an over-long input only when the turn starts, after the
 	// thread exists. Refused here, the dispatch fails before any provider
 	// effect and the attempt's failure names the size and the limit.
@@ -1051,6 +1070,9 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 			return err
 		}
 	}
+	// The continuation checkpoint is taken before verification runs in the
+	// workspace, keyed by the turn this collection binds to.
+	continuation := d.continuationForResult(ctx, pkg, workspace, identity)
 	task, attempt := packageRecords(pkg, d.Now().UTC())
 	// Preflight logs are captured with the attempt's own outputs, in the same
 	// pass, because the capture tree is sealed before it is published.
@@ -1065,8 +1087,10 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
-	finalized, err := d.Finalizer.Finalize(ctx, backlog.AttemptFinalization{
-		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "",
+	finalizer := d.Finalizer
+	finalizer.GateTimeoutMax = pkg.Limits.VerificationTimeout
+	finalized, err := finalizer.Finalize(ctx, backlog.AttemptFinalization{
+		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "", WorkerID: pkg.WorkerID,
 		Extra: extras, Repository: pkg.Environment.Repository, BaseCommit: baseCommit,
 		// The coordinator declares the capability on a producer's package only
 		// when it accepts the bundle artifact, and the bundle is uploaded as one
@@ -1076,12 +1100,19 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		// The whole result, including the final message and the thread
 		// archive published with it below, is one upload, so bundle metadata
 		// is kept only where that upload would still be accepted.
-		AdmitResult: d.resultAdmission(pkg, message, archive),
+		AdmitResult: d.resultAdmission(pkg, message, archive, nil),
+		// A package that requires the workspace HEAD is review-declared: the
+		// finalizer reports its HEAD after verification and stages, rather
+		// than publishes, its declared commits.
+		ReviewGated: pkg.RequiresWorkspaceHead(),
 	})
 	if err != nil {
 		return err
 	}
-	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace}
+	continuation = d.admitContinuation(pkg, message, archive, finalized.Artifacts, continuation)
+	result := PublishedResult{
+		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace, Continuation: continuation,
+	}
 	if finalized.Completion.Failure != "" {
 		// A failed attempt does not publish its declared commit, so its
 		// uncommitted work travels with the failure as a bundle. The
@@ -1091,7 +1122,18 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		d.retainWorkInProgress(ctx, pkg, workspace)
 		result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	}
-	if err := d.Publisher.PublishResult(ctx, pkg, result); err != nil {
+	publishErr := d.Publisher.PublishResult(ctx, pkg, result)
+	var refused *SecretScanError
+	if result.Continuation != nil && errors.As(publishErr, &refused) && !refused.retryable() &&
+		refused.Object == "results/"+domain.ContinuationArtifactName {
+		// The checkpoint is optional evidence and never costs a result its
+		// publication: a snapshot the secret scan refuses stays on the worker.
+		d.logger().Warn("the continuation checkpoint was refused by the result secret scan; the result goes without it",
+			"attempt", pkg.Identity.AttemptID, "detector", refused.Detector, "byte_offset", refused.Offset, "fingerprint", refused.Fingerprint)
+		result.Continuation = nil
+		publishErr = d.Publisher.PublishResult(ctx, pkg, result)
+	}
+	if err := publishErr; err != nil {
 		var size *workerproto.ArtifactSizeError
 		if errors.As(err, &size) {
 			return &permanentCollectionFailure{size: size}
@@ -1112,6 +1154,22 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return fmt.Errorf("%w: %v", ErrSettleUnproven, err)
 	}
 	return nil
+}
+
+// admitContinuation returns the checkpoint a result may carry: the checkpoint
+// is optional evidence and goes only where the upload, by object and in
+// total, would still be accepted with it. It never costs a result, failed or
+// not, its publication.
+func (d *LocalDriver) admitContinuation(pkg workerproto.ExecutionPackage, message string, archive []byte, artifacts []domain.Artifact, continuation *ContinuationSnapshot) *ContinuationSnapshot {
+	if continuation == nil {
+		return nil
+	}
+	if err := d.resultAdmission(pkg, message, archive, continuation)(artifacts); err != nil {
+		d.logger().Warn("the continuation checkpoint does not fit the result upload; the result goes without it",
+			"attempt", pkg.Identity.AttemptID, "error", err)
+		return nil
+	}
+	return continuation
 }
 
 // collectedTurn retains the first terminal observation, including failed raw
@@ -1276,17 +1334,27 @@ func (d *LocalDriver) CollectFailure(ctx context.Context, pkg workerproto.Execut
 		}
 	}
 	finalized := backlog.FinalizedAttempt{Completion: backlog.CompletionResult{Failure: failure}}
+	// A failed attempt hands on its latest checkpoint too; that is when the
+	// next attempt needs it most. A failure that is about the result's size
+	// publishes the bounded envelope alone.
+	var continuation *ContinuationSnapshot
+	if !permanentCollectionIntent(failure) {
+		continuation = d.admitContinuation(pkg, message, archive, nil, d.continuationForResult(ctx, pkg, workspace, ""))
+	}
 	// The workspace lends the secret scan the objects a work-in-progress
 	// bundle's prerequisites need; without it the scan cannot decode the bundle
 	// and refuses it.
-	result := PublishedResult{Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace}
+	result := PublishedResult{
+		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace, Continuation: continuation,
+	}
 	result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	publishErr := d.Publisher.PublishResult(ctx, pkg, result)
 	var secret *SecretScanError
 	if errors.As(publishErr, &secret) && !secret.retryable() {
-		// The thread or the failure text carries a credential. Publish the
-		// redacted finding with an empty archive instead, so the failed result
-		// still reaches the coordinator; the raw text stays on the worker.
+		// The thread, the failure text or the continuation snapshot carries a
+		// credential. Publish the redacted finding with an empty archive and
+		// no snapshot instead, so the failed result still reaches the
+		// coordinator; the raw text stays on the worker.
 		failure = permanentSecretFailurePrefix + secret.Error() +
 			"; the failure reason and thread archive were withheld and remain on the worker for this assignment"
 		d.logger().Warn("failed result withheld by secret scan; publishing redacted failure",
@@ -1402,12 +1470,7 @@ func (d *LocalDriver) Checkpoint(ctx context.Context, pkg workerproto.ExecutionP
 		data := []byte("no-external-effects checkpoint\n")
 		return d.Publisher.PublishCheckpoint(ctx, pkg, ".t3/checkpoint.md", data)
 	}
-	thread, err := d.requiredThread(ctx, pkg.Identity.ThreadID)
-	if err != nil {
-		return nil, err
-	}
-	text := command.Reason + "\nThis is a runtime-owned quota pause, an exception to ordinary end-of-turn task completion. Write .t3/checkpoint.md and leave the workspace consistent. The continue marker is checkpoint evidence under runtime control, not a request for extra turns; the runtime checks completion before considering an authorized resume. If the task is fully complete and all declared outputs are ready, end your final message with the exact line 'backlog status: done'. Otherwise end it with 'backlog status: continue'. End this turn."
-	if err := d.T3.WarnThread(ctx, thread, domain.Warning{Kind: domain.ActionDrain, Text: text}); err != nil {
+	if err := d.RequestQuotaDrain(ctx, pkg, command); err != nil {
 		return nil, err
 	}
 	_, stopped, err := d.T3.WaitStopped(ctx, pkg.Identity.ThreadID, d.Config.StopTimeout)
@@ -1502,7 +1565,7 @@ func (d *LocalDriver) requiredThread(ctx context.Context, id string) (domain.Thr
 func packageRecords(pkg workerproto.ExecutionPackage, now time.Time) (domain.Task, domain.Attempt) {
 	task := domain.Task{
 		ID: pkg.Identity.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: pkg.Identity.TaskID,
-		Class: pkg.Class, Outputs: pkg.Outputs, Verification: pkg.Verification,
+		Class: pkg.Class, Outputs: pkg.Outputs, Verification: pkg.Verification, Gate: pkg.Gate,
 		DirectoryBindings: pkg.Environment.DirectoryBindings,
 		Routes:            []domain.ProviderRoute{pkg.Route}, ResourceLocks: append([]string(nil), pkg.Environment.ResourceLocks...),
 		MaxTurns: pkg.Limits.MaxTurns, NotBefore: pkg.NotBefore, Deadline: pkg.Deadline, ExpiresAt: pkg.ExpiresAt,

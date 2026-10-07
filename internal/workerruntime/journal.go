@@ -58,6 +58,20 @@ type LocalThrottleRequest struct {
 	// "claudeAgent/claude/seven_day at 97%".
 	Reason      string    `json:"reason"`
 	RequestedAt time.Time `json:"requestedAt"`
+	// DrainNoticeSent records that the non-blocking drain request reached T3.
+	DrainNoticeSent bool `json:"drain_notice_sent,omitempty"`
+	// DrainNoticeSentAt starts escalation after successful delivery, independently
+	// of RequestedAt, which preserves the original intent for recovery.
+	DrainNoticeSentAt *time.Time `json:"drain_notice_sent_at,omitempty"`
+	// DrainNoticePending marks a drain intent recorded before its notice was
+	// sent. Only builds with the non-blocking drain write it; a drain request
+	// from an older binary lacks it and was already sent through Checkpoint.
+	DrainNoticePending bool `json:"drain_notice_pending,omitempty"`
+	// RecoveredAt marks an intent kept after its bucket recovered while the
+	// thread was still working. The intent still claims a late stop of the
+	// drained turn as this pause, but its notice is no evidence for a later
+	// quota episode, which records and sends its own.
+	RecoveredAt *time.Time `json:"recovered_at,omitempty"`
 	// StoppedAt is when the thread was observed stopped after the request.
 	StoppedAt     *time.Time                 `json:"stoppedAt,omitempty"`
 	StoppedTurnID string                     `json:"stoppedTurnId,omitempty"`
@@ -100,6 +114,14 @@ type AttemptRecord struct {
 	ThrottleResults  map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
 	PendingThrottle  *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
 	PrepareAttempts  int                                       `json:"prepareAttempts,omitempty"`
+	// Continuation is the attempt's latest continuation.md checkpoint taken
+	// at a turn end or a pause: its digest, size and time, never its content,
+	// which the attempt directory keeps.
+	Continuation *domain.ContinuationCheckpoint `json:"continuation,omitempty"`
+	// PendingContinuation is a pause snapshot owed: it is journaled with the
+	// stop itself and cleared once the snapshot is taken, so a worker that
+	// dies, or fails to take it, in between takes it on its next reconcile.
+	PendingContinuation *PendingContinuation `json:"pendingContinuation,omitempty"`
 	// FirstPrepareFailure keeps the first causal preparation failure, which a
 	// later retry would otherwise overwrite in Failure.
 	FirstPrepareFailure string    `json:"firstPrepareFailure,omitempty"`
@@ -118,6 +140,10 @@ type journalState struct {
 	CoordinatorEpoch int64                    `json:"coordinatorEpoch"`
 	Sequence         int64                    `json:"sequence"`
 	Attempts         map[string]AttemptRecord `json:"attempts"`
+	// WorkerLastSeenAt is refreshed at the end of a reconcile pass, even when
+	// no attempt changes, at most once per LivenessRefreshInterval. It
+	// protects ownership during brief lease lapses.
+	WorkerLastSeenAt time.Time `json:"workerLastSeenAt,omitempty"`
 
 	// Parked is the coordinator's last complete statement of which assignments
 	// are parked on a task-bound wait, keyed by assignment ID. It is durable
@@ -211,19 +237,42 @@ func JournalCoordinatorEpoch(root string) (int64, error) {
 // JournalAttempts reports the durable attempt records without adopting an
 // identity or epoch. A missing journal reports none.
 func JournalAttempts(root string) (map[string]AttemptRecord, error) {
+	state, err := journalStateAtRoot(root)
+	return state.Attempts, err
+}
+
+func journalStateAtRoot(root string) (journalState, error) {
 	absolute, err := filepath.Abs(root)
 	if err != nil {
-		return nil, fmt.Errorf("worker journal: resolve root: %w", err)
+		return journalState{}, fmt.Errorf("worker journal: resolve root: %w", err)
 	}
 	journal := &Journal{root: absolute, path: filepath.Join(absolute, "journal.json"), lockPath: filepath.Join(absolute, "journal.lock")}
-	if _, err := os.Stat(journal.path); errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	state, err := journal.read()
-	if err != nil {
-		return nil, err
-	}
-	return cloneState(state).Attempts, nil
+	return cloneState(state), err
+}
+
+// LivenessRefreshInterval bounds how often a reconcile pass rewrites the
+// journal only to refresh WorkerLastSeenAt. Every exchange reconciles, so
+// refreshing on each pass would add a synced write per exchange; once a
+// minute stays well inside OwnershipLivenessGrace.
+const LivenessRefreshInterval = time.Minute
+
+// drainNoticeDelivered reports whether the drain notice of this request
+// reached T3: confirmed by a send, or written by an older binary whose
+// blocking Checkpoint sent the notice before recording anything else.
+func (r LocalThrottleRequest) drainNoticeDelivered() bool {
+	return r.DrainNoticeSent || !r.DrainNoticePending
+}
+
+func (j *Journal) recordLiveness(now time.Time) error {
+	return j.update(func(state *journalState) error {
+		last := state.WorkerLastSeenAt
+		if !last.IsZero() && !last.After(now) && now.Sub(last) < LivenessRefreshInterval {
+			return nil
+		}
+		state.WorkerLastSeenAt = now
+		return nil
+	})
 }
 
 func (j *Journal) snapshot() (journalState, error) {

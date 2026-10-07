@@ -139,7 +139,7 @@ func TestExplanationOlderLocalCoordinatorAndFailures(t *testing.T) {
 			service := explanationService(t)
 			q := func(ctx context.Context, query Query) (Response, error) {
 				calls.Add(1)
-				if query.Version == ExtendedReadVersion {
+				if query.Version != Version {
 					switch mode {
 					case "older":
 						return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
@@ -155,7 +155,8 @@ func TestExplanationOlderLocalCoordinatorAndFailures(t *testing.T) {
 			defer stopLocalTransport(t, cancel, done)
 			got, err := client.Query(context.Background(), explanationQuery)
 			if mode == "older" {
-				if err != nil || got.Explanation == nil || got.Explanation.AttemptID != "a" || calls.Load() != 2 {
+				// It refuses this release's version and rc.116's before v1.
+				if err != nil || got.Explanation == nil || got.Explanation.AttemptID != "a" || calls.Load() != 3 {
 					t.Fatalf("older: %+v %v calls=%d", got, err, calls.Load())
 				}
 				if got.Explanation.Placement != nil || got.Explanation.ReviewVerdict != nil {
@@ -194,7 +195,7 @@ func TestExplanationSSHProjectionAndOlderCoordinator(t *testing.T) {
 			extended := got.Explanation.Placement != nil && got.Explanation.ReviewVerdict != nil
 			wantCalls := int32(1)
 			if state == "older" {
-				wantCalls = 2
+				wantCalls = 3
 			}
 			if extended != (state == "current") || calls.Load() != wantCalls {
 				t.Fatalf("SSH %s: %+v calls=%d", state, got.Explanation, calls.Load())

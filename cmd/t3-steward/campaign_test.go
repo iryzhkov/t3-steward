@@ -519,6 +519,7 @@ func TestCampaignUsageIsPinnedAndComplete(t *testing.T) {
 		"explain <run>/<task>", "rerun <run> --from TASK", "by default", "--no-notify",
 		"campaign help authoring", "campaign help <topic>", "task result <run>[/<task>]",
 		"recovery retry <run>", "docs/examples/campaign/single-lead",
+		"compile PLAN --out DIR", "--thread current|ID",
 	} {
 		if !strings.Contains(campaignUsage, want) {
 			t.Fatalf("usage no longer covers %q", want)

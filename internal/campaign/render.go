@@ -147,6 +147,12 @@ func writeTask(out *strings.Builder, task Task) {
 		}
 		field(out, width, label, command)
 	}
+	if task.Gate != nil {
+		field(out, width, "gate timeout", task.Gate.Timeout.String())
+		for _, command := range task.Gate.Commands {
+			field(out, width, "gate", command)
+		}
+	}
 	if len(task.Dependents) > 0 {
 		field(out, width, "unblocks", strings.Join(task.Dependents, ", "))
 	}

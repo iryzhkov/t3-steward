@@ -10,6 +10,11 @@ import (
 
 // ExportPublishedBundle reads an existing published commit without creating a
 // store or updating refs. The caller removes the returned temporary directory.
+//
+// A record naming the attempt that staged a review-declared task's commit is
+// read from that attempt's staging instead, which publication never touches:
+// the coordinator asks for it only once it accepted that attempt, and a leaf
+// task's staging is never promoted, because no consumer fetches it.
 func (s CampaignRefStore) ExportPublishedBundle(ctx context.Context, p CommitProvenance, limit int64) (string, error) {
 	if err := s.validate(); err != nil {
 		return "", err
@@ -34,14 +39,22 @@ func (s CampaignRefStore) ExportPublishedBundle(ctx context.Context, p CommitPro
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("export campaign commit: source store is not a directory")
 	}
-	held, err := s.readProvenance(s.provenancePath(p.WorkflowRunID, p.TaskID, p.Name))
+	source, err := bundleRef(p)
+	if err != nil {
+		return "", err
+	}
+	record := s.provenancePath(p.WorkflowRunID, p.TaskID, p.Name)
+	if p.StagedAttempt != "" {
+		record = s.stagedPath(p.WorkflowRunID, p.TaskID, p.StagedAttempt, p.Name)
+	}
+	held, err := s.readProvenance(record)
 	if err != nil {
 		return "", err
 	}
 	if held.Commit != p.Commit || held.Base != p.Base || held.Repository != p.Repository || held.Ref != p.Ref {
 		return "", errors.New("export campaign commit: published provenance mismatch")
 	}
-	head, found, err := s.head(ctx, gitDir, p.Ref, nil)
+	head, found, err := s.head(ctx, gitDir, source, nil)
 	if err != nil {
 		return "", err
 	}
@@ -62,7 +75,7 @@ func (s CampaignRefStore) ExportPublishedBundle(ctx context.Context, p CommitPro
 		}
 	}()
 	path := filepath.Join(dir, "commit.bundle")
-	args := []string{"--git-dir", gitDir, "bundle", "create", path, p.Ref}
+	args := []string{"--git-dir", gitDir, "bundle", "create", path, source}
 	if p.Commit != p.Base {
 		args = append(args, "^"+p.Base)
 	}

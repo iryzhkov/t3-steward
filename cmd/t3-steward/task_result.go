@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/blockingwait"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -18,7 +20,9 @@ import (
 const taskResultUsage = `Usage: t3-steward task result <run>[/<task>] [--output DIR] [--json] [--wait [--timeout D]]
 
 Collect a finished task: its final message and every output it declared, in one
-call. Without a task, every task of the run is collected.
+call, including worker gate evidence when present. The gate report is written
+to gate/report.json and its captured output to gate/log.txt. The gate report is
+inlined in JSON and summarized in text. Without a task, every task of the run is collected.
 
 The files are written under DIR, each under the name the task declared for it,
 and the directory is printed. The default is <state>/results/<run>/<task>/,
@@ -81,12 +85,19 @@ type taskResultTask struct {
 	AttemptID     string                `json:"attemptId,omitempty"`
 	Progress      string                `json:"progress"`
 	// Failure is why the attempt failed, as the coordinator recorded it.
-	Failure   string `json:"failure,omitempty"`
-	Directory string `json:"directory"`
+	Failure string `json:"failure,omitempty"`
+	// ReviewGate is the review completion gate's decision for a
+	// review-declared task, with the reviewed and the workspace heads.
+	ReviewGate *domain.ReviewCompletionGate `json:"reviewGate,omitempty"`
+	Directory  string                       `json:"directory"`
 	// FinalMessage is inlined in JSON and, up to 4096 bytes, in text.
 	// The full content is also written to the printed file path.
-	FinalMessage string           `json:"finalMessage,omitempty"`
-	Files        []taskResultFile `json:"files"`
+	Gate         *backlog.GateReport `json:"gate,omitempty"`
+	FinalMessage string              `json:"finalMessage,omitempty"`
+	Files        []taskResultFile    `json:"files"`
+	// Checkpoint is the task's latest continuation.md checkpoint: time and
+	// size, not content. Absent means no checkpoint.
+	Checkpoint *backlogadmin.ContinuationCheckpoint `json:"checkpoint,omitempty"`
 	// Missing names what was expected and is not there, such as a final
 	// message a task that never ran cannot have produced.
 	Missing []string `json:"missing,omitempty"`
@@ -152,15 +163,7 @@ func cmdTaskResult(g globalFlags, args []string) error {
 		return err
 	}
 	cli := taskResultCLI{stdout: os.Stdout, stderr: os.Stderr, workdir: workdir, results: results}
-	cli.query = func(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
-		transport, err := newCoordinatorTransport(cfg)
-		if err != nil {
-			return backlogadmin.Response{}, err
-		}
-		query.Version = backlogadmin.Version
-		query.Principal = transport.principal
-		return transport.client.Query(ctx, query)
-	}
+	cli.query = coordinatorWorkflowQuery(cfg)
 	cli.open = func(ctx context.Context, id string) (backlogadmin.ArtifactContent, error) {
 		return openTaskResultArtifact(ctx, cfg, id)
 	}
@@ -346,17 +349,19 @@ func selectResultTasks(detail backlogadmin.WorkflowDetail, name string) ([]backl
 // collect writes one task's final message and declared outputs.
 func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.WorkflowDetail, task backlogadmin.TaskDetail, base string, inline bool) (taskResultTask, error) {
 	collected := taskResultTask{
-		Task:      task.Task.Name,
-		TaskID:    task.Task.ID,
-		Progress:  string(domain.ProgressQueued),
-		Directory: filepath.Join(base, task.Task.Name),
-		Files:     []taskResultFile{},
+		Task:       task.Task.Name,
+		TaskID:     task.Task.ID,
+		Progress:   string(domain.ProgressQueued),
+		Directory:  filepath.Join(base, task.Task.Name),
+		Files:      []taskResultFile{},
+		Checkpoint: task.Checkpoint,
 	}
 	if task.Attempt != nil {
 		collected.Progress = string(task.Attempt.Progress)
 		collected.AttemptID = task.Attempt.ID
 		collected.Failure = task.Attempt.Failure
 		collected.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
+		collected.ReviewGate = task.Attempt.ReviewGate
 	}
 	final := false
 	for _, artifact := range detail.Artifacts {
@@ -369,22 +374,41 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 				continue
 			}
 			final = true
-		case domain.ArtifactOutput:
+		case domain.ArtifactOutput, domain.ArtifactGate:
 		default:
 			// Logs and verification records are the coordinator's evidence, not
 			// the task's result; "backlog artifacts" lists them.
 			continue
+		}
+		originalName := artifact.Metadata.Name
+		if artifact.Metadata.Kind == domain.ArtifactGate {
+			if task.Attempt == nil || artifact.Metadata.AttemptID != task.Attempt.ID {
+				continue
+			}
+			if originalName == "gate" {
+				artifact.Metadata.Name = "gate/report.json"
+			}
 		}
 		body, err := c.fetch(ctx, artifact, collected.Directory)
 		if err != nil {
 			return taskResultTask{}, err
 		}
 		collected.Files = append(collected.Files, taskResultFile{
-			Name: artifact.Metadata.Name,
+			Name: originalName,
 			Path: filepath.Join(collected.Directory, filepath.FromSlash(artifact.Metadata.Name)),
 			Kind: string(artifact.Metadata.Kind),
 			Size: int64(len(body)),
 		})
+		if artifact.Metadata.Kind == domain.ArtifactGate && originalName == "gate" {
+			if len(body) > backlog.GateEvidenceMaxBytes {
+				return taskResultTask{}, errors.New("gate metadata exceeds limit")
+			}
+			var gate backlog.GateReport
+			if err := json.Unmarshal(body, &gate); err != nil {
+				return taskResultTask{}, fmt.Errorf("decode gate evidence: %w", err)
+			}
+			collected.Gate = &gate
+		}
 		if inline && artifact.Metadata.Kind == domain.ArtifactSummary {
 			collected.FinalMessage = string(body)
 		}
@@ -476,9 +500,16 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 		if task.ReviewVerdict != nil {
 			fmt.Fprintln(out, task.ReviewVerdict.Prose())
 		}
+		if task.Gate != nil {
+			fmt.Fprintf(out, "  gate: passed=%t attempt=%s tree=%s\n", task.Gate.Passed, task.Gate.Attempt, task.Gate.TreeHash)
+		}
 		if task.Failure != "" {
 			fmt.Fprintf(out, "  failure: %s\n", task.Failure)
 		}
+		if task.ReviewGate != nil {
+			fmt.Fprintf(out, "  review gate: %s\n", task.ReviewGate.Summary())
+		}
+		fmt.Fprintf(out, "  %s\n", checkpointLine(task.Checkpoint))
 		fmt.Fprintf(out, "  %s\n", task.Directory)
 		if len(task.FinalMessage) > 0 && len(task.FinalMessage) <= 4096 {
 			fmt.Fprintln(out, strings.TrimSpace(string(safeTerminalText([]byte(task.FinalMessage)))))
