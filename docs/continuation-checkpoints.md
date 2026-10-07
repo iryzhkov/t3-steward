@@ -67,15 +67,40 @@ assignment. A snapshot is evidence of what the attempt already did, so a
 snapshot the worker queued before the attempt was superseded is still
 imported when the worker is next polled; it grants the old attempt nothing
 else, and its results and lifecycle keep their fences. A dispatch that was
-never claimed, or that the assignment's next epoch replaced, refuses it. The
-metadata must describe the snapshot, under the attempt's own identity and
+never claimed refuses it.
+
+When the assignment has since been offered again at a later epoch, its
+current state names only the new dispatch. A snapshot of the earlier epoch is
+then authenticated against the dispatch record frozen with that epoch's first
+offer (schema V39, below): that offer must have gone to the worker and worker
+epoch the upload names, with the continuation capability declared, for the
+attempt the assignment still runs, and the attempt must not have moved to
+another assignment. The publication fence checks the same record inside the
+transaction that stores the snapshot, so the import and the fence cannot
+disagree. The record proves the offer, not the claim: a worker that was
+offered a dispatch but never claimed it could still name it. That is
+acceptable because a worker can upload only through its own authenticated
+session and as itself, and a snapshot grants nothing but evidence: it is read
+as a previous checkpoint, never as a result, a claim or a lease. An upload
+naming an epoch with no such record, an epoch above the current one, another
+worker, or a worker epoch the record does not carry (a re-enrolled worker) is
+refused for good.
+
+The metadata must describe the snapshot, under the attempt's own identity and
 sequence, captured no later than the upload. An upload that fails any of
 these is refused for good. Each snapshot is handed on once; one that could not
 be handed on is retried at the attempt's next boundary.
 
-In each exchange with a worker the coordinator imports that worker's pending
-continuation snapshots first, before it expires leases and builds any offer,
-and handles every other upload after.
+Each coordinator pass first polls every worker for its pending continuation
+snapshots, before any worker's exchange expires a lease or builds an offer,
+so the order in which workers are polled does not matter. Each exchange then
+imports what its worker queued since, still before reconcile, and handles
+every other upload after. The scan of one worker's custody handles at most
+256 uploads; whatever lies past that bound, or cannot be fetched or imported
+yet, stays in the worker's custody and is imported by a later pass. Nothing
+waits for it: no offer, re-arm or planning decision is held back for a
+snapshot. A worker whose session cannot be opened is not dialled a second
+time in the same pass.
 
 The latest snapshot also travels with the attempt's result, as
 `continuation/snapshot.md` and `continuation/checkpoint.json`, under the
@@ -104,18 +129,26 @@ orders attempts whose number is unknown or equal, comparing each attempt's own
 latest. The order in which snapshots were stored, imported or replayed does
 not matter.
 
-The decision is frozen with the first offer, so a snapshot that reaches the
-coordinator only after the replacement's first offer is not carried by it.
-That happens only when the worker holding it cannot be reached before then (a
-lost or partitioned host): the snapshot is imported when the worker
-reconnects and counts toward the task's latest from then on, for its reports
-and any later attempt.
-A snapshot of an earlier dispatch that is polled only after the attempt was
-offered again at the next epoch is refused: the coordinator keeps only the
-current dispatch's worker identity, so it can no longer authenticate the
-earlier one. A reachable worker has its snapshots imported in every exchange,
-before any offer is built, so this needs the worker to stay unreachable from
-the end of the lease until the attempt is offered again.
+The next attempt receives the latest snapshot the coordinator had imported
+when its first offer was frozen. A snapshot still in a worker's custody at
+that moment is imported when that worker is next polled, and counts toward
+the task's latest for its reports and for any later attempt. That happens
+when the worker holding it could not be reached, its scan ran past the bound,
+or the snapshot could not be fetched yet, in the pass that froze the offer;
+at worst the replacement starts from an older snapshot, and the late one is
+never lost. Planning may re-arm a released dispatch at the next epoch in the
+same pass, before the worker phase polls the worker that took the earlier
+one; the earlier epoch's snapshot is then imported under its V39 record as
+described above.
+
+A worker removed from the configuration, or whose connection is emptied,
+while it holds snapshots is not polled, and its released dispatches are
+offered again without waiting for it. When it is added back and polled, its
+snapshots are imported under the V39 records of the dispatches that took
+them: each upload names the worker epoch of the process that took it, and
+that must be the epoch the record carries. A snapshot whose record is missing, or whose attempt has
+moved to another assignment meanwhile, is refused for good and recorded as a
+`checkpoint-import-rejected` event.
 
 A pause snapshot that still cannot be taken when the attempt resumes is
 forgone, with a warning, rather than taken later from the next turn; the

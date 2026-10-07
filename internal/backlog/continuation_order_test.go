@@ -144,6 +144,53 @@ func TestLatestContinuationNeverSelectsAnOlderSnapshot(t *testing.T) {
 	})
 }
 
+// M16-6 Option B, test (iv): the late epoch-1 snapshot of a re-armed
+// attempt is imported after the epoch-2 dispatch's own snapshot, or before
+// it. Either import order, the epoch-2 snapshot is the task's latest: a late
+// import never regresses the replacement.
+func TestALateImportOfAnEarlierEpochNeverRegressesTheLatest(t *testing.T) {
+	for _, lateFirst := range []bool{false, true} {
+		t.Run(map[bool]string{false: "epoch 2 imported first", true: "epoch 1 imported first"}[lateFirst], func(t *testing.T) {
+			ctx := context.Background()
+			f := newRearmedAttempt(t, &sqlite.ContinuationDecision{Offered: true}, nil)
+			claimed := f.current
+			claimed.State = domain.AssignmentClaimed
+			attempt := f.attempt
+			attempt.Progress, attempt.Control, attempt.AssignmentID = domain.ProgressActive, domain.ControlRunning, claimed.ID
+			if err := f.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{claimed}}); err != nil {
+				t.Fatal(err)
+			}
+			late, lateData := f.upload(t, f.first, f.snapshot)
+			resumed, resumedData := f.upload(t, claimed, []byte("step 4 of 5\n"))
+			imports := []struct {
+				response workerproto.ArtifactUploadResponse
+				data     resultUploadOpener
+			}{{resumed, resumedData}, {late, lateData}}
+			if lateFirst {
+				imports[0], imports[1] = imports[1], imports[0]
+			}
+			for _, upload := range imports {
+				if _, err := f.importer(t, f.store).Import(ctx, upload.response, upload.data); err != nil {
+					t.Fatalf("import %s: %v", upload.response.Manifest.ID, err)
+				}
+			}
+			stored, err := f.store.LoadCoordinatorRecords(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := domain.ContinuationLiveArtifactID(attempt.ID, 2, 1)
+			if len(stored.Artifacts) != 2 {
+				t.Fatalf("artifacts = %+v", stored.Artifacts)
+			}
+			for _, artifacts := range [][]domain.Artifact{stored.Artifacts, {stored.Artifacts[1], stored.Artifacts[0]}} {
+				if latest := LatestContinuationArtifact(artifacts, stored.Attempts, attempt.WorkflowRunID, attempt.TaskID); latest == nil || latest.ID != want {
+					t.Fatalf("latest = %+v; want the epoch-2 dispatch's %s", latest, want)
+				}
+			}
+		})
+	}
+}
+
 // Self-review of round 2: a lost lease releases the assignment and the
 // planner offers the same attempt again at the next assignment epoch. The
 // snapshot the first dispatch queued is imported after the release, and the

@@ -151,12 +151,13 @@ func IsContinuationUpload(manifest workerproto.ArtifactTransferManifest) bool {
 //
 // It binds under the authority of the dispatch that took it, not the
 // assignment's current state (see continuationImportBinding): a snapshot the
-// worker queued before the attempt's lease expired, or before it was released
-// or superseded, is still imported when the worker is next polled. No
-// throttle evidence names it: the metadata travelling with the snapshot is
-// checked against it instead, and the snapshot must be under its attempt's
-// own identity and sequence. An upload whose dispatch was never claimed or was
-// replaced, or whose metadata does not describe it, is refused for good. Only
+// worker queued before the attempt's lease expired, or before it was released,
+// superseded or offered again at a later epoch, is still imported when the
+// worker is next polled. No throttle evidence names it: the metadata
+// travelling with the snapshot is checked against it instead, and the
+// snapshot must be under its attempt's own identity and sequence. An upload
+// that names no dispatch of its worker process, or whose metadata does not
+// describe it, is refused for good. Only
 // the snapshot is kept, dated by its capture; an exact replay returns the same
 // immutable artifact. Importing it grants the old attempt nothing else: its
 // results and lifecycle stay fenced as before.
@@ -172,7 +173,8 @@ func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, r
 	if err != nil {
 		return domain.Artifact{}, err
 	}
-	assignment, attempt, task, final, err := continuationImportBinding(records, manifest)
+	dispatches, _ := i.Store.(continuationDispatchStore)
+	assignment, attempt, task, final, err := continuationImportBinding(ctx, records, manifest, dispatches)
 	if err != nil {
 		if final {
 			return domain.Artifact{}, i.reject(ctx, records, manifest, now, err)
@@ -225,14 +227,31 @@ func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, r
 	return published, err
 }
 
+// continuationDispatchStore reads the dispatch an assignment's earlier epoch
+// was first offered as; see sqlite.Store.AssignmentContinuationBinding. A
+// store without it refuses every snapshot of an earlier epoch.
+type continuationDispatchStore interface {
+	AssignmentContinuationBinding(context.Context, string, int64) (sqlite.ContinuationDispatch, bool, error)
+}
+
 // continuationImportBinding binds a continuation upload to the dispatch that
 // took it: the assignment it names, at the epoch it names, claimed at some
 // point by the same worker process (claimed, lease lost, released or
 // completed), for an attempt that has not moved to another assignment. Any
 // progress and control are accepted, because the snapshot records what the
-// attempt already did. A refusal is final unless only the task is missing,
-// which a later projection may still supply.
-func continuationImportBinding(records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest) (domain.Assignment, domain.Attempt, domain.Task, bool, error) {
+// attempt already did.
+//
+// When the assignment has since been offered again at a later epoch, the
+// current row names only the new dispatch, so the upload is authenticated
+// against the V39 row frozen at its own epoch's first offer instead: that
+// offer must have gone to the manifest's worker process, with the
+// continuation capability, for the attempt the assignment still runs. The
+// returned assignment is then that earlier dispatch. The publication fence
+// applies the same rule; see sqlite.Store.CommitArtifactPublication.
+//
+// A refusal is final unless only the task is missing, which a later
+// projection may still supply, or the V39 row could not be read.
+func continuationImportBinding(ctx context.Context, records sqlite.CoordinatorRecords, manifest workerproto.ArtifactTransferManifest, dispatches continuationDispatchStore) (domain.Assignment, domain.Attempt, domain.Task, bool, error) {
 	var assignment domain.Assignment
 	for _, candidate := range records.Assignments {
 		if candidate.ID == manifest.AssignmentID {
@@ -240,9 +259,26 @@ func continuationImportBinding(records sqlite.CoordinatorRecords, manifest worke
 			break
 		}
 	}
-	if assignment.ID == "" || assignment.State == domain.AssignmentOffered || assignment.Epoch != manifest.AssignmentEpoch ||
-		assignment.WorkerID != manifest.WorkerID || assignment.WorkerEpoch != manifest.WorkerEpoch {
-		return assignment, domain.Attempt{}, domain.Task{}, true, errors.New("continuation import names no dispatch of this worker process")
+	noDispatch := errors.New("continuation import names no dispatch of this worker process")
+	switch {
+	case assignment.ID == "":
+		return assignment, domain.Attempt{}, domain.Task{}, true, noDispatch
+	case assignment.Epoch == manifest.AssignmentEpoch:
+		if assignment.State == domain.AssignmentOffered || assignment.WorkerID != manifest.WorkerID || assignment.WorkerEpoch != manifest.WorkerEpoch {
+			return assignment, domain.Attempt{}, domain.Task{}, true, noDispatch
+		}
+	case assignment.Epoch > manifest.AssignmentEpoch && manifest.AssignmentEpoch > 0 && dispatches != nil:
+		dispatch, found, err := dispatches.AssignmentContinuationBinding(ctx, manifest.AssignmentID, manifest.AssignmentEpoch)
+		if err != nil {
+			return assignment, domain.Attempt{}, domain.Task{}, false, err
+		}
+		if !found || !dispatch.Offered || dispatch.Assignment.WorkerID != manifest.WorkerID ||
+			dispatch.Assignment.WorkerEpoch != manifest.WorkerEpoch || dispatch.Assignment.AttemptID != assignment.AttemptID {
+			return assignment, domain.Attempt{}, domain.Task{}, true, noDispatch
+		}
+		assignment = dispatch.Assignment
+	default:
+		return assignment, domain.Attempt{}, domain.Task{}, true, noDispatch
 	}
 	var attempt domain.Attempt
 	for _, candidate := range records.Attempts {

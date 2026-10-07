@@ -64,20 +64,44 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 	// epoch) of the attempt, whether that dispatch still runs, lost its lease,
 	// was released or completed. That lets a superseded attempt hand on the
 	// snapshot it queued before its lease ended. A dispatch that was never
-	// claimed, or that the assignment's next epoch replaced, still refuses it.
+	// claimed still refuses it.
+	//
+	// When the assignment has since been offered again at a later epoch, the
+	// current row no longer names the dispatch, so the snapshot is
+	// authenticated against that epoch's frozen V39 row instead: the worker
+	// process it was offered to, with the continuation capability, for the
+	// attempt the assignment still runs. That row proves the offer, not the
+	// claim; the worker can upload only through its own authenticated session,
+	// and the snapshot grants nothing but evidence.
 	historical := publication.LiveContinuation
 	if historical && !isLiveContinuationSnapshot(artifact) {
 		return domain.Artifact{}, errors.New("live continuation publication is not a continuation snapshot")
 	}
-	stateAdmits := assignment.State == domain.AssignmentClaimed || assignment.State == domain.AssignmentCompleted
-	if historical {
-		stateAdmits = assignment.State != domain.AssignmentOffered
-	}
-	if assignment.AttemptID != artifact.AttemptID ||
-		assignment.WorkerID != publication.WorkerID ||
-		assignment.WorkerEpoch != publication.WorkerEpoch ||
-		assignment.Epoch != publication.AssignmentEpoch || !stateAdmits {
-		return domain.Artifact{}, fmt.Errorf("%w: assignment identity or state changed", ErrStaleArtifactPublication)
+	if historical && publication.AssignmentEpoch < assignment.Epoch {
+		dispatch, found, err := loadContinuationDispatch(ctx, tx, publication.AssignmentID, publication.AssignmentEpoch)
+		if err != nil {
+			return domain.Artifact{}, err
+		}
+		labelled, _, _ := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID)
+		if !found || !dispatch.Offered ||
+			dispatch.Assignment.WorkerID != publication.WorkerID ||
+			dispatch.Assignment.WorkerEpoch != publication.WorkerEpoch ||
+			dispatch.Assignment.AttemptID != artifact.AttemptID ||
+			assignment.AttemptID != artifact.AttemptID ||
+			labelled != publication.AssignmentEpoch {
+			return domain.Artifact{}, fmt.Errorf("%w: no dispatch of this worker process at assignment epoch %d", ErrStaleArtifactPublication, publication.AssignmentEpoch)
+		}
+	} else {
+		stateAdmits := assignment.State == domain.AssignmentClaimed || assignment.State == domain.AssignmentCompleted
+		if historical {
+			stateAdmits = assignment.State != domain.AssignmentOffered
+		}
+		if assignment.AttemptID != artifact.AttemptID ||
+			assignment.WorkerID != publication.WorkerID ||
+			assignment.WorkerEpoch != publication.WorkerEpoch ||
+			assignment.Epoch != publication.AssignmentEpoch || !stateAdmits {
+			return domain.Artifact{}, fmt.Errorf("%w: assignment identity or state changed", ErrStaleArtifactPublication)
+		}
 	}
 	attempt, err := loadAttemptTx(ctx, tx, artifact.AttemptID)
 	if err != nil {
