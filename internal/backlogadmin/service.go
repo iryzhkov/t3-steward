@@ -1113,6 +1113,11 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 				break
 			}
 		}
+		if gate := attempt.ReviewGate; gate != nil {
+			decided := *gate
+			explanation.ReviewGate = &decided
+			explanation.Details = append(explanation.Details, gate.Summary())
+		}
 		if attempt.Progress.Terminal() {
 			explanation.ReviewVerdict = domain.CloneReviewVerdict(attempt.ReviewVerdict)
 			explanation.Summary = "task is terminal"

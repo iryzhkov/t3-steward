@@ -151,7 +151,7 @@ func TestProducerPackageOffersTheCommitBundleCapability(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pkg := producer
 			builder := CoordinatorOfferBuilder{WorkerCapabilities: test.capabilities}
-			if err := builder.declarePackageCapabilities(context.Background(), &pkg); err != nil {
+			if err := builder.declarePackageCapabilities(context.Background(), &pkg, false); err != nil {
 				t.Fatalf("declare capabilities: %v", err)
 			}
 			if got := slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle); got != test.want {

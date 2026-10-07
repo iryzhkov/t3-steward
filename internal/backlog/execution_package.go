@@ -163,6 +163,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: commit bundles: %w", err)
 	}
+	markAcceptedDependencies(dependencies, state.tasks, state.artifacts, state.succeededAttempts)
 	pkg := workerproto.ExecutionPackage{
 		Timeout:       state.task.Timeout,
 		GraphRevision: assignment.GraphRevision, TaskRevision: assignment.TaskRevision, TaskDigest: assignment.TaskDigest,
@@ -207,7 +208,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		CreatedAt: assignment.CreatedAt,
 	}
-	if err := b.declarePackageCapabilities(ctx, &pkg); err != nil {
+	if err := b.declarePackageCapabilities(ctx, &pkg, state.task.ReviewRequirements != nil); err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
 	if err := b.freezeSessionDisplay(ctx, assignment, &pkg, state.workflow.Name, state.task.Name, state.task.ReviewJudge); err != nil {
@@ -272,7 +273,7 @@ func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageR
 	return inputs, context, nil
 }
 
-func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage) error {
+func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage, reviewDeclared bool) error {
 	if len(pkg.Preflight) > 0 {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
 	}
@@ -290,6 +291,17 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 	// without the capability still produces the commit for consumers on its own
 	// worker, and a consumer elsewhere is refused with the capability named.
 	offerBundle := declaresCommit(*pkg) && len(pkg.CommitBundles) == 0
+	if reviewDeclared {
+		// The completion gate needs the workspace HEAD at collection. A worker
+		// that cannot report it is never offered the task, rather than having
+		// every result it returns fail the gate.
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityWorkspaceHead)
+	}
+	if pkg.HasAcceptedDependencies() {
+		// Only a worker that publishes a staged commit on this mark alone may
+		// consume an accepted review-declared producer.
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityAcceptedDependencies)
+	}
 	if len(pkg.RequiredCapabilities) == 0 && !offerBundle {
 		return nil
 	}
@@ -395,6 +407,9 @@ type executionPackageState struct {
 	// submitted them, and every later run of that workflow executes those same
 	// bytes. Outputs stay strictly run-scoped; only the definition is shared.
 	definitionRuns map[string]struct{}
+	// succeededAttempts holds every attempt whose result the coordinator
+	// accepted as the task's success.
+	succeededAttempts map[string]struct{}
 }
 
 func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment domain.Assignment) (executionPackageState, error) {
@@ -479,6 +494,12 @@ func resolveExecutionPackageState(records sqlite.CoordinatorRecords, assignment 
 	for _, run := range records.WorkflowRuns {
 		if run.WorkflowID == state.workflow.ID {
 			state.definitionRuns[run.ID] = struct{}{}
+		}
+	}
+	state.succeededAttempts = make(map[string]struct{})
+	for _, attempt := range records.Attempts {
+		if attempt.WorkflowRunID == state.run.ID && attempt.Progress == domain.ProgressSucceeded {
+			state.succeededAttempts[attempt.ID] = struct{}{}
 		}
 	}
 	state.artifacts = make(map[string]domain.Artifact, len(records.Artifacts))
@@ -599,6 +620,48 @@ func packageDependencies(
 		return nil, err
 	}
 	return append(result, carried...), nil
+}
+
+// markAcceptedDependencies names, for each review-declared producer whose
+// packaged outputs all came from an attempt the coordinator accepted, the
+// declared commit outputs among them. A review-declared producer's declared
+// commit is only staged by its worker, and this list is what lets the
+// consuming worker publish it. Only the commit reference the producer's worker
+// wrote for a declared commit output is named: any other output file is the
+// executor's content and could name a rejected staging. A review judge can be
+// given the outputs of a failed producer, and those stay unnamed. Producers
+// without a review declaration publish directly and are never marked, so their
+// consumers' packages are unchanged.
+func markAcceptedDependencies(dependencies []workerproto.DependencyInput, tasks []domain.Task, artifacts map[string]domain.Artifact, succeededAttempts map[string]struct{}) {
+	for index := range dependencies {
+		dependency := &dependencies[index]
+		if dependency.Provenance != nil || len(dependency.Artifacts) == 0 {
+			continue
+		}
+		producer := slices.IndexFunc(tasks, func(task domain.Task) bool { return task.ID == dependency.TaskID })
+		if producer < 0 || tasks[producer].ReviewRequirements == nil {
+			continue
+		}
+		var accepted []string
+		for _, object := range dependency.Artifacts {
+			artifact, exists := artifacts[object.ID]
+			if !exists || artifact.TaskID != dependency.TaskID || artifact.AttemptID == "" {
+				accepted = nil
+				break
+			}
+			if _, succeeded := succeededAttempts[artifact.AttemptID]; !succeeded {
+				accepted = nil
+				break
+			}
+			name := filepath.ToSlash(artifact.Name)
+			if slices.ContainsFunc(tasks[producer].Outputs, func(output domain.ArtifactDeclaration) bool {
+				return output.Commit != nil && filepath.ToSlash(output.Name) == name
+			}) {
+				accepted = append(accepted, name)
+			}
+		}
+		dependency.AcceptedCommits = accepted
+	}
 }
 
 // packageCarriedInputs delivers the dependency artifacts a rerun carried over

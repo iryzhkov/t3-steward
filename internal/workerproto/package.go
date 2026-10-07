@@ -91,6 +91,14 @@ type DependencyInput struct {
 	TaskID     string                `json:"taskId"`
 	Provenance *DependencyProvenance `json:"provenance,omitempty"`
 	Artifacts  []ArtifactObject      `json:"artifacts"`
+	// AcceptedCommits names the producer's declared commit outputs, among
+	// these artifacts, whose result the coordinator's review gate accepted.
+	// Only such a commit reference may make a commit the producer staged its
+	// campaign output: a review judge may also be given a rejected result to
+	// inspect, and any other file in the producer's outputs is the executor's
+	// content. It is set only for review-declared producers and requires the
+	// accepted-dependencies capability.
+	AcceptedCommits []string `json:"acceptedCommits,omitempty"`
 }
 
 // CommitBundleInput is the retained bundle of one declared commit a dependency
@@ -136,13 +144,34 @@ const (
 	// of each declared commit, and a consuming worker that has it imports one
 	// delivered in CommitBundles into its own campaign ref store.
 	PackageCapabilityCommitBundle = "campaign-commit-bundle-v1"
+	// PackageCapabilityWorkspaceHead asks the worker to report the workspace's
+	// physical HEAD and tracked changes when it collects the turn. A
+	// review-declared task requires it, because the coordinator's completion
+	// gate compares that HEAD with the head its latest review round accepted.
+	PackageCapabilityWorkspaceHead = "workspace-head-v1"
+	// PackageCapabilityAcceptedDependencies asks the worker to publish a
+	// review-declared producer's staged commit only for a dependency the
+	// package marks as accepted.
+	PackageCapabilityAcceptedDependencies = "accepted-dependencies-v1"
 )
 
 // SupportedPackageCapabilities is what this build implements. A package that
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle}
+	return []string{PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies}
+}
+
+// RequiresWorkspaceHead reports whether the worker must report the workspace's
+// physical HEAD with this package's result.
+func (pkg ExecutionPackage) RequiresWorkspaceHead() bool {
+	return slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkspaceHead)
+}
+
+// HasAcceptedDependencies reports whether any dependency names an accepted
+// commit output of a review-declared producer.
+func (pkg ExecutionPackage) HasAcceptedDependencies() bool {
+	return slices.ContainsFunc(pkg.Dependencies, func(dependency DependencyInput) bool { return len(dependency.AcceptedCommits) != 0 })
 }
 
 // PreflightStep is one declared step the worker runs after the workspace is
@@ -337,6 +366,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			return errors.New("execution package: duplicate dependency task")
 		}
 		dependencies[dependency.TaskID] = struct{}{}
+		if err := validateAcceptedCommits(dependency); err != nil {
+			return err
+		}
 		if provenance := dependency.Provenance; provenance != nil {
 			if strings.TrimSpace(provenance.RunID) == "" || strings.TrimSpace(provenance.TaskID) == "" ||
 				strings.TrimSpace(provenance.AttemptID) == "" ||
@@ -430,6 +462,29 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	return validatePackagePreflight(pkg.Preflight)
 }
 
+// validateAcceptedCommits requires each accepted commit to name one of the
+// dependency's own artifacts, once, for a producer of this run.
+func validateAcceptedCommits(dependency DependencyInput) error {
+	if len(dependency.AcceptedCommits) == 0 {
+		return nil
+	}
+	if dependency.Provenance != nil {
+		return errors.New("execution package: a carried input cannot be an accepted commit")
+	}
+	for index, name := range dependency.AcceptedCommits {
+		if slices.Contains(dependency.AcceptedCommits[:index], name) {
+			return errors.New("execution package: duplicate accepted commit")
+		}
+		if !slices.ContainsFunc(dependency.Artifacts, func(artifact ArtifactObject) bool {
+			parts := strings.SplitN(artifact.Path, "/", 3)
+			return len(parts) == 3 && parts[0] == "dependencies" && parts[2] == name
+		}) {
+			return errors.New("execution package: accepted commit is not one of the dependency's artifacts")
+		}
+	}
+	return nil
+}
+
 func validatePackageCapabilities(pkg ExecutionPackage) error {
 	// The campaign-supervision capability is a worker inventory capability, not
 	// a package capability: it says which build is running on the host rather
@@ -447,6 +502,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 		}
 		if capability == PackageCapabilityRecoveryRetry && (pkg.Supervision == nil || pkg.Supervision.Purpose != "repair") {
 			return errors.New("execution package: only a repair activation may require recovery retry")
+		}
+		if capability == PackageCapabilityWorkspaceHead && pkg.Supervision != nil {
+			return errors.New("execution package: an activation has no reviewed workspace HEAD to report")
 		}
 		if capability == PackageCapabilityProjectContext && pkg.Context == nil {
 			return errors.New("execution package: project context capability requires a context index")
@@ -470,6 +528,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if _, ok := declared[PackageCapabilityProjectContext]; pkg.Context != nil && !ok {
 		return errors.New("execution package: project context requires the project context capability")
+	}
+	if _, ok := declared[PackageCapabilityAcceptedDependencies]; ok != pkg.HasAcceptedDependencies() {
+		return errors.New("execution package: accepted dependencies and the accepted dependencies capability must be declared together")
 	}
 	if _, ok := declared[PackageCapabilitySessionDisplay]; pkg.Display != nil && !ok {
 		return errors.New("execution package: display requires session display capability")

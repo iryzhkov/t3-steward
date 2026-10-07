@@ -575,6 +575,10 @@ type Explanation struct {
 	// project-binding-defaulted. They never influence Eligible; a detail that
 	// changed eligibility would be a blocker wearing an informational label.
 	Details []string `json:"details,omitempty"`
+	// ReviewGate is the review completion gate's decision for the attempt's
+	// finished turn, with the heads it compared. It is absent until a
+	// review-declared task's result has been judged.
+	ReviewGate *domain.ReviewCompletionGate `json:"reviewGate,omitempty"`
 }
 
 type Event struct {

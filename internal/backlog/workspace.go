@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -131,6 +132,11 @@ type WorkspacePreparation struct {
 	// that produced it. A commit record of another run is accepted only from a
 	// directory bound to exactly that run and task.
 	DependencySources map[string]DependencySource
+	// AcceptedCommits names, by dependency task ID, the declared commit outputs
+	// whose result the coordinator's review gate accepted. The commit such an
+	// output references is published when it is consumed; any other staged
+	// commit is only fetched for inspection.
+	AcceptedCommits map[string][]string
 }
 
 // DependencySource is the run and task a carried dependency came from.
@@ -524,10 +530,30 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		if err := p.CampaignRefs.Obtain(ctx, workspaceDir, provenance, delivery, log); err != nil {
 			return err
 		}
-		if err := p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log); err != nil {
-			return err
+		if acceptedDependencyCommit(dependenciesDir, path, provenance, request) {
+			return p.CampaignRefs.FetchAcceptedInto(ctx, workspaceDir, provenance, log)
 		}
-		return nil
+		return p.CampaignRefs.FetchInto(ctx, workspaceDir, provenance, log)
+	})
+}
+
+// acceptedDependencyCommit reports whether a commit reference found in the
+// dependency view may publish its producer's staged commit. It must be the
+// file of a declared commit output the coordinator accepted, in that
+// producer's directory of the view, naming that producer and that output. Any
+// other file is the executor's content, and it could name another task's or
+// another attempt's rejected staging.
+func acceptedDependencyCommit(dependenciesDir, path string, provenance CommitProvenance, request WorkspacePreparation) bool {
+	relative, err := filepath.Rel(dependenciesDir, path)
+	if err != nil {
+		return false
+	}
+	directory, name, nested := strings.Cut(filepath.ToSlash(relative), "/")
+	if !nested || name != provenance.Name || !slices.Contains(request.AcceptedCommits[provenance.TaskID], name) {
+		return false
+	}
+	return slices.ContainsFunc(request.DependencyTasks, func(task domain.Task) bool {
+		return task.Name == directory && task.ID == provenance.TaskID
 	})
 }
 
@@ -648,12 +674,21 @@ func runLoggedCheckoutCommand(ctx context.Context, log io.Writer, program string
 }
 
 func runLoggedCommandOutput(ctx context.Context, log io.Writer, dir, program string, args ...string) ([]byte, error) {
+	return runLoggedCommandOutputEnv(ctx, log, dir, nil, program, args...)
+}
+
+// runLoggedCommandOutputEnv is runLoggedCommandOutput with env added to the
+// worker's environment.
+func runLoggedCommandOutputEnv(ctx context.Context, log io.Writer, dir string, env []string, program string, args ...string) ([]byte, error) {
 	if log == nil {
 		log = io.Discard
 	}
 	fmt.Fprintf(log, "$ %s %s\n", program, strings.Join(args, " "))
 	command := exec.CommandContext(ctx, program, args...)
 	command.Dir = dir
+	if len(env) != 0 {
+		command.Env = append(os.Environ(), env...)
+	}
 	// A cancelled command may leave children holding the output pipe (dash does
 	// not exec the last command of -c). Stop waiting for them shortly after the
 	// context ends instead of blocking until they exit on their own.

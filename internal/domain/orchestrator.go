@@ -266,9 +266,12 @@ type Attempt struct {
 	AdminNotBefore             *time.Time        `json:"adminNotBefore,omitempty"`
 	AdminForceStart            bool              `json:"adminForceStart,omitempty"`
 	Failure                    string            `json:"failure,omitempty"`
-	StartedAt                  *time.Time        `json:"startedAt,omitempty"`
-	UpdatedAt                  time.Time         `json:"updatedAt"`
-	CompletedAt                *time.Time        `json:"completedAt,omitempty"`
+	// ReviewGate is the completion gate's decision for a review-declared
+	// task's finished turn: the heads compared and why it passed or failed.
+	ReviewGate  *ReviewCompletionGate `json:"reviewGate,omitempty"`
+	StartedAt   *time.Time            `json:"startedAt,omitempty"`
+	UpdatedAt   time.Time             `json:"updatedAt"`
+	CompletedAt *time.Time            `json:"completedAt,omitempty"`
 }
 
 // TurnLive reports whether this attempt currently has a turn that a thread is

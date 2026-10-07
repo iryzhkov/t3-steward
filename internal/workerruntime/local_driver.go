@@ -205,6 +205,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	inputs := make([]domain.Artifact, 0, len(pkg.StaticInputs))
 	dependencyTasks := make([]domain.Task, 0, len(pkg.Dependencies))
 	dependencyArtifacts := make([]domain.Artifact, 0)
+	var acceptedCommits map[string][]string
 	objects := append([]workerproto.ArtifactObject{pkg.Prompt}, pkg.StaticInputs...)
 	for _, dependency := range pkg.Dependencies {
 		objects = append(objects, dependency.Artifacts...)
@@ -261,6 +262,12 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		}
 		task.DependencyInputs[producer] = names
 		dependencyTasks = append(dependencyTasks, dependencyTask)
+		if len(dependency.AcceptedCommits) != 0 {
+			if acceptedCommits == nil {
+				acceptedCommits = make(map[string][]string)
+			}
+			acceptedCommits[dependency.TaskID] = append([]string(nil), dependency.AcceptedCommits...)
+		}
 	}
 	if d.Config.DryRun {
 		path := d.workspacePath(pkg)
@@ -283,7 +290,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 		WorkflowRunID: pkg.Identity.WorkflowRunID, Task: task, Attempt: attempt,
 		Environment: environment, InputArtifacts: inputs, DependencyTasks: dependencyTasks,
 		DependencyArtifacts: dependencyArtifacts, CommitBundles: commitBundles,
-		DependencySources: dependencySources(pkg),
+		DependencySources: dependencySources(pkg), AcceptedCommits: acceptedCommits,
 	})
 	if err != nil {
 		return "", err
@@ -1077,6 +1084,10 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		// archive published with it below, is one upload, so bundle metadata
 		// is kept only where that upload would still be accepted.
 		AdmitResult: d.resultAdmission(pkg, message, archive),
+		// A package that requires the workspace HEAD is review-declared: the
+		// finalizer reports its HEAD after verification and stages, rather
+		// than publishes, its declared commits.
+		ReviewGated: pkg.RequiresWorkspaceHead(),
 	})
 	if err != nil {
 		return err

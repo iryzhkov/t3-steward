@@ -96,7 +96,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	report := ResultImportReport{}
 	outputs := make(map[string]string)
 	artifacts := make([]domain.Artifact, 0, len(manifest.Objects))
-	var summaries, logs, preflightLogs, verifications int
+	var summaries, logs, preflightLogs, verifications, workspaceHeads int
 	for _, object := range manifest.Objects {
 		artifact, err := resultArtifact(object, manifest, attempt, task, manifest.CreatedAt)
 		if err != nil {
@@ -127,7 +127,16 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 			}
 		case domain.ArtifactVerification:
 			verifications++
+		case domain.ArtifactGitState:
+			workspaceHeads++
 		}
+	}
+	if workspaceHeads > 1 || workspaceHeads == 1 && task.ReviewRequirements == nil {
+		// Only a review-declared task is asked for its workspace HEAD, and it
+		// is asked once.
+		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now,
+			fmt.Errorf("result import carries %d workspace HEAD reports; only a task that declares review: carries one, and this task declares review: %t",
+				workspaceHeads, task.ReviewRequirements != nil))
 	}
 	missingOutputs, err := validateDeclaredResultOutputs(task, outputs)
 	if err != nil {
@@ -173,6 +182,19 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		verificationPassed = false
 		failure = strings.TrimPrefix(failure+"; review_output verification failed: "+reviewErr.Error(), "; ")
 	}
+	var gate *domain.ReviewCompletionGate
+	if verificationPassed && task.ReviewRequirements != nil && !attempt.IsSupervisionActivation() {
+		// A review-declared task completes only with work its latest review
+		// round accepted. A result that already failed keeps its own reason.
+		decided, err := i.reviewCompletionGate(ctx, task, attempt, artifacts, payloads)
+		if err != nil {
+			return report, err
+		}
+		gate = &decided
+		if !decided.Passed {
+			verificationPassed, failure = false, decided.Failure()
+		}
+	}
 	for index, artifact := range artifacts {
 		published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
 			CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,
@@ -217,9 +239,67 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		ID: outcomeID, AttemptID: attempt.ID,
 		Marker: domain.TurnOutcomeDone, VerificationPassed: verificationPassed, Failure: failure,
 		ReviewVerdict:          reviewVerdict,
-		FinalSummaryArtifactID: summary.ID, ObservedAt: manifest.CreatedAt,
+		FinalSummaryArtifactID: summary.ID, ObservedAt: manifest.CreatedAt, ReviewGate: gate,
 	}}, now)
 	return report, err
+}
+
+// ReviewRoundHeadReader is the durable review round state the completion gate
+// reads. The coordinator's SQLite store implements it.
+type ReviewRoundHeadReader interface {
+	LatestReviewRoundHead(ctx context.Context, runID, taskID string) (domain.ReviewRoundHead, bool, error)
+}
+
+// reviewCompletionGate compares the workspace HEAD the worker reported, and the
+// commits the task's declared commit outputs resolved to, with the head of the
+// task's latest review round. It reads the round from durable state at the
+// moment the result is imported, so a coordinator restart between the round's
+// verdict and the collection changes nothing.
+func (i CoordinatorResultImporter) reviewCompletionGate(ctx context.Context, task domain.Task, attempt domain.Attempt, artifacts []domain.Artifact, payloads [][]byte) (domain.ReviewCompletionGate, error) {
+	reader, ok := i.Store.(ReviewRoundHeadReader)
+	if !ok {
+		// Failing closed: without the rounds nothing can be compared, and a
+		// review-declared task must never complete unreviewed.
+		return domain.ReviewCompletionGate{}, errors.New("result import: review-declared task needs a store that reads review rounds")
+	}
+	var latest *domain.ReviewRoundHead
+	round, found, err := reader.LatestReviewRoundHead(ctx, attempt.WorkflowRunID, task.ID)
+	if err != nil {
+		return domain.ReviewCompletionGate{}, fmt.Errorf("result import: read latest review round: %w", err)
+	}
+	if found {
+		latest = &round
+	}
+	var head *domain.WorkspaceHead
+	var commits []domain.DeclaredCommitHead
+	declaredCommits := make(map[string]struct{})
+	for _, declaration := range task.Outputs {
+		if declaration.Commit != nil {
+			declaredCommits[path.Clean(declaration.Name)] = struct{}{}
+		}
+	}
+	for index, artifact := range artifacts {
+		switch {
+		case artifact.Kind == domain.ArtifactGitState:
+			parsed, parseErr := ParseWorkspaceHead(payloads[index])
+			if parseErr != nil {
+				parsed = domain.WorkspaceHead{Schema: domain.WorkspaceHeadSchema, Error: parseErr.Error()}
+			}
+			head = &parsed
+		case artifact.Kind == domain.ArtifactOutput:
+			if _, declared := declaredCommits[artifact.Name]; !declared {
+				continue
+			}
+			provenance, parseErr := ParseCommitProvenance(payloads[index])
+			if parseErr != nil {
+				// An unreadable record cannot prove the commit is the reviewed one.
+				commits = append(commits, domain.DeclaredCommitHead{Name: artifact.Name, Commit: "unreadable: " + parseErr.Error()})
+				continue
+			}
+			commits = append(commits, domain.DeclaredCommitHead{Name: artifact.Name, Commit: provenance.Commit})
+		}
+	}
+	return domain.EvaluateReviewCompletionGate(latest, head, commits), nil
 }
 
 // refuseWhileWaiting stops a worker result before any artifact enters
@@ -389,17 +469,22 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 	switch kind {
 	case domain.ArtifactOutput:
 	case domain.ArtifactVerification, domain.ArtifactSummary, domain.ArtifactLog:
+	case domain.ArtifactGitState:
+		// The Git state a result carries is the report of its workspace HEAD,
+		// the bundle of a commit the task declared, which is how that commit
+		// reaches a consumer on another worker, or the work-in-progress bundle
+		// of a failed attempt whose commands were still running when its turn
+		// ended.
+		if name == WorkspaceHeadArtifactName || object.ID == WorkspaceHeadArtifactID(attempt.ID) {
+			if object.ID != WorkspaceHeadArtifactID(attempt.ID) || name != WorkspaceHeadArtifactName || object.MediaType != "application/json" {
+				return domain.Artifact{}, fmt.Errorf("result import workspace head identity mismatch: id=%q name=%q mediaType=%q", object.ID, name, object.MediaType)
+			}
+		} else if !(IsCommitBundleOf(task, name) || isWorkInProgressBundleOf(task, attempt.ID, object.ID, name)) || object.MediaType != CommitBundleMediaType {
+			return domain.Artifact{}, fmt.Errorf("result import object %q is not the bundle of a commit the task declares", object.ID)
+		}
 	case domain.ArtifactInput, domain.ArtifactCheckpoint:
 		if !attempt.IsSupervisionActivation() || !strings.HasPrefix(name, "recovery/") {
 			return domain.Artifact{}, fmt.Errorf("result import object %q cannot publish recovery content", object.ID)
-		}
-	case domain.ArtifactGitState:
-		// The Git state a result carries is the bundle of a commit the task
-		// declared, which is how that commit reaches a consumer on another
-		// worker, or the work-in-progress bundle of a failed attempt whose
-		// commands were still running when its turn ended.
-		if !(IsCommitBundleOf(task, name) || isWorkInProgressBundleOf(task, attempt.ID, object.ID, name)) || object.MediaType != CommitBundleMediaType {
-			return domain.Artifact{}, fmt.Errorf("result import object %q is not the bundle of a commit the task declares", object.ID)
 		}
 	default:
 		return domain.Artifact{}, fmt.Errorf("result import object %q has invalid kind %q", object.ID, object.Kind)
