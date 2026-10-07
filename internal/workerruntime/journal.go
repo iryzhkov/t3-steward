@@ -60,6 +60,9 @@ type LocalThrottleRequest struct {
 	RequestedAt time.Time `json:"requestedAt"`
 	// DrainNoticeSent records that the non-blocking drain request reached T3.
 	DrainNoticeSent bool `json:"drain_notice_sent,omitempty"`
+	// DrainNoticeSentAt starts escalation after successful delivery, independently
+	// of RequestedAt, which preserves the original intent for recovery.
+	DrainNoticeSentAt *time.Time `json:"drain_notice_sent_at,omitempty"`
 	// StoppedAt is when the thread was observed stopped after the request.
 	StoppedAt     *time.Time                 `json:"stoppedAt,omitempty"`
 	StoppedTurnID string                     `json:"stoppedTurnId,omitempty"`

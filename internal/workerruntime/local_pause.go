@@ -60,7 +60,11 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 			// would spam the session, so the running branch just observes.
 			return nil
 		}
-		if elapsed := now.Sub(record.LocalThrottle.RequestedAt); record.LocalThrottle.DrainNoticeSent && elapsed < r.config.PauseEscalation {
+		noticeAt := record.LocalThrottle.RequestedAt // legacy journals lack a send timestamp
+		if record.LocalThrottle.DrainNoticeSentAt != nil {
+			noticeAt = *record.LocalThrottle.DrainNoticeSentAt
+		}
+		if elapsed := now.Sub(noticeAt); record.LocalThrottle.DrainNoticeSent && elapsed < r.config.PauseEscalation {
 			// The bucket is stopped, but the notice is still within the
 			// window the daemon gives a stop to take effect.
 			r.log.Debug("drain notice stands; the stop follows if the thread keeps working",
@@ -69,7 +73,7 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		}
 		if kind == domain.ThrottleCommandHardStop {
 			r.log.Warn("drain notice not honoured in time; escalating to the stop", "assignment", id,
-				"thread", record.Package.Package.Identity.ThreadID, "notice_age", now.Sub(record.LocalThrottle.RequestedAt).Round(time.Second))
+				"thread", record.Package.Package.Identity.ThreadID, "notice_age", now.Sub(noticeAt).Round(time.Second))
 		}
 	} else if kind == domain.ThrottleCommandHardStop && record.LocalThrottle == nil {
 		// First contact with a stopped bucket while the thread is mid-work:
@@ -87,6 +91,7 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		// A hard stop after a drain request keeps the earlier request time,
 		// as the watchdog keeps the earliest stop time on its intents.
 		request.RequestedAt = record.LocalThrottle.RequestedAt
+		request.DrainNoticeSentAt = record.LocalThrottle.DrainNoticeSentAt
 	}
 	// The intent is durable before the effect, so a worker that restarts
 	// inside the driver call comes back knowing the stop was its own.
@@ -119,6 +124,8 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 			if current.LocalThrottle != nil {
 				request := *current.LocalThrottle
 				request.DrainNoticeSent = true
+				sentAt := r.now()
+				request.DrainNoticeSentAt = &sentAt
 				current.LocalThrottle = &request
 				state.Attempts[id] = current
 				state.Sequence++
