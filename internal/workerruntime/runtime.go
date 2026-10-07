@@ -318,12 +318,6 @@ func (r *Runtime) containSuperseded(ctx context.Context, existing AttemptRecord)
 func samePackageIgnoringCoordinatorEpoch(left, right workerproto.ExecutionPackage) bool {
 	left.CoordinatorEpoch = 0
 	right.CoordinatorEpoch = 0
-	// Attested gate cache origins are read from the coordinator's records at
-	// build time and grow as other results are imported. A rebuilt offer may
-	// list more of them; the claimed list stays valid, because the coordinator
-	// corroborates any reuse on import.
-	left.GateCacheOrigins = nil
-	right.GateCacheOrigins = nil
 	return reflect.DeepEqual(left, right)
 }
 

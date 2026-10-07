@@ -28,8 +28,7 @@ func gateImportFixture(t *testing.T) (domain.Task, []domain.Artifact, [][]byte, 
 		"commands": []any{map[string]any{"command": "make check-review", "exitCode": 0, "startedAt": now.Add(-time.Second), "completedAt": now, "duration": time.Second}},
 		"treeHash": strings.Repeat("a", 40), "worker": "worker-a", "toolVersions": map[string]string{"git": "git version 2.50"},
 		"startedAt": now.Add(-time.Second), "completedAt": now, "passed": true, "logArtifact": "gate/log.txt",
-		"cacheKey":        strings.Repeat("b", 64),
-		"originalAttempt": "attempt-1",
+		"attempt": "attempt-1",
 	}
 	raw, err := json.Marshal(gate)
 	if err != nil {
@@ -167,14 +166,18 @@ func TestResultGateEvidenceContract(t *testing.T) {
 			g["passed"] = false
 			g["commands"] = []any{}
 			g["treeHash"] = ""
-			g["cacheKey"] = ""
 			g["toolVersions"] = map[string]string{}
 			g["failure"] = map[string]any{"command": "git rev-parse HEAD^{tree}", "exitCode": 1, "reason": "missing HEAD"}
 		}, wantFailure: "gate command failed (1): git rev-parse HEAD^{tree}"},
+		// No gate result is ever reused, so a report claiming to replay another
+		// attempt's pass is malformed evidence, not an approval.
 		{name: "cached", mutate: func(_ *domain.Task, _ *[]domain.Artifact, _ *[][]byte, g map[string]any) {
 			g["cached"] = true
 			g["originalAttempt"] = "attempt-original"
-		}},
+		}, wantError: true},
+		{name: "cache key", mutate: func(_ *domain.Task, _ *[]domain.Artifact, _ *[][]byte, g map[string]any) {
+			g["cacheKey"] = strings.Repeat("b", 64)
+		}, wantError: true},
 		{name: "failure retained", mutate: func(_ *domain.Task, _ *[]domain.Artifact, _ *[][]byte, g map[string]any) {
 			g["passed"] = false
 			g["commands"].([]any)[0].(map[string]any)["exitCode"] = 7
@@ -197,9 +200,8 @@ func TestResultGateEvidenceContract(t *testing.T) {
 		}, wantError: true},
 		{name: "bad tree", mutate: func(_ *domain.Task, _ *[]domain.Artifact, _ *[][]byte, g map[string]any) { g["treeHash"] = "bogus" }, wantError: true},
 		{name: "unknown field", mutate: func(_ *domain.Task, _ *[]domain.Artifact, _ *[][]byte, g map[string]any) { g["unexpected"] = true }, wantError: true},
-		{name: "cached missing original", mutate: func(_ *domain.Task, _ *[]domain.Artifact, _ *[][]byte, g map[string]any) {
-			g["cached"] = true
-			delete(g, "originalAttempt")
+		{name: "missing attempt", mutate: func(_ *domain.Task, _ *[]domain.Artifact, _ *[][]byte, g map[string]any) {
+			delete(g, "attempt")
 		}, wantError: true},
 		{name: "false success", mutate: func(_ *domain.Task, _ *[]domain.Artifact, _ *[][]byte, g map[string]any) {
 			g["commands"].([]any)[0].(map[string]any)["exitCode"] = 7

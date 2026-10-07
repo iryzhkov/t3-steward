@@ -37,9 +37,8 @@ func (d *LocalDriver) scopedDriver(ctx context.Context, pkg workerproto.Executio
 	if manager := d.containedManager(pkg); manager != nil {
 		copy.Finalizer.Processes = containedVerifier{manager: *manager, pkg: pkg}
 		// Host tool versions cannot attest the mounted namespace's toolchain.
-		// Keep contained gates uncached until that identity can be measured.
-		copy.Finalizer.GateCacheDisabled = true
-		copy.Finalizer.GateToolchainIdentity = "contained toolchain identity unavailable; cache disabled"
+		copy.Finalizer.GateContained = true
+		copy.Finalizer.GateToolchainIdentity = "contained toolchain identity unavailable"
 		// Preflight runs inside the same containment as verification, through a
 		// separate entry point: it must not assert a stopped supervisor, because
 		// it runs before the provider session exists.

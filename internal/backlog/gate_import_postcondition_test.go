@@ -136,10 +136,10 @@ func TestChangedOutputAfterGateFailsThroughImport(t *testing.T) {
 	req := h2GateRequest(dir, "attempt-1")
 	req.WorkerID = "worker-a"
 	rewrite := `i=0; while [ $i -lt 400 ]; do echo bad > .s.tmp && mv .s.tmp source.txt; i=$((i+1)); done`
-	req.Task.Gate.Commands = []string{gateBackgroundChild(filepath.Join(storage, "gate-cache"), rewrite, done)}
+	req.Task.Gate.Commands = []string{gateBackgroundChild(rewrite, done)}
 	req.Task.Gate.Timeout = 5 * time.Second
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "source.txt"}}
-	finalized, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), req)
+	finalized, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, afterGate: releaseGateChild(t, done)}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,10 +161,10 @@ func finalizeWithBackgroundRewrite(t *testing.T, dir, output, rewrite string) {
 	done := filepath.Join(t.TempDir(), "done")
 	req := h2GateRequest(dir, "attempt-1")
 	req.WorkerID = "worker-a"
-	req.Task.Gate.Commands = []string{gateBackgroundChild(filepath.Join(storage, "gate-cache"), rewrite, done)}
+	req.Task.Gate.Commands = []string{gateBackgroundChild(rewrite, done)}
 	req.Task.Gate.Timeout = 5 * time.Second
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: output}}
-	finalized, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), req)
+	finalized, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, afterGate: releaseGateChild(t, done)}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,61 +211,50 @@ func TestGateRewriteOfIgnoredOutputFails(t *testing.T) {
 		`i=0; while [ $i -lt 400 ]; do echo bad > .o.tmp && mv .o.tmp out.txt; i=$((i+1)); done`)
 }
 
-// The amended report must remain valid evidence in both of its shapes: a fresh
-// report, and a cached one whose original attempt passed elsewhere.
+// The amended report, and the gate's own tree and revision postcondition
+// failures, must remain valid evidence.
 func TestAmendedGateReportIsValidEvidence(t *testing.T) {
 	task, _, payloads, _ := gateImportFixture(t)
 	var report GateReport
 	if err := json.Unmarshal(payloads[2], &report); err != nil {
 		t.Fatal(err)
 	}
-	for _, cached := range []bool{false, true} {
-		t.Run(fmt.Sprintf("cached=%v", cached), func(t *testing.T) {
-			source := report
-			if cached {
-				source.Cached, source.OriginalAttempt = true, "attempt-0"
-			}
-			raw, err := amendGateForChangedOutputs(source, "attempt-1", []string{`declared output "source.txt" changed after the gate`})
-			if err != nil {
-				t.Fatal(err)
-			}
-			amended, err := decodeGateEvidence(raw)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if amended.Passed || amended.Cached != cached || len(amended.Commands) != 1 {
-				t.Fatalf("amended=%+v", amended)
-			}
-			if err := validateGateReport(task, amended); err != nil {
-				t.Fatalf("amended report rejected: %v", err)
-			}
-			// A tree or revision postcondition is checked by the gate itself,
-			// which a cached report did not run here.
-			for _, command := range []string{"git status", "git rev-parse"} {
-				other := amended
-				other.Failure = &GateFailure{Command: command, ExitCode: 1, Reason: "moved"}
-				if err := validateGateReport(task, other); (err == nil) == cached {
-					t.Fatalf("%s postcondition with cached=%v: err=%v", command, cached, err)
-				}
-			}
-		})
+	raw, err := amendGateForChangedOutputs(report, []string{`declared output "source.txt" changed after the gate`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	amended, err := decodeGateEvidence(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amended.Passed || amended.Attempt != report.Attempt || len(amended.Commands) != 1 {
+		t.Fatalf("amended=%+v", amended)
+	}
+	if err := validateGateReport(task, amended); err != nil {
+		t.Fatalf("amended report rejected: %v", err)
+	}
+	for _, command := range []string{"git status", "git rev-parse"} {
+		other := amended
+		other.Failure = &GateFailure{Command: command, ExitCode: 1, Reason: "moved"}
+		if err := validateGateReport(task, other); err != nil {
+			t.Fatalf("%s postcondition rejected: %v", command, err)
+		}
 	}
 	// A reason or report beyond the coordinator's limits still yields
 	// importable evidence.
 	big := report
-	big.Cached, big.OriginalAttempt = true, "attempt-0"
 	big.ToolVersions = map[string]string{}
 	for index := range 63 {
 		big.ToolVersions[fmt.Sprintf("tool-%02d", index)] = strings.Repeat("v", 4000)
 	}
-	raw, err := amendGateForChangedOutputs(big, "attempt-1", []string{strings.Repeat("x", 9), strings.Repeat("é", 20000)})
+	raw, err = amendGateForChangedOutputs(big, []string{strings.Repeat("x", 9), strings.Repeat("é", 20000)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(raw) > GateEvidenceMaxBytes {
 		t.Fatalf("amended report is %d bytes", len(raw))
 	}
-	amended, err := decodeGateEvidence(raw)
+	amended, err = decodeGateEvidence(raw)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"os/exec"
 	"testing"
-	"time"
 )
 
 func securityGit(t *testing.T, dir string, args ...string) string {
@@ -17,13 +16,13 @@ func securityGit(t *testing.T, dir string, args ...string) string {
 	}
 	return string(raw)
 }
-func TestH2GateIndexFlagsCacheBypass(t *testing.T) {
+func TestH2GateIndexFlagsBypass(t *testing.T) {
 	for _, flag := range []string{"--assume-unchanged", "--skip-worktree"} {
 		t.Run(flag, func(t *testing.T) {
 			dir := h2GateRepository(t)
 			req := h2GateRequest(dir, "clean")
 			req.Task.Gate.Commands = []string{"test \"$(cat source.txt)\" = source"}
-			f := AttemptFinalizer{StorageRoot: t.TempDir(), Processes: &directRunner{}, GateCacheAge: time.Hour}
+			f := AttemptFinalizer{StorageRoot: t.TempDir(), Processes: &directRunner{}}
 			first, _, err := f.runGate(context.Background(), req)
 			if err != nil || !first.Passed {
 				t.Fatalf("first=%+v err=%v", first, err)
@@ -35,8 +34,8 @@ func TestH2GateIndexFlagsCacheBypass(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if second.Passed || second.Cached {
-				t.Fatalf("dirty tracked file bypassed worker gate: passed=%v cached=%v", second.Passed, second.Cached)
+			if second.Passed {
+				t.Fatalf("dirty tracked file bypassed worker gate: %+v", second)
 			}
 		})
 	}
@@ -45,7 +44,7 @@ func TestH2GateCoreWorktreeBypass(t *testing.T) {
 	dir := h2GateRepository(t)
 	req := h2GateRequest(dir, "root-clean")
 	req.Task.Gate.Commands = []string{"test \"$(cat source.txt)\" = source"}
-	f := AttemptFinalizer{StorageRoot: t.TempDir(), Processes: &directRunner{}, GateCacheAge: time.Hour}
+	f := AttemptFinalizer{StorageRoot: t.TempDir(), Processes: &directRunner{}}
 	first, _, err := f.runGate(context.Background(), req)
 	if err != nil || !first.Passed {
 		t.Fatalf("first=%v err=%v", first.Passed, err)
@@ -59,8 +58,8 @@ func TestH2GateCoreWorktreeBypass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Passed || second.Cached {
-		t.Fatalf("core.worktree substituted different filesystem: passed=%v cached=%v", second.Passed, second.Cached)
+	if second.Passed {
+		t.Fatalf("core.worktree substituted different filesystem: %+v", second)
 	}
 }
 func TestH2GateManualGitlink(t *testing.T) {
@@ -73,7 +72,7 @@ func TestH2GateManualGitlink(t *testing.T) {
 	securityGit(t, dir, "commit", "-qm", "manual gitlink")
 	req := h2GateRequest(dir, "manual-clean")
 	req.Task.Gate.Commands = []string{"test \"$(cat nested/source.txt)\" = source"}
-	f := AttemptFinalizer{StorageRoot: t.TempDir(), Processes: &directRunner{}, GateCacheAge: time.Hour}
+	f := AttemptFinalizer{StorageRoot: t.TempDir(), Processes: &directRunner{}}
 	first, _, err := f.runGate(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +83,7 @@ func TestH2GateManualGitlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Passed || second.Passed || second.Cached {
-		t.Fatalf("manual gitlink bypass: first=%v second=%v cached=%v", first.Passed, second.Passed, second.Cached)
+	if first.Passed || second.Passed {
+		t.Fatalf("manual gitlink bypass: first=%v second=%v", first.Passed, second.Passed)
 	}
 }

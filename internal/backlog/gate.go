@@ -16,7 +16,6 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 
@@ -25,24 +24,23 @@ import (
 
 // GateReport is worker-owned evidence, captured outside the producer's turn.
 type GateReport struct {
-	Commands         []GateCommandResult `json:"commands"`
-	TreeHash         string              `json:"treeHash"`
-	Worker           string              `json:"worker"`
-	ToolVersions     map[string]string   `json:"toolVersions"`
-	StartedAt        time.Time           `json:"startedAt"`
-	CompletedAt      time.Time           `json:"completedAt"`
-	Cached           bool                `json:"cached"`
-	OriginalAttempt  string              `json:"originalAttempt"`
-	CacheKey         string              `json:"cacheKey"`
-	Passed           bool                `json:"passed"`
-	Failure          *GateFailure        `json:"failure,omitempty"`
-	LogTruncated     bool                `json:"logTruncated"`
-	LogArtifact      string              `json:"logArtifact"`
-	OutputLimitation string              `json:"outputLimitation,omitempty"`
+	Commands     []GateCommandResult `json:"commands"`
+	TreeHash     string              `json:"treeHash"`
+	Worker       string              `json:"worker"`
+	ToolVersions map[string]string   `json:"toolVersions"`
+	StartedAt    time.Time           `json:"startedAt"`
+	CompletedAt  time.Time           `json:"completedAt"`
+	// Attempt is the attempt whose finalization ran these commands. Every
+	// report is produced by its own attempt; a gate result is never reused.
+	Attempt          string       `json:"attempt"`
+	Passed           bool         `json:"passed"`
+	Failure          *GateFailure `json:"failure,omitempty"`
+	LogTruncated     bool         `json:"logTruncated"`
+	LogArtifact      string       `json:"logArtifact"`
+	OutputLimitation string       `json:"outputLimitation,omitempty"`
 	// attestedCommit is this attempt's HEAD commit, whose tree the gate
-	// attests. It is not evidence, since a cached report may come from another
-	// commit with the same tree. Finalize publishes a declared commit only if
-	// it still resolves to this one.
+	// attests. Finalize publishes a declared commit only if it still resolves
+	// to this one.
 	attestedCommit string
 	// outputDigests holds the SHA-256 of each declared file output as the
 	// gate saw it, by declared name; an output absent then has no entry.
@@ -65,14 +63,9 @@ type GateFailure struct {
 
 const gateLogLimit = 1 << 20
 
-type gateCacheRecord struct {
-	Report GateReport `json:"report"`
-	Log    []byte     `json:"log"`
-}
-
 func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) (GateReport, []byte, error) {
 	gate := req.Task.Gate
-	report := GateReport{StartedAt: f.now(), OriginalAttempt: req.Attempt.ID, Worker: req.WorkerID, LogArtifact: "gate/log.txt", ToolVersions: map[string]string{}}
+	report := GateReport{StartedAt: f.now(), Attempt: req.Attempt.ID, Worker: req.WorkerID, LogArtifact: "gate/log.txt", ToolVersions: map[string]string{}}
 	if report.Worker == "" {
 		report.Worker = "local"
 	}
@@ -130,45 +123,8 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	if report.ToolVersions["lane"] == "" {
 		report.ToolVersions["lane"] = "local"
 	}
-	if f.GateCacheDisabled {
-		report.OutputLimitation = "Contained supervisor exposes exit status only; gate/log.txt retains the invocation receipt, not command stdout/stderr. Tool versions describe the host; cache reuse is disabled for this lane."
-	}
-	keyBytes, _ := json.Marshal(struct {
-		Tree     string
-		Commands []string
-		Timeout  time.Duration
-		Tools    map[string]string
-	}{report.TreeHash, gate.Commands, gate.Timeout, tools})
-	key := sha256.Sum256(keyBytes)
-	report.CacheKey = hex.EncodeToString(key[:])
-	cacheRoot := filepath.Join(f.StorageRoot, "gate-cache")
-	lock, err := acquireFileLock(ctx, cacheRoot, report.CacheKey)
-	if err != nil {
-		return report, nil, err
-	}
-	defer lock.Close()
-	cachePath := filepath.Join(cacheRoot, report.CacheKey+".json")
-	if f.GateCacheAge > 0 && !f.GateCacheDisabled {
-		cached, ok := readGateCache(cachePath, report.CacheKey, f.now(), f.GateCacheAge)
-		// The record is only a pointer: it is reused when the coordinator
-		// attests that its original attempt passed here, and the coordinator
-		// checks the replayed report against the one it recorded.
-		if ok && !cached.Report.Cached && cached.Report.OriginalAttempt != req.Attempt.ID && slices.Contains(f.GateCacheOrigins, cached.Report.OriginalAttempt) {
-			// Recheck after taking the cross-process lock: another finalizer could have
-			// waited while the workspace was changed.
-			digests := gateOutputDigests(req)
-			clean, err = gateCleanTree(ctx, req)
-			current, treeErr := gateGit(ctx, req.WorkspaceDir, "rev-parse", "HEAD^{tree}")
-			currentHead, moved, headErr := gateDeclaredCommitsAtHead(ctx, req)
-			if err == nil && treeErr == nil && headErr == nil && clean && moved == "" && (!gateDeclaresCommit(req) || currentHead == head) && strings.TrimSpace(current) == report.TreeHash {
-				cached.Report.Cached = true
-				cached.Report.Worker = report.Worker
-				cached.Report.attestedCommit = head
-				cached.Report.outputDigests = digests
-				return cached.Report, cached.Log, nil
-			}
-			return fail("git status", 1, "workspace changed while waiting for gate cache")
-		}
+	if f.GateContained {
+		report.OutputLimitation = "Contained supervisor exposes exit status only; gate/log.txt retains the invocation receipt, not command stdout/stderr. Tool versions describe the host."
 	}
 	log := boundedBuffer{limit: gateLogLimit}
 	for index, command := range gate.Commands {
@@ -246,8 +202,8 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 			report.Passed = true
 		}
 	}
-	// Enforce the transport/evidence cap before writing reusable cache evidence.
-	// Unusual tool output must become an importable failure, never poison a run.
+	// Enforce the transport/evidence cap here: unusual tool output must become
+	// an importable failure, never poison a run.
 	structured, marshalErr := json.Marshal(report)
 	if marshalErr != nil {
 		return report, nil, marshalErr
@@ -258,42 +214,11 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 		report.Failure = &GateFailure{Command: "gate metadata", ExitCode: 1, Reason: "structured gate metadata exceeds coordinator limit; see gate/log.txt"}
 		report.Commands = nil
 		report.ToolVersions = map[string]string{}
-		report.CacheKey = ""
 	}
 	report.LogTruncated = report.LogTruncated || log.truncated
 	rawLog := []byte(log.String())
 	if report.LogTruncated {
 		rawLog = append(rawLog, []byte("\n[output truncated at 1 MiB; structured result: gate; retained log: gate/log.txt]\n")...)
-	}
-	if report.Passed && f.GateCacheAge > 0 && !f.GateCacheDisabled {
-		raw, err := json.Marshal(gateCacheRecord{Report: report, Log: rawLog})
-		if err != nil {
-			return report, rawLog, err
-		}
-		file, err := os.CreateTemp(cacheRoot, ".gate-")
-		if err != nil {
-			return report, rawLog, err
-		}
-		path := file.Name()
-		defer os.Remove(path)
-		if _, err = file.Write(raw); err == nil {
-			err = file.Sync()
-		}
-		err = errors.Join(err, file.Close())
-		if err != nil {
-			return report, rawLog, err
-		}
-		if err = os.Rename(path, cachePath); err != nil {
-			return report, rawLog, err
-		}
-		dir, err := os.Open(cacheRoot)
-		if err != nil {
-			return report, rawLog, err
-		}
-		err = errors.Join(dir.Sync(), dir.Close())
-		if err != nil {
-			return report, rawLog, err
-		}
 	}
 	return report, rawLog, nil
 }
@@ -372,7 +297,7 @@ const gateFailureReasonMax = 16384
 // which decides from the uploaded evidence, fails the attempt as well. The
 // result stays within the coordinator's evidence limit; if the report cannot,
 // it becomes a preparation-style failure for this attempt, as runGate does.
-func amendGateForChangedOutputs(report GateReport, attemptID string, changed []string) ([]byte, error) {
+func amendGateForChangedOutputs(report GateReport, changed []string) ([]byte, error) {
 	reason := strings.Join(changed, "; ")
 	if len(reason) > gateFailureReasonMax {
 		const suffix = " [truncated]"
@@ -387,9 +312,6 @@ func amendGateForChangedOutputs(report GateReport, attemptID string, changed []s
 	if len(raw)+1 > GateEvidenceMaxBytes {
 		report.Commands = nil
 		report.ToolVersions = map[string]string{}
-		report.CacheKey = ""
-		report.Cached = false
-		report.OriginalAttempt = attemptID
 		if raw, err = json.MarshalIndent(report, "", "  "); err != nil {
 			return nil, err
 		}
@@ -442,37 +364,6 @@ func gateStructuredReason(reason string) string {
 	return buffer.String() + " [truncated; see gate/log.txt]"
 }
 
-func readGateCache(path, key string, now time.Time, age time.Duration) (gateCacheRecord, bool) {
-	var record gateCacheRecord
-	file, err := os.Open(path)
-	if err != nil {
-		return record, false
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 2*gateLogLimit {
-		return record, false
-	}
-	decoder := json.NewDecoder(io.LimitReader(file, 2*gateLogLimit))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&record) != nil {
-		return record, false
-	}
-	var extra json.RawMessage
-	if decoder.Decode(&extra) != io.EOF {
-		return record, false
-	}
-	r := record.Report
-	if r.CacheKey != key || !r.Passed || r.Failure != nil || r.CompletedAt.IsZero() || r.CompletedAt.After(now) || now.Sub(r.CompletedAt) > age || r.OriginalAttempt == "" || len(r.Commands) == 0 {
-		return record, false
-	}
-	for _, c := range r.Commands {
-		if c.ExitCode != 0 || c.StartedAt.IsZero() || c.CompletedAt.Before(c.StartedAt) {
-			return record, false
-		}
-	}
-	return record, true
-}
 func gateGit(ctx context.Context, dir string, args ...string) (string, error) {
 	// Metadata runs on the worker even for contained gates. Never allow a
 	// repository's fsmonitor, hook or conversion filter to execute on the host.
@@ -526,7 +417,7 @@ func gateMetadataCommandBounded(ctx context.Context, dir, program string, limit 
 }
 func gateCleanTree(ctx context.Context, req AttemptFinalization) (bool, error) {
 	// Submodule worktrees are not described by the outer commit tree alone.
-	// Reject this unsupported layout rather than attest or cache a different tree.
+	// Reject this unsupported layout rather than attest a different tree.
 	if _, err := os.Lstat(filepath.Join(req.WorkspaceDir, ".gitmodules")); err == nil {
 		return false, errors.New("worker-owned gate requires a repository without submodules")
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -710,54 +601,5 @@ func gateToolVersions(ctx context.Context) (map[string]string, error) {
 		}
 		tools[tool.name] = identity
 	}
-	tools["environmentSHA256"] = gateEnvironmentDigest(os.Environ())
 	return tools, nil
-}
-
-// gateEnvironmentNames and gateEnvironmentPrefixes name the inherited
-// variables that can change what a gate command builds or how it runs.
-//
-// The digest covers only these. Hashing the whole environment made the cache
-// useless across service restarts: systemd sets INVOCATION_ID, JOURNAL_STREAM,
-// SYSTEMD_EXEC_PID, MANAGERPID and MEMORY_PRESSURE_WATCH afresh on every start,
-// and a desktop session adds its own instance signatures, so an unchanged tree
-// missed after every restart or converge.
-var (
-	gateEnvironmentNames = map[string]struct{}{
-		"PATH": {}, "HOME": {}, "SHELL": {}, "TMPDIR": {}, "TZ": {}, "LANG": {}, "LANGUAGE": {},
-		// The gate shell itself: bash as /bin/sh imports these.
-		"SHELLOPTS": {}, "BASHOPTS": {}, "CDPATH": {}, "BASH_ENV": {}, "ENV": {},
-		"CC": {}, "CXX": {}, "AR": {}, "CFLAGS": {}, "CPPFLAGS": {}, "CXXFLAGS": {}, "LDFLAGS": {},
-		"MAKEFLAGS": {}, "GNUMAKEFLAGS": {}, "MFLAGS": {}, "MAKEFILES": {},
-		"LD_LIBRARY_PATH": {}, "LD_PRELOAD": {}, "PKG_CONFIG_PATH": {}, "PKG_CONFIG_LIBDIR": {},
-		"XDG_CACHE_HOME": {}, "XDG_CONFIG_HOME": {}, "XDG_DATA_HOME": {},
-	}
-	gateEnvironmentPrefixes = []string{
-		"GO", "CGO_", "LC_", "GIT_",
-		// Toolchains a gate command may run besides Go.
-		"PYTHON", "NODE_", "NPM_CONFIG_", "npm_config_", "CARGO_", "RUST", "JAVA_",
-	}
-)
-
-// gateEnvironmentDigest hashes the allowlisted part of env. Only a digest is
-// stored, because even allowlisted values may carry credentials.
-func gateEnvironmentDigest(env []string) string {
-	// A child process sees the last of duplicate variables, so the last wins
-	// here too; otherwise two different effective values could share a key.
-	last := make(map[string]string)
-	for _, entry := range env {
-		name, _, _ := strings.Cut(entry, "=")
-		if _, ok := gateEnvironmentNames[name]; ok || slices.ContainsFunc(gateEnvironmentPrefixes, func(prefix string) bool {
-			return strings.HasPrefix(name, prefix)
-		}) {
-			last[name] = entry
-		}
-	}
-	selected := make([]string, 0, len(last))
-	for _, entry := range last {
-		selected = append(selected, entry)
-	}
-	sort.Strings(selected)
-	sum := sha256.Sum256([]byte(strings.Join(selected, "\x00")))
-	return hex.EncodeToString(sum[:])
 }

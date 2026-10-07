@@ -1012,8 +1012,6 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		return err
 	}
 	finalizer := d.Finalizer
-	finalizer.GateCacheAge = pkg.Limits.GateCacheAge
-	finalizer.GateCacheOrigins = pkg.GateCacheOrigins
 	finalizer.GateTimeoutMax = pkg.Limits.VerificationTimeout
 	finalized, err := finalizer.Finalize(ctx, backlog.AttemptFinalization{
 		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "", WorkerID: pkg.WorkerID,

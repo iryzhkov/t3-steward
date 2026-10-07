@@ -21,17 +21,15 @@ func TestGateCollectionBudgetIncludesVerifyAndGate(t *testing.T) {
 	}
 }
 
-// A coordinator that restarts rebuilds a claimed offer from records that may
-// since hold more attested gate passes. The replay must still match, or the
-// worker withholds the offer and the assignment stalls until it expires.
-func TestOfferReplayIgnoresGrownGateCacheOrigins(t *testing.T) {
+// A coordinator that restarts rebuilds a claimed offer; the replay matches
+// only while its gate is unchanged.
+func TestOfferReplayDetectsChangedGate(t *testing.T) {
 	claimed := testPackage()
 	claimed.Gate = &domain.TaskGate{Commands: []string{"true"}, Timeout: time.Minute}
 	replayed := claimed
 	replayed.CoordinatorEpoch++
-	replayed.GateCacheOrigins = []string{"earlier-gated-attempt"}
 	if !samePackageIgnoringCoordinatorEpoch(claimed, replayed) {
-		t.Fatal("replayed offer with more attested origins was treated as a different package")
+		t.Fatal("replayed offer was treated as a different package")
 	}
 	replayed.Gate = &domain.TaskGate{Commands: []string{"false"}, Timeout: time.Minute}
 	if samePackageIgnoringCoordinatorEpoch(claimed, replayed) {

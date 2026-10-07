@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestExplanationIncludesRecordedGateCacheEvidence(t *testing.T) {
+func TestExplanationIncludesRecordedGateEvidence(t *testing.T) {
 	reader := explainReader{records: sqlite.CoordinatorRecords{
 		Workflows:    []domain.Workflow{{ID: "wf", TaskIDs: []string{"task"}}},
 		WorkflowRuns: []domain.WorkflowRun{{ID: "run-1", WorkflowID: "wf"}},
@@ -22,14 +22,14 @@ func TestExplanationIncludesRecordedGateCacheEvidence(t *testing.T) {
 		if id != "gate-attempt" {
 			t.Fatalf("unexpected gate artifact %q", id)
 		}
-		return reader.records.Artifacts[0], io.NopCloser(strings.NewReader(`{"passed":true,"cached":true,"originalAttempt":"attempt-original","treeHash":"tree","logArtifact":"gate/log.txt"}`)), nil
+		return reader.records.Artifacts[0], io.NopCloser(strings.NewReader(`{"passed":true,"attempt":"attempt","treeHash":"tree-identity","logArtifact":"gate/log.txt"}`)), nil
 	})
 	explanation := explainTask(t, service, "task")
 	// Read the whole transport document because gate evidence is part of JSON,
 	// with the same provenance also summarized in text by informational details.
 	found := false
 	for _, detail := range explanation.Details {
-		if strings.Contains(detail, "cached=true") && strings.Contains(detail, "attempt-original") {
+		if strings.Contains(detail, "passed=true attempt=attempt tree=tree-identity") {
 			found = true
 		}
 	}

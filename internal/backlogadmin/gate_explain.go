@@ -31,5 +31,5 @@ func (s *Service) addGateExplanation(ctx context.Context, principal Principal, e
 		return
 	}
 	explanation.Gate = &report
-	explanation.Details = append(explanation.Details, fmt.Sprintf("worker gate: passed=%t cached=%t original attempt=%s tree=%s log=%s", report.Passed, report.Cached, report.OriginalAttempt, report.TreeHash, report.LogArtifact))
+	explanation.Details = append(explanation.Details, fmt.Sprintf("worker gate: passed=%t attempt=%s tree=%s log=%s", report.Passed, report.Attempt, report.TreeHash, report.LogArtifact))
 }

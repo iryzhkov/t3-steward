@@ -21,8 +21,8 @@ const taskResultUsage = `Usage: t3-steward task result <run>[/<task>] [--output 
 
 Collect a finished task: its final message and every output it declared, in one
 call, including worker gate evidence when present. The gate report is written
-to gate/report.json and its captured output to gate/log.txt. Gate cache provenance
-is inlined in JSON and shown in text. Without a task, every task of the run is collected.
+to gate/report.json and its captured output to gate/log.txt. The gate report is
+inlined in JSON and summarized in text. Without a task, every task of the run is collected.
 
 The files are written under DIR, each under the name the task declared for it,
 and the directory is printed. The default is <state>/results/<run>/<task>/,
@@ -496,7 +496,7 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 	for _, task := range document.Tasks {
 		fmt.Fprintf(out, "\n%s (%s)\n", task.Task, task.Progress)
 		if task.Gate != nil {
-			fmt.Fprintf(out, "  gate: passed=%t cached=%t original attempt=%s tree=%s\n", task.Gate.Passed, task.Gate.Cached, task.Gate.OriginalAttempt, task.Gate.TreeHash)
+			fmt.Fprintf(out, "  gate: passed=%t attempt=%s tree=%s\n", task.Gate.Passed, task.Gate.Attempt, task.Gate.TreeHash)
 		}
 		if task.Failure != "" {
 			fmt.Fprintf(out, "  failure: %s\n", task.Failure)

@@ -34,7 +34,6 @@ func TestGateDefaultTimeoutDispatchesUnderDefaultConfig(t *testing.T) {
 	b := packageBuilder(t, records)
 	defaults := config.Default().BacklogV2.Verification
 	b.VerificationTimeout = defaults.CommandTimeout.D()
-	b.GateCacheAge = defaults.GateCacheAge.D()
 	b.WorkerCapabilities = map[string][]string{a.WorkerID: {workerproto.PackageCapabilityWorkerOwnedGate}}
 	offer, err := b.BuildAssignmentOffer(context.Background(), a, now.Add(time.Minute))
 	if err != nil {
@@ -60,7 +59,6 @@ func TestGateTimeoutAboveCoordinatorMaximumStillDispatches(t *testing.T) {
 	}
 	b := packageBuilder(t, records)
 	b.VerificationTimeout = 30 * time.Minute
-	b.GateCacheAge = 24 * time.Hour
 	b.WorkerCapabilities = map[string][]string{a.WorkerID: {workerproto.PackageCapabilityWorkerOwnedGate}}
 	offer, err := b.BuildAssignmentOffer(context.Background(), a, now.Add(time.Minute))
 	if err != nil {

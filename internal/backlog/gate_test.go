@@ -12,41 +12,6 @@ import (
 	"time"
 )
 
-func TestH2GateCacheMissForCommandsToolsAndAge(t *testing.T) {
-	for _, change := range []string{"commands", "tools", "timeout", "age"} {
-		t.Run(change, func(t *testing.T) {
-			dir := h2GateRepository(t)
-			storage := t.TempDir()
-			now := time.Now().UTC()
-			f := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour, Now: func() time.Time { return now }}
-			req := h2GateRequest(dir, "first")
-			first, err := f.Finalize(context.Background(), req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cleanupImmutable(t, first.StorageDir)
-			switch change {
-			case "commands":
-				req.Task.Gate.Commands = []string{"printf different"}
-			case "tools":
-				f.GateToolchainIdentity = "new-toolchain"
-			case "timeout":
-				req.Task.Gate.Timeout = 2 * time.Second
-			case "age":
-				now = now.Add(2 * time.Hour)
-			}
-			req.Attempt.ID = "second"
-			second, err := f.Finalize(context.Background(), req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cleanupImmutable(t, second.StorageDir)
-			if h2ReadGate(t, storage, second).Cached {
-				t.Fatal("changed cache identity/age reused result")
-			}
-		})
-	}
-}
 func TestH2GateBoundsOutputAndRetainsPointer(t *testing.T) {
 	dir := h2GateRepository(t)
 	storage := t.TempDir()
@@ -99,63 +64,49 @@ func TestH2GateDependencyIsWorkerEvidence(t *testing.T) {
 	}
 }
 
-func TestH2GateConcurrentCacheAndCorruptReplay(t *testing.T) {
+// Concurrent identical gates on one worker each run their own commands; no
+// attempt reuses another's result.
+func TestH2GateConcurrentIdenticalGatesEachRun(t *testing.T) {
 	dir := h2GateRepository(t)
 	storage := t.TempDir()
 	type response struct {
+		id     string
 		result FinalizedAttempt
+		calls  int
 		err    error
 	}
 	responses := make(chan response, 2)
 	for _, id := range []string{"concurrent-a", "concurrent-b"} {
 		go func(id string) {
-			f := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour, GateCacheOrigins: []string{"concurrent-a", "concurrent-b"}}
-			result, err := f.Finalize(context.Background(), h2GateRequest(dir, id))
-			responses <- response{result, err}
+			runner := &directRunner{}
+			result, err := (AttemptFinalizer{StorageRoot: storage, Processes: runner}).Finalize(context.Background(), h2GateRequest(dir, id))
+			responses <- response{id, result, len(runner.calls), err}
 		}(id)
 	}
-	cached := 0
-	var key string
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		response := <-responses
 		if response.err != nil {
 			t.Fatal(response.err)
 		}
 		cleanupImmutable(t, response.result.StorageDir)
 		r := h2ReadGate(t, storage, response.result)
-		key = r.CacheKey
-		if r.Cached {
-			cached++
+		if !r.Passed || r.Attempt != response.id || response.calls != 2 {
+			t.Fatalf("%s: report=%+v calls=%d", response.id, r, response.calls)
 		}
 	}
-	if cached != 1 {
-		t.Fatalf("concurrent identical gates reused=%d", cached)
-	}
-	// Interrupted/corrupt cache records are misses, never success evidence.
-	if err := os.WriteFile(filepath.Join(storage, "gate-cache", key+".json"), []byte("{"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), h2GateRequest(dir, "replay"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cleanupImmutable(t, result.StorageDir)
-	if h2ReadGate(t, storage, result).Cached {
-		t.Fatal("corrupt cache reused")
-	}
 }
-func TestH2GatePostconditionCannotCacheMutation(t *testing.T) {
+func TestH2GatePostconditionCannotPassMutation(t *testing.T) {
 	dir := h2GateRepository(t)
 	storage := t.TempDir()
 	req := h2GateRequest(dir, "mutating")
 	req.Task.Gate.Commands = []string{"printf mutation >> source.txt"}
-	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), req)
+	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleanupImmutable(t, result.StorageDir)
 	report := h2ReadGate(t, storage, result)
-	if report.Passed || report.Cached || report.Failure == nil || report.Failure.Command != "git status" {
+	if report.Passed || report.Failure == nil || report.Failure.Command != "git status" {
 		t.Fatalf("mutation=%+v", report)
 	}
 }
@@ -237,7 +188,7 @@ func TestH2GatePreparationFailureFitsCoordinatorBounds(t *testing.T) {
 	}
 	t.Fatal("missing failure log")
 }
-func TestH2GateDirtySubmoduleCannotReuseCache(t *testing.T) {
+func TestH2GateDirtySubmoduleCannotPass(t *testing.T) {
 	sub := h2GateRepository(t)
 	dir := h2GateRepository(t)
 	for _, args := range [][]string{{"-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "sub"}, {"commit", "-qm", "submodule"}} {
@@ -250,7 +201,7 @@ func TestH2GateDirtySubmoduleCannotReuseCache(t *testing.T) {
 	storage := t.TempDir()
 	req := h2GateRequest(dir, "sub-clean")
 	req.Task.Gate.Commands = []string{"test \"$(cat sub/source.txt)\" = source"}
-	f := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}
+	f := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}}
 	first, err := f.Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -267,8 +218,8 @@ func TestH2GateDirtySubmoduleCannotReuseCache(t *testing.T) {
 	}
 	cleanupImmutable(t, second.StorageDir)
 	report := h2ReadGate(t, storage, second)
-	if report.Passed || report.Cached {
-		t.Fatalf("dirty nested tree reused: %+v", report)
+	if report.Passed {
+		t.Fatalf("dirty nested tree passed: %+v", report)
 	}
 }
 
@@ -319,49 +270,53 @@ func h2ReadGate(t *testing.T, storage string, result FinalizedAttempt) GateRepor
 	t.Fatal("missing gate result")
 	return GateReport{}
 }
-func TestH2GateAfterVerifyAndDurableCache(t *testing.T) {
+
+// The gate runs after verification and again for every attempt, even on an
+// identical tree: no result is reused and nothing is kept for reuse.
+func TestH2GateAfterVerifyRunsForEveryAttempt(t *testing.T) {
 	dir := h2GateRepository(t)
 	storage := t.TempDir()
 	runner := &directRunner{}
-	finalizer := AttemptFinalizer{StorageRoot: storage, Processes: runner, GateCacheAge: time.Hour}
+	finalizer := AttemptFinalizer{StorageRoot: storage, Processes: runner}
 	first, err := finalizer.Finalize(context.Background(), h2GateRequest(dir, "first"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleanupImmutable(t, first.StorageDir)
 	report := h2ReadGate(t, storage, first)
-	if !report.Passed || report.Cached || len(report.TreeHash) != 40 || len(report.Commands) != 1 || report.Commands[0].Command != "printf gated" {
+	if !report.Passed || report.Attempt != "first" || len(report.TreeHash) != 40 || len(report.Commands) != 1 || report.Commands[0].Command != "printf gated" {
 		t.Fatalf("gate: %+v", report)
 	}
 	if len(runner.calls) != 2 {
 		t.Fatalf("calls=%d", len(runner.calls))
 	}
-	// A new finalizer simulates restart; verification still runs, gate reuses durable evidence.
-	restartRunner := &directRunner{}
-	restart := AttemptFinalizer{StorageRoot: storage, Processes: restartRunner, GateCacheAge: time.Hour, GateCacheOrigins: []string{"first"}}
-	second, err := restart.Finalize(context.Background(), h2GateRequest(dir, "second"))
+	secondRunner := &directRunner{}
+	second, err := (AttemptFinalizer{StorageRoot: storage, Processes: secondRunner}).Finalize(context.Background(), h2GateRequest(dir, "second"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleanupImmutable(t, second.StorageDir)
-	cached := h2ReadGate(t, storage, second)
-	if !cached.Cached || cached.OriginalAttempt != "first" || len(restartRunner.calls) != 1 {
-		t.Fatalf("cache=%+v calls=%d", cached, len(restartRunner.calls))
+	rerun := h2ReadGate(t, storage, second)
+	if !rerun.Passed || rerun.Attempt != "second" || len(secondRunner.calls) != 2 {
+		t.Fatalf("second gate=%+v calls=%d", rerun, len(secondRunner.calls))
+	}
+	if _, err := os.Stat(filepath.Join(storage, "gate-cache")); !os.IsNotExist(err) {
+		t.Fatalf("gate left reusable state behind: %v", err)
 	}
 	for _, a := range second.Artifacts {
 		if a.Name == "gate/log.txt" {
 			if !strings.Contains(string(readStoredArtifact(t, storage, a)), "gated") {
-				t.Fatal("cached log lost")
+				t.Fatal("gate log lost")
 			}
 			return
 		}
 	}
-	t.Fatal("missing cached gate log")
+	t.Fatal("missing gate log")
 }
 func TestH2GateMissAndFailureRetainsLog(t *testing.T) {
 	dir := h2GateRepository(t)
 	storage := t.TempDir()
-	finalizer := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}
+	finalizer := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}}
 	req := h2GateRequest(dir, "first")
 	first, err := finalizer.Finalize(context.Background(), req)
 	if err != nil {
@@ -376,8 +331,8 @@ func TestH2GateMissAndFailureRetainsLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanupImmutable(t, second.StorageDir)
-	if h2ReadGate(t, storage, second).Cached {
-		t.Fatal("tree change hit cache")
+	if changed := h2ReadGate(t, storage, second); !changed.Passed || changed.Attempt != "changed" {
+		t.Fatalf("changed tree gate=%+v", changed)
 	}
 	req.Attempt.ID = "failed"
 	req.Task.Gate.Commands = []string{"printf failure-output; exit 7"}
@@ -430,10 +385,10 @@ func TestH2GateSkipFailedVerifyAndTimeout(t *testing.T) {
 		t.Fatalf("timeout=%+v", report)
 	}
 }
-func TestH2GateDirtyTrackedTreeCannotReuseCache(t *testing.T) {
+func TestH2GateDirtyTrackedTreeCannotPass(t *testing.T) {
 	dir := h2GateRepository(t)
 	storage := t.TempDir()
-	finalizer := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}
+	finalizer := AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}}
 	first, err := finalizer.Finalize(context.Background(), h2GateRequest(dir, "clean"))
 	if err != nil {
 		t.Fatal(err)
@@ -449,7 +404,7 @@ func TestH2GateDirtyTrackedTreeCannotReuseCache(t *testing.T) {
 	}
 	cleanupImmutable(t, result.StorageDir)
 	report := h2ReadGate(t, storage, result)
-	if report.Cached || report.Passed {
-		t.Fatalf("dirty tree accepted cached evidence: %+v", report)
+	if report.Passed {
+		t.Fatalf("dirty tree passed: %+v", report)
 	}
 }

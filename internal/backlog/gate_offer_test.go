@@ -19,7 +19,6 @@ func TestGateOfferRequiresAdvertisedCapability(t *testing.T) {
 		}
 	}
 	b := packageBuilder(t, records)
-	b.GateCacheAge = 24 * time.Hour
 	b.WorkerCapabilities = map[string][]string{a.WorkerID: {"internet"}}
 	if _, err := b.BuildAssignmentOffer(context.Background(), a, now.Add(time.Minute)); err == nil || !strings.Contains(err.Error(), workerproto.PackageCapabilityWorkerOwnedGate) {
 		t.Fatalf("old worker accepted: %v", err)
@@ -29,7 +28,7 @@ func TestGateOfferRequiresAdvertisedCapability(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if offer.Package.Package.Gate == nil || offer.Package.Package.Limits.GateCacheAge != 24*time.Hour {
+	if offer.Package.Package.Gate == nil {
 		t.Fatalf("gate lost %+v", offer.Package.Package)
 	}
 	mt := ManifestTask{Gate: &domain.TaskGate{Commands: []string{"true"}, Timeout: time.Minute}}

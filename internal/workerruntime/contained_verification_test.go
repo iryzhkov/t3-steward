@@ -207,7 +207,7 @@ func TestFinalizerContainedGateRetainsSummaryAndFailure(t *testing.T) {
 					return err
 				})
 			})
-			finalizer := backlog.AttemptFinalizer{StorageRoot: storage, Processes: verifier, GateTimeoutMax: time.Minute, GateCacheDisabled: true, GateToolchainIdentity: "contained unavailable"}
+			finalizer := backlog.AttemptFinalizer{StorageRoot: storage, Processes: verifier, GateTimeoutMax: time.Minute, GateContained: true, GateToolchainIdentity: "contained unavailable"}
 			result, err := finalizer.Finalize(context.Background(), backlog.AttemptFinalization{
 				Task:    domain.Task{ID: "task-1", Name: "test", Gate: &domain.TaskGate{Commands: []string{"true"}, Timeout: 2 * time.Second}},
 				Attempt: domain.Attempt{ID: "attempt-1", TaskID: "task-1", WorkflowRunID: "run-1"}, WorkspaceDir: workspace, ExplicitSuccess: true,
@@ -233,7 +233,7 @@ func TestFinalizerContainedGateRetainsSummaryAndFailure(t *testing.T) {
 					if err = json.Unmarshal(data, &report); err != nil {
 						t.Fatal(err)
 					}
-					if report.Cached || report.Passed != (code == 0) || len(report.Commands) != 1 || report.Commands[0].ExitCode != code {
+					if report.OutputLimitation == "" || report.Passed != (code == 0) || len(report.Commands) != 1 || report.Commands[0].ExitCode != code {
 						t.Fatalf("report=%+v", report)
 					}
 				}

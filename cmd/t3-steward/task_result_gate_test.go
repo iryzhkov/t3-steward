@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestTaskResultCollectsGateEvidenceAndCacheProvenance(t *testing.T) {
+func TestTaskResultCollectsGateEvidenceAndProvenance(t *testing.T) {
 	for _, asJSON := range []bool{false, true} {
 		f := newTaskResultFixture(t)
-		raw := `{"passed":true,"cached":true,"originalAttempt":"attempt-original","treeHash":"tree-identity","logArtifact":"gate/log.txt"}`
+		raw := `{"passed":true,"attempt":"attempt-task-1","treeHash":"tree-identity","logArtifact":"gate/log.txt"}`
 		for _, entry := range []struct{ id, name, media, body string }{{"gate-attempt-task-1", "gate", "application/json", raw}, {"gate-log-attempt-task-1", "gate/log.txt", "text/plain", "gate full output"}} {
 			f.detail.Artifacts = append(f.detail.Artifacts, backlogadmin.Artifact{Metadata: backlogadmin.ArtifactMetadata{
 				ID: entry.id, WorkflowRunID: "run-1", TaskID: "task-1", AttemptID: "attempt-task-1", Kind: domain.ArtifactGate, Name: entry.name, MediaType: entry.media, Size: int64(len(entry.body)),
@@ -31,10 +31,10 @@ func TestTaskResultCollectsGateEvidenceAndCacheProvenance(t *testing.T) {
 			t.Fatalf("gate log=%q", got)
 		}
 		if asJSON {
-			if !strings.Contains(f.stdout.String(), `"cached": true`) || !strings.Contains(f.stdout.String(), `"originalAttempt": "attempt-original"`) {
+			if !strings.Contains(f.stdout.String(), `"attempt": "attempt-task-1"`) || !strings.Contains(f.stdout.String(), `"treeHash": "tree-identity"`) {
 				t.Fatalf("missing inline provenance: %s", f.stdout.String())
 			}
-		} else if !strings.Contains(f.stdout.String(), "cached") || !strings.Contains(f.stdout.String(), "attempt-original") {
+		} else if !strings.Contains(f.stdout.String(), "attempt=attempt-task-1") || !strings.Contains(f.stdout.String(), "tree=tree-identity") {
 			t.Fatalf("missing text provenance: %s", f.stdout.String())
 		}
 	}

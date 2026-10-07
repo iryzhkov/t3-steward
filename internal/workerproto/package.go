@@ -38,7 +38,6 @@ type ExecutionLimits struct {
 	MaxTurns            int           `json:"maxTurns"`
 	PrepareTimeout      time.Duration `json:"prepareTimeout"`
 	VerificationTimeout time.Duration `json:"verificationTimeout"`
-	GateCacheAge        time.Duration `json:"gateCacheAge,omitempty"`
 	MaxArtifactBytes    int64         `json:"maxArtifactBytes"`
 	MaxTotalBytes       int64         `json:"maxTotalBytes"`
 }
@@ -186,12 +185,7 @@ type ExecutionPackage struct {
 	Environment   EnvironmentReference   `json:"environment"`
 	Verification  []string               `json:"verification,omitempty"`
 	Gate          *domain.TaskGate       `json:"gate,omitempty"`
-	// GateCacheOrigins names the attempts whose passing gate the coordinator
-	// recorded from this worker within the cache age. The worker reuses a
-	// cached gate only when it originated in one of them, because the cache
-	// directory itself is writable by an uncontained agent.
-	GateCacheOrigins []string        `json:"gateCacheOrigins,omitempty"`
-	Preflight        []PreflightStep `json:"preflight,omitempty"`
+	Preflight     []PreflightStep        `json:"preflight,omitempty"`
 	// RequiredCapabilities names what a worker must implement to run this
 	// package. The manifest content address already stops an older build from
 	// silently dropping a field it cannot decode; this list makes the refusal
@@ -412,7 +406,7 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 		if pkg.Gate.Timeout > pkg.Limits.VerificationTimeout && pkg.Gate.Timeout <= 6*time.Hour {
 			return fmt.Errorf("execution package: gate timeout %s exceeds verification timeout %s", pkg.Gate.Timeout, pkg.Limits.VerificationTimeout)
 		}
-		if len(pkg.Gate.Commands) == 0 || pkg.Gate.Timeout <= 0 || pkg.Gate.Timeout > 6*time.Hour || pkg.Limits.GateCacheAge < 0 {
+		if len(pkg.Gate.Commands) == 0 || pkg.Gate.Timeout <= 0 || pkg.Gate.Timeout > 6*time.Hour {
 			return errors.New("execution package: invalid gate limits")
 		}
 		for _, command := range pkg.Gate.Commands {
@@ -420,9 +414,6 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 				return errors.New("execution package: invalid gate command")
 			}
 		}
-	}
-	if err := validateGateCacheOrigins(pkg); err != nil {
-		return err
 	}
 	outputs := make(map[string]struct{})
 	for _, output := range pkg.Outputs {
@@ -455,26 +446,6 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 		return err
 	}
 	return validatePackagePreflight(pkg.Preflight)
-}
-
-// MaxGateCacheOrigins bounds the attested origins one package carries.
-const MaxGateCacheOrigins = 256
-
-func validateGateCacheOrigins(pkg ExecutionPackage) error {
-	if len(pkg.GateCacheOrigins) == 0 {
-		return nil
-	}
-	if pkg.Gate == nil || len(pkg.GateCacheOrigins) > MaxGateCacheOrigins {
-		return errors.New("execution package: gate cache origins require a gate and at most 256 entries")
-	}
-	seen := make(map[string]struct{}, len(pkg.GateCacheOrigins))
-	for _, origin := range pkg.GateCacheOrigins {
-		if _, duplicate := seen[origin]; duplicate || origin == "" || len(origin) > 256 || strings.TrimSpace(origin) != origin {
-			return errors.New("execution package: invalid gate cache origin")
-		}
-		seen[origin] = struct{}{}
-	}
-	return nil
 }
 
 func validatePackageCapabilities(pkg ExecutionPackage) error {

@@ -171,15 +171,6 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		}
 		return report, err
 	}
-	// An exact replay of an outcome already committed was corroborated then;
-	// retention may have pruned the original since.
-	replay := attempt.Progress.Terminal() && attempt.LastTurnOutcomeID == outcomeID
-	if err := i.corroborateCachedGate(ctx, records, attempt, manifest.WorkerID, artifacts, payloads); err != nil && !replay {
-		if errors.Is(err, ErrInvalidGateEvidence) {
-			return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
-		}
-		return report, err
-	}
 	for index, artifact := range artifacts {
 		published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
 			CoordinatorEpoch: i.CoordinatorEpoch, WorkerID: manifest.WorkerID, WorkerEpoch: manifest.WorkerEpoch,

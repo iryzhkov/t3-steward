@@ -129,11 +129,23 @@ func TestCampaignRefPublishIgnoresWorkspaceHooksAndRedirects(t *testing.T) {
 }
 
 // gateBackgroundChild returns a gate command that passes and leaves a child
-// running action once the gate has passed (its cache record is written after
-// the final checks), then creating done.
-func gateBackgroundChild(cache, action, done string) string {
-	child := fmt.Sprintf(`(until ls %q/*.json >/dev/null 2>&1; do :; done; %s; touch %q) >/dev/null 2>&1 </dev/null &`, cache, action, done)
+// running action once releaseGateChild signals that the gate has finished,
+// then creating done.
+func gateBackgroundChild(action, done string) string {
+	child := fmt.Sprintf(`(until [ -e %q ]; do sleep 0.01; done; %s; touch %q) >/dev/null 2>&1 </dev/null &`, done+".gate", action, done)
 	return "grep -qx source source.txt && { " + child + " }"
+}
+
+// releaseGateChild is an afterGate hook: it lets the child of
+// gateBackgroundChild act and waits for it, so the child's action always
+// lands after the gate's own checks and before capture.
+func releaseGateChild(t *testing.T, done string) func() {
+	return func() {
+		if err := os.WriteFile(done+".gate", nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		waitForFile(t, done)
+	}
 }
 
 func waitForFile(t *testing.T, path string) {
@@ -159,9 +171,9 @@ func TestGateBackgroundChildCannotRewriteTrackedOutput(t *testing.T) {
 	done := filepath.Join(t.TempDir(), "done")
 	req := h2GateRequest(dir, "background-output")
 	rewrite := `i=0; while [ $i -lt 400 ]; do echo bad > .s.tmp && mv .s.tmp source.txt; i=$((i+1)); done`
-	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild(filepath.Join(storage, "gate-cache"), rewrite, done)}, Timeout: 5 * time.Second}
+	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild(rewrite, done)}, Timeout: 5 * time.Second}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "source.txt"}}
-	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), req)
+	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, afterGate: releaseGateChild(t, done)}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,11 +208,11 @@ func TestGateBackgroundChildCannotMoveDeclaredRevision(t *testing.T) {
 	storage := t.TempDir()
 	done := filepath.Join(t.TempDir(), "done")
 	req := h2GateRequest(dir, "background-ref")
-	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild(filepath.Join(storage, "gate-cache"), "git update-ref refs/heads/work "+bad, done)}, Timeout: 5 * time.Second}
+	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild("git update-ref refs/heads/work "+bad, done)}, Timeout: 5 * time.Second}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "handoff", Commit: &domain.CommitOutput{Revision: "work"}}}
 	req.Repository, req.BaseCommit = dir, base
 	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}
-	result, err := (AttemptFinalizer{StorageRoot: storage, CampaignRefs: refs, Processes: &directRunner{}, GateCacheAge: time.Hour}).Finalize(context.Background(), req)
+	result, err := (AttemptFinalizer{StorageRoot: storage, CampaignRefs: refs, Processes: &directRunner{}, afterGate: releaseGateChild(t, done)}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -84,7 +84,10 @@ func evaluateGateEvidence(task domain.Task, artifacts []domain.Artifact, payload
 	if artifact.Producer != "" && artifact.Producer != "worker:"+report.Worker {
 		return "", errors.New("result import gate worker identity mismatch")
 	}
-	if artifact.AttemptID != "" && !report.Cached && report.OriginalAttempt != artifact.AttemptID {
+	// The worker never reuses a gate result, so every report names the attempt
+	// that uploaded it. Decoding already refuses the cache fields of earlier
+	// builds as unknown.
+	if artifact.AttemptID != "" && report.Attempt != artifact.AttemptID {
 		return "", errors.New("result import gate attempt provenance mismatch")
 	}
 	if err := validateGateReport(task, report); err != nil {
@@ -109,29 +112,24 @@ func gateHex(value string, sizes ...int) bool {
 func validateGateReport(task domain.Task, report GateReport) error {
 	invalid := func(detail string) error { return fmt.Errorf("result import gate %s", detail) }
 	if report.StartedAt.IsZero() || report.CompletedAt.Before(report.StartedAt) || report.Worker == "" || len(report.Worker) > 256 ||
-		report.LogArtifact != "gate/log.txt" || len(report.OutputLimitation) > 4096 || len(report.OriginalAttempt) > 256 {
+		report.LogArtifact != "gate/log.txt" || len(report.OutputLimitation) > 4096 || report.Attempt == "" || len(report.Attempt) > 256 {
 		return invalid("identity or timing mismatch")
 	}
 	// A postcondition failure follows commands that all passed: the gate
 	// changed the tree (git status) or moved a declared revision (git
 	// rev-parse), or a declared output changed after it (gateCaptureCommand).
-	// Only the last can follow a cached report, since it is checked at capture.
 	postcondition := report.Failure != nil && report.Failure.ExitCode == 1 && strings.TrimSpace(report.Failure.Reason) != "" &&
 		len(report.Failure.Reason) <= gateFailureReasonMax &&
-		(report.Failure.Command == gateCaptureCommand || (!report.Cached && (report.Failure.Command == "git status" || report.Failure.Command == "git rev-parse")))
-	if report.Cached && (report.OriginalAttempt == "" || (!report.Passed && !postcondition)) {
-		return invalid("cache provenance mismatch")
-	}
-	// Preparation failures still carry a report and a log. They cannot have a
-	// cache identity because discovering that identity is what failed.
+		(report.Failure.Command == gateCaptureCommand || report.Failure.Command == "git status" || report.Failure.Command == "git rev-parse")
+	// Preparation failures still carry a report and a log, but no commands.
 	if len(report.Commands) == 0 {
-		if report.Passed || report.Cached || report.Failure == nil || report.Failure.Command == "" || report.Failure.ExitCode == 0 || report.Failure.Reason == "" ||
+		if report.Passed || report.Failure == nil || report.Failure.Command == "" || report.Failure.ExitCode == 0 || report.Failure.Reason == "" ||
 			len(report.Failure.Command) > 4096 || len(report.Failure.Reason) > 16384 {
 			return invalid("preparation failure mismatch")
 		}
 		return nil
 	}
-	if !gateHex(report.TreeHash, 40, 64) || !gateHex(report.CacheKey, 64) || len(report.ToolVersions) == 0 || len(report.ToolVersions) > 64 {
+	if !gateHex(report.TreeHash, 40, 64) || len(report.ToolVersions) == 0 || len(report.ToolVersions) > 64 {
 		return invalid("tree or toolchain identity mismatch")
 	}
 	for key, value := range report.ToolVersions {

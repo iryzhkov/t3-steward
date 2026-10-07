@@ -36,7 +36,6 @@ type CoordinatorOfferBuilder struct {
 	CatalogRevision     string
 	CoordinatorID       string
 	CoordinatorEpoch    int64
-	GateCacheAge        time.Duration
 	VerificationTimeout time.Duration
 	// ActivationPrepareTimeout bounds an overseer activation's preparation.
 	// Zero falls back to VerificationTimeout, which is what it was before the
@@ -201,17 +200,14 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		Verification: append([]string(nil), state.task.Verification...),
 		Gate:         dispatchGate(state.task.Gate, b.VerificationTimeout),
-		GateCacheOrigins: gateCacheOrigins(state.task.Gate, records, assignment.WorkerID,
-			assignment.CreatedAt, b.GateCacheAge),
-		Outputs:   append([]domain.ArtifactDeclaration(nil), state.task.Outputs...),
-		Preflight: append([]workerproto.PreflightStep(nil), state.task.Preflight...),
-		NotBefore: cloneTime(state.task.NotBefore),
-		Deadline:  cloneTime(state.task.Deadline),
-		ExpiresAt: cloneTime(state.task.ExpiresAt),
+		Outputs:      append([]domain.ArtifactDeclaration(nil), state.task.Outputs...),
+		Preflight:    append([]workerproto.PreflightStep(nil), state.task.Preflight...),
+		NotBefore:    cloneTime(state.task.NotBefore),
+		Deadline:     cloneTime(state.task.Deadline),
+		ExpiresAt:    cloneTime(state.task.ExpiresAt),
 		Limits: workerproto.ExecutionLimits{
 			MaxTurns: state.task.MaxTurns, PrepareTimeout: environment.Setup.Timeout,
 			VerificationTimeout: b.VerificationTimeout,
-			GateCacheAge:        b.GateCacheAge,
 			MaxArtifactBytes:    b.MaxArtifactBytes, MaxTotalBytes: b.MaxTotalBytes,
 		},
 		CreatedAt: assignment.CreatedAt,

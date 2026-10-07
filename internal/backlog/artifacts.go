@@ -97,14 +97,16 @@ type AttemptFinalizer struct {
 	Processes   ProcessRunner
 	// CampaignRefs keeps a declared commit reachable for the campaign's
 	// lifetime. It is required only by a task that declares one.
-	CampaignRefs CampaignRefStore
-	GateCacheAge time.Duration
-	// GateCacheOrigins are the attempts the coordinator attests passed a gate
-	// on this worker. A cache record from any other attempt is not reused.
-	GateCacheOrigins      []string
+	CampaignRefs          CampaignRefStore
 	GateTimeoutMax        time.Duration
 	GateToolchainIdentity string
-	GateCacheDisabled     bool
+	// GateContained marks a gate run through the contained supervisor, which
+	// reports exit status only; the report records that limitation.
+	GateContained bool
+	// afterGate, when set by a test, runs once the gate has finished and
+	// before outputs are captured: the window a process left behind by a gate
+	// command could use.
+	afterGate func()
 }
 
 // Finalize runs verification, captures immutable artifacts, and returns a strict
@@ -146,6 +148,9 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		report, log, gateErr := f.runGate(ctx, request)
 		if gateErr != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize gate: %w", gateErr)
+		}
+		if f.afterGate != nil {
+			f.afterGate()
 		}
 		raw, marshalErr := json.MarshalIndent(report, "", "  ")
 		if marshalErr != nil {
@@ -266,7 +271,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		// The coordinator decides the attempt from the uploaded evidence, not
 		// from this completion, so the gate report itself must fail. The log is
 		// kept as the gate wrote it.
-		raw, amendErr := amendGateForChangedOutputs(gateReport, request.Attempt.ID, changedOutputs)
+		raw, amendErr := amendGateForChangedOutputs(gateReport, changedOutputs)
 		if amendErr != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize gate: %w", amendErr)
 		}

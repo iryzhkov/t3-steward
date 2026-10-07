@@ -90,9 +90,6 @@ func (c *Config) validateBacklogV2() error {
 	if v.Transport.RequestTimeout.D() <= 0 {
 		return errors.New("backlog_v2: transport.request_timeout must be positive")
 	}
-	if v.Verification.GateCacheAge.D() < 0 {
-		return errors.New("backlog_v2: verification.gate_cache_age must not be negative")
-	}
 	if timeout := v.Verification.CommandTimeout.D(); timeout < time.Second || timeout > 6*time.Hour {
 		return errors.New("backlog_v2: verification.command_timeout must be between 1s and 6h")
 	}

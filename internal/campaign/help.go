@@ -69,8 +69,8 @@ timeout defaults to 30m and must fit the coordinator's verification.command_time
 (default 30m); submission refuses a longer gate timeout and names the setting.
 Offline validation allows up to 6h. The gate produces coordinator-recorded gate and gate/log.txt artifacts,
 which dependents may consume through inputs_from without declaring them in outputs.
-Successful evidence may be reused for the same HEAD tree, commands and toolchain;
-verification.gate_cache_age controls its age (default 24h; 0 disables reuse).
+Every attempt runs its gate afresh; a result is never reused, even for the same
+tree.
 A failed gate fails the task and still retains its result and bounded log.
 
 Each prompt lives in a file named by prompt_file; inline prompt: is not supported.
