@@ -506,8 +506,9 @@ var versionedMigrations = []struct {
 	{33, coordinatorMigrationV33},
 	{34, coordinatorMigrationV34},
 	{37, coordinatorMigrationV37},
-	// V35, V36 and V38 are assigned to other M16 units and land with them;
-	// V40 is reserved for M16-3.
+	// V35, V36 and V40 are unused; V38 is reserved for the deferred M16-8;
+	// V41 is unused. V39 (M16-6) and V42 (C1 leases) may arrive in either
+	// order, which the gap-filling runner applies.
 	{39, coordinatorMigrationV39},
 	{42, coordinatorMigrationV42},
 }

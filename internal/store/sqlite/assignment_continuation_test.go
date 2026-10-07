@@ -73,9 +73,10 @@ func (f rearmedDispatch) publication() domain.ArtifactPublication {
 	}
 }
 
-// main's registry ends at V37; this unit adds V39 after it. A database at
-// V37 migrates to V39 and gains the continuation table, and migrating again
-// changes nothing.
+// The rc.116 registry ends at V37; this unit adds V39 after it. A database at
+// V37 migrates through V39 and gains the continuation table, and migrating
+// again changes nothing. Later units register versions above V39, so the test
+// asserts V39's own row rather than the highest version.
 func TestAssignmentContinuationV39MigratesAV37Database(t *testing.T) {
 	s, err := open(filepath.Join(t.TempDir(), "state.db"), true)
 	if err != nil {
@@ -92,8 +93,12 @@ func TestAssignmentContinuationV39MigratesAV37Database(t *testing.T) {
 		if err := s.Migrate(); err != nil {
 			t.Fatal(err)
 		}
-		if version := schemaVersionOf(t, s); version != 39 || currentSchemaVersion != 39 {
-			t.Fatalf("schema version = %d (current %d), want 39", version, currentSchemaVersion)
+		var applied int
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = 39").Scan(&applied); err != nil || applied != 1 {
+			t.Fatalf("V39 rows = %d, %v; want 1", applied, err)
+		}
+		if version := schemaVersionOf(t, s); version != currentSchemaVersion {
+			t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
 		}
 	}
 	var count int
