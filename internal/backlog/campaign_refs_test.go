@@ -100,7 +100,7 @@ func TestDownstreamTaskResolvesCommitAfterCachePrune(t *testing.T) {
 	consumer.Needs = []string{"producer"}
 	consumer.DependencyInputs = map[string][]string{"producer": {"handoff"}}
 	consumerRequest := workspaceRequest(repository, "main", consumer, "attempt-2")
-	consumerRequest.DependencyTasks = []domain.Task{producer, consumer}
+	consumerRequest.DependencyTasks = []domain.Task{producerTask, consumer}
 	consumerRequest.DependencyArtifacts = []domain.Artifact{handoff}
 	consumerRequest.Environment.Setup.Commands = []string{
 		"git rev-parse --verify refs/campaigns/run-1/task-producer/handoff",

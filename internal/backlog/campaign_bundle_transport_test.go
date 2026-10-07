@@ -551,7 +551,8 @@ func consumeCarried(t *testing.T, consumer commitWorker, produced producedCommit
 	request.WorkflowRunID, request.Attempt.WorkflowRunID = "run-2", "run-2"
 	record := produced.record
 	record.WorkflowRunID, record.TaskID, record.AttemptID = "run-2", namespace, ""
-	request.DependencyTasks = []domain.Task{{ID: namespace, WorkflowID: "workflow-1", Name: namespace}, task}
+	request.DependencyTasks = []domain.Task{{ID: namespace, WorkflowID: "workflow-1", Name: namespace,
+		Outputs: []domain.ArtifactDeclaration{{Name: "repair", Commit: &domain.CommitOutput{}}}}, task}
 	request.DependencyArtifacts = []domain.Artifact{record}
 	request.DependencySources = sources
 	if delivery != nil {

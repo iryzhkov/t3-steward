@@ -179,6 +179,9 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: commit bundles: %w", err)
 	}
 	markAcceptedDependencies(dependencies, state.tasks, state.artifacts, state.succeededAttempts)
+	markDependencyCommitOutputs(dependencies, state.task, state.tasks, func(carried domain.CarriedInput) bool {
+		return carriedCommitDeclared(records, carried)
+	})
 	pkg := workerproto.ExecutionPackage{
 		Timeout:       state.task.Timeout,
 		GraphRevision: assignment.GraphRevision, TaskRevision: assignment.TaskRevision, TaskDigest: assignment.TaskDigest,
@@ -228,6 +231,20 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	// no longer be able to read.
 	if continuationOffered {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityContinuationCheckpoint)
+	}
+	// Dependency commit outputs are marked on the same frozen decision, so a
+	// replay builds the same package whatever the inventory then says. Both
+	// capabilities arrived in rc.117, and a worker that advertised the
+	// continuation checkpoint at first offer is a build that also resolves
+	// commit records only from marked files. Any other worker, and every
+	// worker of an older coordinator, is sent no marks and keeps taking a
+	// record from any dependency file of its own producer.
+	if continuationOffered && len(pkg.Dependencies) != 0 {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitOutputs)
+	} else {
+		for index := range pkg.Dependencies {
+			pkg.Dependencies[index].CommitOutputs = nil
+		}
 	}
 	if err := b.freezeSessionDisplay(ctx, assignment, &pkg, state.workflow.Name, state.task.Name, state.task.ReviewJudge); err != nil {
 		return workerproto.AssignmentOffer{}, err
@@ -726,6 +743,68 @@ func markAcceptedDependencies(dependencies []workerproto.DependencyInput, tasks 
 		}
 		dependency.AcceptedCommits = accepted
 	}
+}
+
+// markDependencyCommitOutputs names, for each dependency, the delivered files
+// that are its producer's declared commit outputs: for a producer of this run,
+// by that task's declaration, and for an input carried from another run, by
+// the declaration of the source task it was carried from, which
+// carriedDeclares reads. A worker that is told about them resolves a commit
+// record from these files only. Every other file, including one whose content
+// parses as a commit record, is the producer's executor's content.
+func markDependencyCommitOutputs(dependencies []workerproto.DependencyInput, task domain.Task, tasks []domain.Task, carriedDeclares func(domain.CarriedInput) bool) {
+	commits := map[string]bool{}
+	for producer, names := range task.DependencyInputs {
+		producerTask := slices.IndexFunc(tasks, func(candidate domain.Task) bool { return candidate.Name == producer })
+		if producerTask < 0 {
+			continue
+		}
+		for _, name := range names {
+			if DeclaresCommit(tasks[producerTask], name) {
+				commits["dependencies/"+producer+"/"+filepath.ToSlash(name)] = true
+			}
+		}
+	}
+	for _, carried := range task.CarriedInputs {
+		if !carriedDeclares(carried) {
+			continue
+		}
+		namespace := carried.ProducerNamespace
+		if namespace == "" {
+			namespace = carried.Producer
+		}
+		commits["dependencies/"+namespace+"/"+gateCarriedDependencyPath(carried)] = true
+	}
+	for index := range dependencies {
+		dependency := &dependencies[index]
+		dependency.CommitOutputs = nil
+		for _, object := range dependency.Artifacts {
+			if parts := strings.SplitN(object.Path, "/", 3); len(parts) == 3 && commits[object.Path] {
+				dependency.CommitOutputs = append(dependency.CommitOutputs, parts[2])
+			}
+		}
+	}
+}
+
+// carriedCommitDeclared reports whether an input carried from another run is
+// a declared commit output of the source task it was carried from. An input
+// without its source run predates the source binding, and a worker refuses
+// any commit record in it anyway, so it is never marked.
+func carriedCommitDeclared(records sqlite.CoordinatorRecords, carried domain.CarriedInput) bool {
+	if carried.SourceRunID == "" {
+		return false
+	}
+	for _, run := range records.WorkflowRuns {
+		if run.ID != carried.SourceRunID {
+			continue
+		}
+		for _, source := range domain.TasksForRun(run, records.Tasks) {
+			if source.ID == carried.ProducerTaskID {
+				return DeclaresCommit(source, carried.Name)
+			}
+		}
+	}
+	return false
 }
 
 // packageCarriedInputs delivers the dependency artifacts a rerun carried over

@@ -186,10 +186,12 @@ func consumeDependencyCommit(t *testing.T, refs CampaignRefStore, runID string, 
 			t.Fatal(err)
 		}
 	}
-	// The worker names each dependency task by its ID, as LocalDriver does.
+	// The worker names each dependency task by its ID, and declares the
+	// commit outputs its package marks, as LocalDriver does.
 	request := WorkspacePreparation{
 		WorkflowRunID: runID, Environment: ResolvedEnvironment{Type: EnvironmentGit},
-		DependencyTasks: []domain.Task{{ID: dependency.TaskID, Name: dependency.TaskID}},
+		DependencyTasks: []domain.Task{{ID: dependency.TaskID, Name: dependency.TaskID,
+			Outputs: []domain.ArtifactDeclaration{{Name: "change", Commit: &domain.CommitOutput{}}}}},
 	}
 	if len(dependency.AcceptedCommits) != 0 {
 		request.AcceptedCommits = map[string][]string{dependency.TaskID: dependency.AcceptedCommits}

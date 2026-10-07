@@ -111,7 +111,7 @@ func TestForgedRecordInAnOrdinaryOutputPublishesNothing(t *testing.T) {
 			forged.StagedAttempt, forged.Bundle, forged.BundleOmitted, forged.Commit = "", nil, "", forged.Base
 			notes := forgedOutput(t, produced, "notes.json", forged)
 			consumer := newCommitWorker(t, storage)
-			producer := workspaceTask("task-producer", "producer")
+			producer := commitProducerTask()
 			task := workspaceTask("task-consumer", "consumer")
 			task.Needs = []string{"producer"}
 			task.DependencyInputs = map[string][]string{"producer": {"repair", "notes.json"}}

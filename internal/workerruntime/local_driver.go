@@ -243,6 +243,12 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 			producer = strings.Split(filepath.ToSlash(relative), "/")[0]
 		}
 		dependencyTask := domain.Task{ID: dependency.TaskID, WorkflowID: pkg.Identity.WorkflowID, Name: producer}
+		// The producer's declared commit outputs are what preparation
+		// resolves commit records from, and the package is the only
+		// trusted source of them.
+		for _, name := range pkg.DependencyCommitOutputs(dependency) {
+			dependencyTask.Outputs = append(dependencyTask.Outputs, domain.ArtifactDeclaration{Name: name, Commit: &domain.CommitOutput{}})
+		}
 		names := make([]string, 0, len(dependency.Artifacts))
 		for _, object := range dependency.Artifacts {
 			parts := strings.Split(filepath.ToSlash(object.Path), "/")

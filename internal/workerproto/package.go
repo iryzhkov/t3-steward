@@ -99,6 +99,14 @@ type DependencyInput struct {
 	// content. It is set only for review-declared producers and requires the
 	// accepted-dependencies capability.
 	AcceptedCommits []string `json:"acceptedCommits,omitempty"`
+	// CommitOutputs names the producer's declared commit outputs among these
+	// artifacts, by their name in the producer's directory. In a package that
+	// declares PackageCapabilityCommitOutputs, these files, and only these,
+	// are commit references the worker resolves; every other file is the
+	// executor's content, even when it parses as a commit record. A package
+	// without that capability comes from a coordinator that does not mark
+	// them, and the worker then takes any artifact as a candidate.
+	CommitOutputs []string `json:"commitOutputs,omitempty"`
 }
 
 // CommitBundleInput is the retained bundle of one declared commit a dependency
@@ -160,6 +168,13 @@ const (
 	// while it runs and the latest one in its result, and it may carry the
 	// snapshot an earlier attempt of the task left.
 	PackageCapabilityContinuationCheckpoint = "continuation-checkpoint-v1"
+	// PackageCapabilityCommitOutputs says the package names every
+	// dependency's declared commit outputs in DependencyInput.CommitOutputs,
+	// so the worker resolves a commit record only from one of those files.
+	// The coordinator declares it for every package with dependencies, even
+	// when none of them is a commit, to a worker it froze the continuation
+	// checkpoint decision for; both arrived in the same release.
+	PackageCapabilityCommitOutputs = "dependency-commit-outputs-v1"
 )
 
 // ContinuationInputPath is where a package places the previous attempt's
@@ -180,7 +195,29 @@ type ContinuationInput struct {
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint}
+	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs}
+}
+
+// MarksCommitOutputs reports whether the package names its dependencies'
+// declared commit outputs, which makes every other dependency file ordinary.
+func (pkg ExecutionPackage) MarksCommitOutputs() bool {
+	return slices.Contains(pkg.RequiredCapabilities, PackageCapabilityCommitOutputs)
+}
+
+// DependencyCommitOutputs names the files of a dependency the worker may
+// resolve as commit references: the declared commit outputs the package
+// marks, or, from a coordinator that does not mark them, every artifact.
+func (pkg ExecutionPackage) DependencyCommitOutputs(dependency DependencyInput) []string {
+	if pkg.MarksCommitOutputs() {
+		return append([]string(nil), dependency.CommitOutputs...)
+	}
+	names := make([]string, 0, len(dependency.Artifacts))
+	for _, artifact := range dependency.Artifacts {
+		if parts := strings.SplitN(artifact.Path, "/", 3); len(parts) == 3 && parts[0] == "dependencies" {
+			names = append(names, parts[2])
+		}
+	}
+	return names
 }
 
 // RequiresWorkspaceHead reports whether the worker must report the workspace's
@@ -393,6 +430,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 		if err := validateAcceptedCommits(dependency); err != nil {
 			return err
 		}
+		if err := validateCommitOutputs(dependency); err != nil {
+			return err
+		}
 		if provenance := dependency.Provenance; provenance != nil {
 			if strings.TrimSpace(provenance.RunID) == "" || strings.TrimSpace(provenance.TaskID) == "" ||
 				strings.TrimSpace(provenance.AttemptID) == "" ||
@@ -525,6 +565,23 @@ func validateAcceptedCommits(dependency DependencyInput) error {
 	return nil
 }
 
+// validateCommitOutputs requires each declared commit output to name one of
+// the dependency's own artifacts, once.
+func validateCommitOutputs(dependency DependencyInput) error {
+	for index, name := range dependency.CommitOutputs {
+		if slices.Contains(dependency.CommitOutputs[:index], name) {
+			return errors.New("execution package: duplicate dependency commit output")
+		}
+		if !slices.ContainsFunc(dependency.Artifacts, func(artifact ArtifactObject) bool {
+			parts := strings.SplitN(artifact.Path, "/", 3)
+			return len(parts) == 3 && parts[0] == "dependencies" && parts[2] == name
+		}) {
+			return errors.New("execution package: dependency commit output is not one of the dependency's artifacts")
+		}
+	}
+	return nil
+}
+
 func validatePackageCapabilities(pkg ExecutionPackage) error {
 	// The campaign-supervision capability is a worker inventory capability, not
 	// a package capability: it says which build is running on the host rather
@@ -577,6 +634,18 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if _, ok := declared[PackageCapabilityAcceptedDependencies]; ok != pkg.HasAcceptedDependencies() {
 		return errors.New("execution package: accepted dependencies and the accepted dependencies capability must be declared together")
+	}
+	if _, ok := declared[PackageCapabilityCommitOutputs]; !ok && slices.ContainsFunc(pkg.Dependencies, func(dependency DependencyInput) bool { return len(dependency.CommitOutputs) != 0 }) {
+		return errors.New("execution package: dependency commit outputs require the commit outputs capability")
+	}
+	if _, ok := declared[PackageCapabilityCommitOutputs]; ok {
+		for _, dependency := range pkg.Dependencies {
+			for _, name := range dependency.AcceptedCommits {
+				if !slices.Contains(dependency.CommitOutputs, name) {
+					return errors.New("execution package: an accepted commit is not a declared commit output of its dependency")
+				}
+			}
+		}
 	}
 	if _, ok := declared[PackageCapabilitySessionDisplay]; pkg.Display != nil && !ok {
 		return errors.New("execution package: display requires session display capability")

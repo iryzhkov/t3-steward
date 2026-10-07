@@ -191,11 +191,24 @@ ref. A consumer on another worker imports that bundle as staged work of the
 same attempt, into its own store's staging, so the same rule applies there: an
 accepted consumer's fetch publishes it on that worker, and any other consumer
 reads it from the staging. When a staging is promoted, its published record no
-longer names the attempt. A worker resolves a commit record only from the file
-of the declared commit output it names, in its producer's directory of the
-dependency view. A copy in any other output is the executor's content and is
-not resolved, so it cannot publish a campaign ref, such as one naming the base,
-which needs no bundle. A rerun or an external input that carries a
+longer names the attempt. A staging is resolved against the attempt its record
+names, and only once that attempt's staged ref names the commit, so a record an
+earlier attempt or import left without its ref never masks a later complete
+staging.
+
+A worker resolves a commit record only from the file of one of its producer's
+declared commit outputs, in that producer's directory of the dependency view,
+naming that output, and the record must name that producer (or, for a carried
+input, the source task its binding names). The declarations come from the
+coordinator: the execution package lists each dependency's declared commit
+outputs in `commitOutputs` and requires `dependency-commit-outputs-v1`. A
+record in any other file is the executor's content and is not resolved, so it
+cannot publish a campaign ref, such as one naming the base, which needs no
+bundle, for its own task or any other. The marks are frozen with the
+continuation checkpoint decision, so a replay builds the same package; a worker
+without that decision, and every worker of an older coordinator, gets no marks
+and takes a record from any file of its own producer's directory. A rerun or
+an external input that carries a
 review-declared producer's commit is placed only on a worker with
 `accepted-dependencies-v1`, like a consumer in the producer's own run.
 

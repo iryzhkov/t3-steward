@@ -161,10 +161,19 @@ func bytesDelivery(content []byte) CommitBundleDelivery {
 	}
 }
 
+// commitProducerTask is the producer as a consumer's preparation knows it:
+// the task and its declared commit output, which is the only file of its
+// outputs a commit record is resolved from.
+func commitProducerTask() domain.Task {
+	producer := workspaceTask("task-producer", "producer")
+	producer.Outputs = []domain.ArtifactDeclaration{{Name: "repair", Commit: &domain.CommitOutput{}}}
+	return producer
+}
+
 // consume prepares a consumer of the producer's commit on the given worker.
 func consume(t *testing.T, consumer commitWorker, produced producedCommit, record domain.Artifact, delivery *CommitBundleDelivery, attemptID string) (PreparedWorkspace, error) {
 	t.Helper()
-	producer := workspaceTask("task-producer", "producer")
+	producer := commitProducerTask()
 	task := workspaceTask("task-consumer", "consumer")
 	task.Needs = []string{"producer"}
 	task.DependencyInputs = map[string][]string{"producer": {"repair"}}

@@ -16,7 +16,7 @@ import (
 // not.
 func consumeReviewed(t *testing.T, consumer commitWorker, produced producedCommit, delivery *CommitBundleDelivery, attemptID string, accepted bool) (PreparedWorkspace, error) {
 	t.Helper()
-	producer := workspaceTask("task-producer", "producer")
+	producer := commitProducerTask()
 	task := workspaceTask("task-consumer", "consumer")
 	task.Needs = []string{"producer"}
 	task.DependencyInputs = map[string][]string{"producer": {"repair"}}
