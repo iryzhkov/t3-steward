@@ -102,7 +102,13 @@ func (v view) addPlanningExplanation(e *Explanation, attempt *domain.Attempt) {
 	}
 	decision := v.planning.decisions[index]
 	revision, hasRevision := v.planning.revisions[attempt.ID]
-	stale := age > 3*v.planning.interval || !hasRevision || revision != attempt.Revision ||
+	// Saturate the bound: a valid scheduling interval can exceed MaxDuration/3.
+	// Every representable age is fresh when the mathematical bound exceeds it.
+	maxAge := time.Duration(1<<63 - 1)
+	if v.planning.interval <= maxAge/3 {
+		maxAge = 3 * v.planning.interval
+	}
+	stale := age > maxAge || !hasRevision || revision != attempt.Revision ||
 		decision.WorkflowRunID != e.WorkflowRunID || decision.TaskID != e.TaskID
 	if stale {
 		e.Eligible = false
