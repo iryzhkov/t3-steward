@@ -108,6 +108,41 @@ func TestRunsIgnoresARefNamedByItsRunAlone(t *testing.T) {
 	}
 }
 
+// Git warns about a broken ref on standard error and still lists the others.
+// That warning names the ref, and reading it as a listed ref name made Runs
+// list a run nothing could release and made every release of a run holding a
+// broken ref fail trying to delete "warning:".
+func TestABrokenRefIsNotReadFromGitsWarning(t *testing.T) {
+	ctx := context.Background()
+	repository := newGitFixture(t)
+	base := gitOutput(t, repository, "rev-parse", "HEAD")
+	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}
+	failed := &FailedCommitAttempt{ID: "attempt", VerificationFailures: []string{"verification command failed (7): exit 7"}}
+	for _, run := range []string{"good", "held"} {
+		if _, err := refs.Publish(ctx, PublishCommitRequest{WorkflowRunID: run, TaskID: "t", Name: "n", Repository: repository, WorkspaceDir: repository, Base: base, FailedAttempt: failed}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, run := range []string{"crashed", "held"} {
+		broken := filepath.Join(refs.Root, "campaigns.git", "refs", "campaigns-quarantine", run, "t", "broken")
+		if err := os.MkdirAll(broken, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(broken, "n"), []byte("garbage\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runs, err := refs.Runs(); err != nil || !slices.Equal(runs, []string{"good", "held"}) {
+		t.Errorf("Runs = %v, %v; want [good held]", runs, err)
+	}
+	if err := refs.ReleaseRun(ctx, "held", nil); err != nil {
+		t.Errorf("release of a run holding a broken ref: %v", err)
+	}
+	if err := refs.discardFailedAttempt(ctx, "crashed", "t", "broken"); err != nil {
+		t.Errorf("discard of an attempt holding a broken ref: %v", err)
+	}
+}
+
 // A store that never opened its repository lists no runs and creates nothing.
 func TestRunsOfAnUnopenedStoreCreatesNothing(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "refs")

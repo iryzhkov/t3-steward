@@ -619,13 +619,12 @@ func (s CampaignRefStore) refRuns(ctx context.Context, workflowRunID string) ([]
 		}
 		patterns = append(patterns, namespace)
 	}
-	raw, err := runLoggedCommandOutput(ctx, nil, "", s.git(), append([]string{"--git-dir", gitDir,
-		"for-each-ref", "--format=%(refname)"}, patterns...)...)
+	names, err := s.listRefs(ctx, gitDir, nil, patterns...)
 	if err != nil {
 		return nil, fmt.Errorf("list campaign refs: %w", err)
 	}
 	var runs []string
-	for _, name := range strings.Fields(string(raw)) {
+	for _, name := range names {
 		for _, namespace := range campaignRefNamespaces {
 			rest, ok := strings.CutPrefix(name, namespace)
 			if !ok {
@@ -640,6 +639,39 @@ func (s CampaignRefStore) refRuns(ctx context.Context, workflowRunID string) ([]
 		}
 	}
 	return runs, nil
+}
+
+// listRefs names the refs of the store's repository under patterns. It reads
+// Git's standard output alone: Git reports a broken ref on standard error and
+// still succeeds, and that warning is not a ref name. A broken ref is skipped,
+// as Git skips it.
+func (s CampaignRefStore) listRefs(ctx context.Context, gitDir string, log io.Writer, patterns ...string) ([]string, error) {
+	if log == nil {
+		log = io.Discard
+	}
+	args := append([]string{"--git-dir", gitDir, "for-each-ref", "--format=%(refname)"}, patterns...)
+	fmt.Fprintf(log, "$ %s %s\n", s.git(), strings.Join(args, " "))
+	command := exec.CommandContext(ctx, s.git(), args...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	command.WaitDelay = time.Second
+	err := command.Run()
+	_, _ = log.Write(stdout.Bytes())
+	_, _ = log.Write(stderr.Bytes())
+	if err != nil {
+		fmt.Fprintf(log, "! %v\n", err)
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return nil, fmt.Errorf("%w: %s", err, detail)
+		}
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		if line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
 }
 
 // ReleaseRun drops every campaign ref of one workflow run. It is the end of the
@@ -698,12 +730,11 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	// that only a ref names, and a run left listed would never be released.
 	for _, namespace := range campaignRefNamespaces {
 		namespace += workflowRunID + "/"
-		names, err := runLoggedCommandOutput(ctx, log, "", s.git(), "--git-dir", gitDir,
-			"for-each-ref", "--format=%(refname)", namespace)
+		names, err := s.listRefs(ctx, gitDir, log, namespace)
 		if err != nil {
 			return fmt.Errorf("list campaign refs under %s: %w", namespace, err)
 		}
-		for _, name := range strings.Fields(string(names)) {
+		for _, name := range names {
 			if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
 				"update-ref", "-d", name); err != nil {
 				return fmt.Errorf("release campaign ref %s: %w", name, err)
