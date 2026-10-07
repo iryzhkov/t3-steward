@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc.116] - 2026-10-06
+
+No database migration (schema 37). Workers on rc.114 or rc.115 keep working
+against an rc.116 coordinator; the new worker capabilities apply once a
+worker is upgraded.
+
 ### Changed
 
 - A0 completion guard: A turn that ends while commands the task started are
@@ -23,23 +29,6 @@ All notable changes to this project are documented here. The format follows
   coordinator asks for the new snapshot field only from such workers, so
   rc.114 and rc.115 workers are unaffected. Like failure reasons, the turn-end
   note is redacted by the result secret scan before the coordinator sees it.
-
-- M16-5: Campaign executors receive a concise contract for authorized work,
-  declared outputs, completion and task-bound waits; campaign help and examples
-  explain how to hand off a finished attempt without leaving commands running.
-- Bounded thread archive: Workers compact oversized thread archives to the
-  result-upload budget, retaining outcome evidence and an explicit omission
-  summary so a large conversation does not permanently prevent collection.
-- M17-1: Quota waits require complete, fresh window readings, and model
-  availability reports route-specific admission and worker authorization.
-  In `t3-steward models --json`, `observedAt` now belongs to the reading behind
-  `percent`; the oldest reading moved to `oldestObservedAt`. Each route carries
-  `routes[].availability`, and a worker without an authorization entry reports
-  `authorized: false`.
-- M16-1: The coordinator supports fenced in-task review checkpoints through
-  the authenticated node-wait operation; the public `review --task current`
-  command follows in a later unit. Review repository refs are resolved exactly
-  by capable workers, preserving the parent attempt and rejecting stale epochs.
 
 ### Added
 
@@ -123,6 +112,33 @@ All notable changes to this project are documented here. The format follows
   the combined verdict, blocking count, per-reviewer verdicts and the paths of
   the review documents written under `.t3/reviews/<round>/<reviewer>/`; a
   mid-turn wake carries them too and is never held.
+
+## [0.11.0-rc.49] to [0.11.0-rc.115] - 2026-09-14 to 2026-10-06
+
+These releases were published without per-release headings; their entries
+were accumulated here and are not split by release.
+
+### Changed
+
+- M16-5: Campaign executors receive a concise contract for authorized work,
+  declared outputs, completion and task-bound waits; campaign help and examples
+  explain how to hand off a finished attempt without leaving commands running.
+- Bounded thread archive: Workers compact oversized thread archives to the
+  result-upload budget, retaining outcome evidence and an explicit omission
+  summary so a large conversation does not permanently prevent collection.
+- M17-1: Quota waits require complete, fresh window readings, and model
+  availability reports route-specific admission and worker authorization.
+  In `t3-steward models --json`, `observedAt` now belongs to the reading behind
+  `percent`; the oldest reading moved to `oldestObservedAt`. Each route carries
+  `routes[].availability`, and a worker without an authorization entry reports
+  `authorized: false`.
+- M16-1: The coordinator supports fenced in-task review checkpoints through
+  the authenticated node-wait operation; the public `review --task current`
+  command follows in a later unit. Review repository refs are resolved exactly
+  by capable workers, preserving the parent attempt and rejecting stale epochs.
+
+### Added
+
 - A commit declared by a campaign task now reaches consumers on other workers.
   The producer retains a verified base..commit bundle artifact, and a consumer
   on another worker imports it after checking its digest, size, ref, commit,
