@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,9 @@ import (
 )
 
 func TestContainedVerificationPreservesTinyGateTimeout(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("durable containment requires Linux systemd")
+	}
 	verifier, workspace := containedVerificationFixture(t)
 	plan, err := verifier.manager.preparation(verifier.pkg)
 	if err != nil {
@@ -40,6 +44,20 @@ func TestContainedVerificationPreservesTinyGateTimeout(t *testing.T) {
 	}
 	if got := containedVerificationTimeout(time.Second); got != "1.000s" {
 		t.Fatalf("existing durable invocation changed: %s", got)
+	}
+}
+
+// Non-Linux hosts must refuse durable verification even with a replayable receipt.
+func TestContainedVerificationRefusesNonLinux(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("non-Linux durable containment refusal")
+	}
+	verifier, workspace := containedVerificationFixture(t)
+	_, err := verifier.Run(context.Background(), backlog.ProcessRequest{
+		ID: "verify-test", Dir: workspace, Program: "/bin/sh", Args: []string{"-c", "true"},
+	})
+	if err == nil || err.Error() != "durable containment requires Linux systemd" {
+		t.Fatalf("contained verification error = %v, want durable containment requires Linux systemd", err)
 	}
 }
 
@@ -105,6 +123,9 @@ func seedContainedVerificationResult(t *testing.T, supervisor providercontainmen
 }
 
 func TestFinalizerContainedVerificationUmaskContract(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("durable containment requires Linux systemd")
+	}
 	verifier, workspace := containedVerificationFixture(t)
 	command := "printf 'literal $0 and ; characters'"
 	plan, err := verifier.manager.preparation(verifier.pkg)
@@ -156,6 +177,9 @@ func TestFinalizerContainedVerificationUmaskContract(t *testing.T) {
 }
 
 func TestContainedVerificationUsesBoundedGateTimeout(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("durable containment requires Linux systemd")
+	}
 	verifier, workspace := containedVerificationFixture(t)
 	plan, err := verifier.manager.preparation(verifier.pkg)
 	if err != nil {
@@ -184,6 +208,9 @@ func TestContainedVerificationUsesBoundedGateTimeout(t *testing.T) {
 }
 
 func TestFinalizerContainedGateRetainsSummaryAndFailure(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("durable containment requires Linux systemd")
+	}
 	for _, code := range []int{0, 7} {
 		t.Run(fmt.Sprint(code), func(t *testing.T) {
 			verifier, workspace := containedVerificationFixture(t)
@@ -255,6 +282,9 @@ func unitForContainedFixture(launch providercontainment.Launch) string {
 }
 
 func TestContainedVerificationRejectsOtherWrappers(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("durable containment requires Linux systemd")
+	}
 	for _, args := range [][]string{
 		{"-c", `umask 022 && exec "$0" "$@"`, "/bin/bash", "-c", "true"},
 		{"-c", `umask 000 && exec "$0" "$@"`, "/bin/sh", "-c", "true"},
@@ -270,6 +300,9 @@ func TestContainedVerificationRejectsOtherWrappers(t *testing.T) {
 }
 
 func TestContainedVerificationPlainShellContract(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("durable containment requires Linux systemd")
+	}
 	verifier, workspace := containedVerificationFixture(t)
 	plan, err := verifier.manager.preparation(verifier.pkg)
 	if err != nil {

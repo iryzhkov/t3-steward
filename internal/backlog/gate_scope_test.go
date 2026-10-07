@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +173,9 @@ func TestGateKillFailureMustNotApproveBadOutput(t *testing.T) {
 
 func requireUserSystemd(t *testing.T) {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("user systemd scopes require Linux")
+	}
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		t.Skip("systemd-run unavailable")
 	}
