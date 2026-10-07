@@ -128,8 +128,12 @@ func nodeWakeResult(w domain.NodeWait) string {
 }
 
 // commandSafeRunID reports whether a run ID can be printed inside a command
-// line: bounded, alphanumeric first, then only - _ and dots.
+// line: bounded, alphanumeric first, then only - _ and dots. Legacy rerun
+// IDs additionally allow exactly the run:rerun: prefix before that safe key.
 func commandSafeRunID(run string) bool {
+	if strings.HasPrefix(run, "run:rerun:") {
+		run = strings.TrimPrefix(run, "run:rerun:")
+	}
 	if run == "" || len(run) > 128 || !(run[0] >= 'a' && run[0] <= 'z' || run[0] >= 'A' && run[0] <= 'Z' || run[0] >= '0' && run[0] <= '9') {
 		return false
 	}
@@ -273,6 +277,8 @@ func (r *Runner) tickNodes(ctx context.Context) {
 				memberIDs = append(memberIDs, member.Request.ID)
 			}
 		}
+		var builtSummaries []*WakeSummary
+		var summaryMembers []domain.NodeWait
 		if w.DeliveryPayload != "" {
 			// An earlier attempt froze this wake and is known to have had no
 			// effect (offline, busy). The retry sends the same bytes: the
@@ -292,6 +298,7 @@ func (r *Runner) tickNodes(ctx context.Context) {
 				wake = members
 			}
 			summaries := buildNodeSummaries(ctx, r.NodeSummary, wake)
+			builtSummaries, summaryMembers = summaries, wake
 			text = nodeWakeMessage(w, summaries[0])
 			if grouped {
 				text = nodeGroupMessageWith(members, summaries)
@@ -309,6 +316,15 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		}
 		if !claimed {
 			continue
+		}
+		if r.NodeSummaryRecord != nil {
+			for i, summary := range builtSummaries {
+				if summary != nil {
+					if err := r.NodeSummaryRecord(ctx, summaryMembers[i].Request.ID, *summary); err != nil {
+						logFailure(ctx, r.log, "record node wake summary", err, "wait", summaryMembers[i].Request.ID, "error", err)
+					}
+				}
+			}
 		}
 		if err := control.SendNodeWake(ctx, *thread, w.DeliveryID, text); err != nil {
 			if _, err := store.TransitionNodeWake(ctx, w.Request.ID, "sending", "recovery-required", now); err != nil {

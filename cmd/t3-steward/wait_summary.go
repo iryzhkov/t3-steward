@@ -106,12 +106,13 @@ func (s *coordinatorSummarySource) OpenSummaryArtifact(ctx context.Context, id s
 func summaryRunOf(detail backlogadmin.WorkflowDetail) wait.SummaryRun {
 	run := wait.SummaryRun{ID: detail.Summary.Run.ID, Workflow: detail.Summary.Workflow.Name, Progress: detail.Summary.Run.Progress}
 	for _, task := range manifestOrder(detail) {
-		row := wait.SummaryTask{ID: task.Task.ID, Name: task.Task.Name, Outputs: task.Task.Outputs}
+		row := wait.SummaryTask{ID: task.Task.ID, Name: task.Task.Name, Outputs: task.Task.Outputs, ReviewOutput: domain.CloneReviewOutput(task.Task.ReviewOutput)}
 		if task.Sink != nil {
 			row.ID, row.Name, row.Sink, row.Progress = task.Sink.ID, domain.SinkTaskName, true, task.Sink.Progress
 		}
 		if task.Attempt != nil {
 			row.Attempt, row.Progress, row.Failure = task.Attempt.ID, task.Attempt.Progress, task.Attempt.Failure
+			row.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
 		}
 		seen := map[string]bool{}
 		for _, artifacts := range [][]backlogadmin.Artifact{detail.Artifacts, task.Artifacts} {
@@ -165,7 +166,8 @@ type waitSummarySources struct {
 	// coordinator configured.
 	nodes func(context.Context) ([]domain.NodeWait, error)
 	// summary is what a node wait's summary is built from.
-	summary wait.NodeSummarySource
+	summary  wait.NodeSummarySource
+	recorded func(context.Context, string) (*wait.WakeSummary, error)
 }
 
 func parseWaitSummaryArgs(args []string) (string, bool, error) {
@@ -195,6 +197,18 @@ func cmdWaitSummary(ctx context.Context, cfg config.Config, args []string, out i
 		return err
 	}
 	sources := waitSummarySources{summary: newNodeSummarySource(cfg)}
+	sources.recorded = func(ctx context.Context, id string) (*wait.WakeSummary, error) {
+		statePath, err := cfg.ResolveStatePath()
+		if err != nil {
+			return nil, err
+		}
+		store, err := sqlite.Open(statePath)
+		if err != nil {
+			return nil, err
+		}
+		defer store.Close()
+		return recordedNodeSummary(store)(ctx, id)
+	}
 	sources.local = func(ctx context.Context) ([]wait.Wait, error) {
 		statePath, err := cfg.ResolveStatePath()
 		if err != nil {
@@ -225,8 +239,20 @@ func cmdWaitSummary(ctx context.Context, cfg config.Config, args []string, out i
 // it settled.
 func runWaitSummary(ctx context.Context, sources waitSummarySources, id string, asJSON bool, out io.Writer) error {
 	var summary wait.WakeSummary
+	source := ""
 	switch {
 	case strings.HasPrefix(id, "nw-"):
+		if sources.recorded != nil {
+			recorded, err := sources.recorded(ctx, id)
+			if err != nil {
+				return err
+			}
+			if recorded != nil {
+				summary, source = *recorded, "wake"
+				break
+			}
+		}
+		source = "live"
 		if sources.nodes == nil {
 			return fmt.Errorf("wait %s is a coordinator-held node wait and this host has no coordinator configured", id)
 		}
@@ -274,7 +300,10 @@ func runWaitSummary(ctx context.Context, sources waitSummarySources, id string, 
 	if asJSON {
 		encoder := json.NewEncoder(out)
 		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(summary); err != nil {
+		if err := encoder.Encode(struct {
+			wait.WakeSummary
+			Source string `json:"source,omitempty"`
+		}{WakeSummary: summary, Source: source}); err != nil {
 			return err
 		}
 	} else {

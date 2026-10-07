@@ -705,6 +705,14 @@ func (c *SSHClient) OpenArtifact(ctx context.Context, _ Principal, artifactID st
 	}
 	return ArtifactContent{Metadata: *response.ArtifactMetadata, Content: &exactReadCloser{
 		reader: exchange.stdout, closer: exchange, remaining: response.ArtifactSize,
+		abort: func() error {
+			// A bounded reader may intentionally leave most of the artifact
+			// unread. Stop ssh before waiting so its stdout cannot block on
+			// the abandoned pipe. The resulting exit error is expected.
+			exchange.cancel()
+			_ = exchange.Close()
+			return nil
+		},
 	}}, nil
 }
 

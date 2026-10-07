@@ -846,6 +846,9 @@ type exactReadCloser struct {
 	closer    io.Closer
 	remaining int64
 	stopWatch func()
+	// abort is set only for streams whose producer must be cancelled before
+	// waiting when the caller deliberately stops before the declared size.
+	abort func() error
 }
 
 func (r *exactReadCloser) Read(p []byte) (int, error) {
@@ -866,6 +869,9 @@ func (r *exactReadCloser) Read(p []byte) (int, error) {
 func (r *exactReadCloser) Close() error {
 	if r.stopWatch != nil {
 		r.stopWatch()
+	}
+	if r.remaining > 0 && r.abort != nil {
+		return r.abort()
 	}
 	return r.closer.Close()
 }

@@ -99,7 +99,8 @@ type waitListSources struct {
 	coordinator func(ctx context.Context) ([]domain.NodeWait, []domain.TaskWait, error)
 	// host is this host's name, used to label local rows and to default the
 	// host scope of the joined view.
-	host string
+	host    string
+	summary func(context.Context, string) (*wait.WakeSummary, error)
 }
 
 func parseWaitListArgs(args []string) (waitListOptions, error) {
@@ -163,6 +164,15 @@ func collectWaitList(ctx context.Context, sources waitListSources, options waitL
 		if row.Settled && !options.all && !(row.Source == "local" && (row.Delivery == "held" || row.Delivery == "pending")) {
 			answer.Hidden++
 			continue
+		}
+		if row.Source == "coordinator" && strings.HasPrefix(row.ID, "nw-") && sources.summary != nil {
+			summary, err := sources.summary(ctx, row.ID)
+			if err != nil {
+				answer.Unavailable = append(answer.Unavailable, "recorded node summary: "+err.Error())
+				answer.causes = append(answer.causes, err)
+			} else {
+				row.Summary = summary
+			}
 		}
 		answer.Rows = append(answer.Rows, row)
 	}
@@ -329,7 +339,11 @@ func renderWaitList(out io.Writer, answer waitListAnswer, options waitListOption
 		if options.all || options.thread == "" {
 			line += " thread=" + orDash(row.Thread)
 		}
-		fmt.Fprintf(out, "%s registered=%s deadline=%s\n", line, formatTime(row.Registered), formatTime(row.Deadline))
+		line += fmt.Sprintf(" registered=%s deadline=%s", formatTime(row.Registered), formatTime(row.Deadline))
+		if row.Summary != nil {
+			line += " summary=" + fmt.Sprintf("%q", row.Summary.Headline)
+		}
+		fmt.Fprintln(out, line)
 	}
 	if len(answer.Rows) == 0 {
 		fmt.Fprintln(out, emptyWaitListLine(answer, options))

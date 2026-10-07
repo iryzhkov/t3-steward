@@ -187,7 +187,7 @@ func TestSummaryRunOfKeepsTheLatestAttemptAndOlderCoordinators(t *testing.T) {
 		t.Fatalf("gate = %+v", gate)
 	}
 	// A coordinator that predates artifact listing answers without them; the
-	// declarations survive, so the summary shows ? rather than "none".
+	// declarations survive, so the summary reports the missing output.
 	older := summaryTestDetail()
 	older.Artifacts = nil
 	run = summaryRunOf(older)
@@ -195,7 +195,7 @@ func TestSummaryRunOfKeepsTheLatestAttemptAndOlderCoordinators(t *testing.T) {
 		t.Fatalf("older = %+v", run.Tasks[1])
 	}
 	s := wait.BuildNodeSummary(context.Background(), summaryTestSource(t, older, nil), summaryTestNodeWait())
-	if s.Unavailable != "" || s.Tasks[1].Verdict != "?" || s.Verdict != "" {
+	if s.Unavailable != "" || s.Tasks[1].Verdict != "review output missing" || s.Tasks[1].VerdictStatus != "missing" || s.Verdict != "" {
 		t.Fatalf("older coordinator summary = %+v", s)
 	}
 }

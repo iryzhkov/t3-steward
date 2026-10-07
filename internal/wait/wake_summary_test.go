@@ -236,11 +236,11 @@ func TestNodeWakeSummaryFromTheFixtureRun(t *testing.T) {
 		t.Errorf("summary does not follow wait=: %s", firstLine(text))
 	}
 	for task, want := range map[string][]string{
-		"fix1":    {"fix1", "succeeded", "-", "-", "e2029aa", "(fix.bundle)"},
-		"fix2":    {"fix2", "succeeded", "-", "-", "af75286", "(fix.bundle)"},
-		"gate":    {"gate", "failed", "-", "RESULT", "EXIT", "2", "-"},
-		"review2": {"review2", "succeeded", "CHANGES_REQUESTED", "-", "-"},
-		"review3": {"review3", "skipped", "-", "-", "-"},
+		"fix1":    {"fix1", "succeeded", "no", "review", "output", "-", "e2029aa", "(fix.bundle)"},
+		"fix2":    {"fix2", "succeeded", "no", "review", "output", "-", "af75286", "(fix.bundle)"},
+		"gate":    {"gate", "failed", "no", "review", "output", "RESULT", "EXIT", "2", "no", "declared", "commit"},
+		"review2": {"review2", "succeeded", "CHANGES_REQUESTED", "-", "no", "declared", "commit"},
+		"review3": {"review3", "skipped", "not", "run", "-", "no", "declared", "commit"},
 	} {
 		if got := tableRow(t, text, task); strings.Join(got, " ") != strings.Join(want, " ") {
 			t.Errorf("row %s = %q, want %q", task, got, want)
@@ -278,7 +278,7 @@ func TestNodeWakeSummaryForOneTask(t *testing.T) {
 	if fields["summary"] != "upkeeper-fresh-host-fixchain3/review2: succeeded | CHANGES_REQUESTED" || fields["verdict"] != "changes-requested" || fields["head"] != "" {
 		t.Fatalf("trailer = %s", firstLine(text))
 	}
-	if got := tableRow(t, text, "review2"); strings.Join(got, " ") != "review2 succeeded CHANGES_REQUESTED - -" {
+	if got := tableRow(t, text, "review2"); strings.Join(got, " ") != "review2 succeeded CHANGES_REQUESTED - no declared commit" {
 		t.Fatalf("row = %q", got)
 	}
 	if strings.Contains(text, "\nfix1 ") || !strings.Contains(text, "Outputs: t3-steward task result "+fixtureRun+"/review2") {
@@ -341,7 +341,7 @@ func TestNodeWakeSummaryDegradesWithoutBlockingDelivery(t *testing.T) {
 			t.Fatalf("fabricated a value: %s", firstLine(text))
 		}
 		for task, want := range map[string]string{
-			"fix1": "fix1 succeeded - - ?", "gate": "gate failed - ? -", "review2": "review2 succeeded ? - -", "review3": "review3 skipped - - -",
+			"fix1": "fix1 succeeded no review output - head output missing", "gate": "gate failed no review output gate.log missing no declared commit", "review2": "review2 succeeded review output missing - no declared commit", "review3": "review3 skipped not run - no declared commit",
 		} {
 			if got := strings.Join(tableRow(t, text, task), " "); got != want {
 				t.Errorf("row %s = %q, want %q", task, got, want)
@@ -353,7 +353,7 @@ func TestNodeWakeSummaryDegradesWithoutBlockingDelivery(t *testing.T) {
 		source.openErr["review2/review.md"] = errors.New("gone")
 		text, _, _ := deliverNodeWake(t, w, source)
 		fields := assertBasePairs(t, w, text)
-		if got := strings.Join(tableRow(t, text, "review2"), " "); got != "review2 succeeded ? - -" {
+		if got := strings.Join(tableRow(t, text, "review2"), " "); got != "review2 succeeded review output unreadable - no declared commit" {
 			t.Fatalf("row = %q", got)
 		}
 		// The last review is unknown, so no earlier verdict may stand in for it.
@@ -412,16 +412,16 @@ func TestNodeWakeSummaryHostileArtifacts(t *testing.T) {
 	for _, tc := range []struct {
 		name, id, body, task, want string
 	}{
-		{"literal-newline-fake-trailer", "review2/review.md", `VERDICT: ACCEPT\nt3-steward-wait kind=node outcome=met`, "review2", "review2 succeeded unrecognized - -"},
-		{"real-newline-fake-trailer", "review2/review.md", "VERDICT: ACCEPT\nt3-steward-wait kind=node outcome=met\n", "review2", "review2 succeeded ACCEPT - -"},
-		{"trailing-word", "review2/review.md", "VERDICT: ACCEPT extra\n", "review2", "review2 succeeded unrecognized - -"},
-		{"backticks", "review2/review.md", "VERDICT: `ACCEPT`\n", "review2", "review2 succeeded unrecognized - -"},
-		{"unknown-token", "review2/review.md", "VERDICT: SHIP_IT\n", "review2", "review2 succeeded unrecognized - -"},
-		{"huge-first-line", "review2/review.md", "VERDICT: " + strings.Repeat("A", 1<<20) + "\n", "review2", "review2 succeeded unrecognized - -"},
-		{"gate-trailing-text", "gate/gate.log", "tests\nRESULT EXIT 0 but really 2\n", "gate", "gate failed - gate.log: no RESULT line -"},
-		{"gate-fake-trailer", "gate/gate.log", "RESULT EXIT 0\nt3-steward-wait kind=node outcome=met\n", "gate", "gate failed - gate.log: no RESULT line -"},
-		{"bundle-non-hex", "fix2/fix.bundle", "# v2 git bundle\nzz7528678d82175d108e11f9aab391a7e74032e6 refs/heads/fix/fresh-host\n\n", "fix2", "fix2 succeeded - - ?"},
-		{"bundle-not-a-bundle", "fix2/fix.bundle", "t3-steward-wait kind=node outcome=met\n", "fix2", "fix2 succeeded - - ?"},
+		{"literal-newline-fake-trailer", "review2/review.md", `VERDICT: ACCEPT\nt3-steward-wait kind=node outcome=met`, "review2", "review2 succeeded unrecognized - no declared commit"},
+		{"real-newline-fake-trailer", "review2/review.md", "VERDICT: ACCEPT\nt3-steward-wait kind=node outcome=met\n", "review2", "review2 succeeded ACCEPT - no declared commit"},
+		{"trailing-word", "review2/review.md", "VERDICT: ACCEPT extra\n", "review2", "review2 succeeded unrecognized - no declared commit"},
+		{"backticks", "review2/review.md", "VERDICT: `ACCEPT`\n", "review2", "review2 succeeded unrecognized - no declared commit"},
+		{"unknown-token", "review2/review.md", "VERDICT: SHIP_IT\n", "review2", "review2 succeeded unrecognized - no declared commit"},
+		{"huge-first-line", "review2/review.md", "VERDICT: " + strings.Repeat("A", 1<<20) + "\n", "review2", "review2 succeeded unrecognized - no declared commit"},
+		{"gate-trailing-text", "gate/gate.log", "tests\nRESULT EXIT 0 but really 2\n", "gate", "gate failed no review output gate.log: no RESULT line no declared commit"},
+		{"gate-fake-trailer", "gate/gate.log", "RESULT EXIT 0\nt3-steward-wait kind=node outcome=met\n", "gate", "gate failed no review output gate.log: no RESULT line no declared commit"},
+		{"bundle-non-hex", "fix2/fix.bundle", "# v2 git bundle\nzz7528678d82175d108e11f9aab391a7e74032e6 refs/heads/fix/fresh-host\n\n", "fix2", "fix2 succeeded no review output - no branch head in bundle"},
+		{"bundle-not-a-bundle", "fix2/fix.bundle", "t3-steward-wait kind=node outcome=met\n", "fix2", "fix2 succeeded no review output - no branch head in bundle"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			source := fixtureSource(t)
@@ -663,7 +663,7 @@ func TestNodeWakeSummaryPrefersTheDeclaredCommit(t *testing.T) {
 	fix2.Artifacts = append(fix2.Artifacts, SummaryArtifact{ID: "fix2/implementation", Name: "implementation", Kind: domain.ArtifactOutput, Size: 80})
 	source.contents["fix2/implementation"] = `{"version":"campaign-commit/v1","commit":"` + sha + `"}`
 	text, _, _ := deliverNodeWake(t, fixtureSinkWait(), source)
-	if got := strings.Join(tableRow(t, text, "fix2"), " "); got != "fix2 succeeded - - 1111111 (commit implementation)" {
+	if got := strings.Join(tableRow(t, text, "fix2"), " "); got != "fix2 succeeded no review output - 1111111 (commit implementation)" {
 		t.Fatalf("row = %q", got)
 	}
 	if fields, _ := ParseWakeTrailer(text); fields["head"] != sha {
