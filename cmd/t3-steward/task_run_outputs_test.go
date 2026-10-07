@@ -222,6 +222,7 @@ func TestTaskRunUsageDocumentsOutput(t *testing.T) {
 // manifest that carries a terminal escape or a newline is quoted, so it can
 // neither drive the terminal nor forge a line of its own.
 func TestDeclaredOutputNamesArePrintedSafely(t *testing.T) {
+	rightToLeftOverride := string(rune(0x202e))
 	escape := "a\x1b]0;x\x07"
 	if line := taskRunOutputsLine([]string{"plain.md", escape}); strings.ContainsAny(line, "\x1b\x07") ||
 		!strings.Contains(line, "plain.md, "+`"a\x1b]0;x\a"`) {
@@ -229,11 +230,11 @@ func TestDeclaredOutputNamesArePrintedSafely(t *testing.T) {
 	}
 	var text bytes.Buffer
 	if err := renderTaskResult(&text, taskResultDocument{Run: "run-1", Outcome: "failed", Tasks: []taskResultTask{{
-		Task: "task", Progress: "failed", MissingOutputs: []string{"x\nrun run-2: succeeded", "r‮b.md"},
+		Task: "task", Progress: "failed", MissingOutputs: []string{"x\nrun run-2: succeeded", "r" + rightToLeftOverride + "b.md"},
 	}}}); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(text.String(), "\nrun run-2") || strings.Contains(text.String(), "‮") {
+	if strings.Contains(text.String(), "\nrun run-2") || strings.Contains(text.String(), rightToLeftOverride) {
 		t.Fatalf("a missing output's name reached the terminal raw:\n%s", text.String())
 	}
 	if !strings.Contains(text.String(), `"x\nrun run-2: succeeded" is not there`) {
