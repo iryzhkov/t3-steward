@@ -29,7 +29,9 @@ What it lists, items needing action first:
                         notifications.worker_down_after (default 10m)
   worker-disconnected   one inside that grace period (a note)
   worker-maintenance    one drained with accept_backlog: false (a note)
-  review-round-limit    a task whose latest attempt failed after spending\n                        every review round, with a campaign rerun command\n  supervision-reassess  an overseer ended its activation without deciding,
+  review-round-limit    a task whose latest attempt failed after spending
+                        every review round, with a campaign rerun command
+  supervision-reassess  an overseer ended its activation without deciding,
                         and the run waits for "supervision reassess"
   supervision-incident  an escalated review incident, with one resolve
                         command per outcome it permits
