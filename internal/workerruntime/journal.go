@@ -307,6 +307,11 @@ func (j *Journal) update(change func(*journalState) error) error {
 		if statesEqual(before, state) && state.Version != 0 {
 			return nil
 		}
+		// Publishing a state that read refuses would take every later read,
+		// including a restart, down with it; refuse this one update instead.
+		if err := validateAttemptIdentities(state.Attempts); err != nil {
+			return err
+		}
 		return j.write(state)
 	})
 }
@@ -348,12 +353,21 @@ func (j *Journal) read() (journalState, error) {
 	if state.Attempts == nil {
 		state.Attempts = make(map[string]AttemptRecord)
 	}
-	for id, record := range state.Attempts {
-		if id == "" || record.Assignment.ID != id || record.Package.Package.Identity.AssignmentID != id {
-			return journalState{}, fmt.Errorf("worker journal: invalid attempt record %q", id)
-		}
+	if err := validateAttemptIdentities(state.Attempts); err != nil {
+		return journalState{}, err
 	}
 	return state, nil
+}
+
+// validateAttemptIdentities checks that every attempt record is keyed by the
+// assignment it and its package name.
+func validateAttemptIdentities(attempts map[string]AttemptRecord) error {
+	for id, record := range attempts {
+		if id == "" || record.Assignment.ID != id || record.Package.Package.Identity.AssignmentID != id {
+			return fmt.Errorf("worker journal: invalid attempt record %q", id)
+		}
+	}
+	return nil
 }
 
 func (j *Journal) write(state journalState) error {

@@ -867,6 +867,9 @@ func (r *Runtime) prune(ctx context.Context, id string, record AttemptRecord) er
 	return r.journal.update(func(state *journalState) error {
 		if current, ok := state.Attempts[id]; ok && (current.Phase == PhaseCompleted || (current.Phase == PhaseStopped && current.StopConfirmed)) {
 			delete(state.Attempts, id)
+			// The park goes with the record it fenced. A later statement that
+			// still names it is retained again and its removal is a no-op.
+			delete(state.Parked, id)
 			state.Sequence++
 		}
 		return nil
