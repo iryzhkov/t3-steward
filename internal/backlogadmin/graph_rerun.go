@@ -37,6 +37,11 @@ func (s *Service) rerunGraph(
 		return result, errors.New("rerun storage or artifact custody unavailable")
 	}
 	scope, err := domain.PlanRerun(source, records.Tasks, records.Attempts, r.TaskID)
+	var retained map[string]domain.Artifact
+	var reusedCommits []domain.ReusedCommit
+	if r.UseCommit {
+		scope, retained, reusedCommits, err = s.failedCommitRerun(ctx, records, source, r.TaskID)
+	}
 	if err != nil {
 		return result, err
 	}
@@ -59,7 +64,7 @@ func (s *Service) rerunGraph(
 	for index, task := range tasks {
 		idMap[task.ID] = fmt.Sprintf("task:rerun:%s:%d", r.ID, index)
 	}
-	builder := rerunReferences{service: s, request: r, source: source, runID: runID, records: records}
+	builder := rerunReferences{service: s, request: r, source: source, runID: runID, records: records, retained: retained}
 	for index := range tasks {
 		task := &tasks[index]
 		sourceTaskID := task.ID
@@ -114,6 +119,9 @@ func (s *Service) rerunGraph(
 		IdempotencyKey:  r.ID,
 		Reason:          r.Reason,
 	}
+	if len(reusedCommits) != 0 {
+		provenance.ReusedCommits = &reusedCommits
+	}
 	// idMap is the only place the source-to-rerun task identity is known, so it
 	// travels to the store, which needs it to move inherited gate definitions
 	// onto the rerun's tasks.
@@ -125,13 +133,14 @@ func (s *Service) rerunGraph(
 
 // rerunReferences turns source artifacts into references the new run owns.
 type rerunReferences struct {
-	service *Service
-	request domain.GraphAmendment
-	source  domain.WorkflowRun
-	runID   string
-	records sqlite.CoordinatorRecords
-	inputs  []domain.Artifact
-	mapped  map[string]string
+	service  *Service
+	request  domain.GraphAmendment
+	source   domain.WorkflowRun
+	runID    string
+	records  sqlite.CoordinatorRecords
+	inputs   []domain.Artifact
+	mapped   map[string]string
+	retained map[string]domain.Artifact
 }
 
 // detach removes the edges that pointed at reused ancestors and replaces the
@@ -187,9 +196,19 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 
 // output finds a retained output artifact of a source task by declared name.
 func (b *rerunReferences) output(taskID, name string) (domain.Artifact, bool) {
+	if artifact, ok := b.retained[taskID+"\x00"+name]; ok {
+		return artifact, true
+	}
+	var failedAttempt string
+	for key, artifact := range b.retained {
+		if len(key) > len(taskID) && key[:len(taskID)+1] == taskID+"\x00" {
+			failedAttempt = artifact.AttemptID
+			break
+		}
+	}
 	for _, artifact := range b.records.Artifacts {
 		if artifact.WorkflowRunID == b.source.ID && artifact.TaskID == taskID &&
-			artifact.Kind == domain.ArtifactOutput && artifact.Name == name {
+			artifact.Kind == domain.ArtifactOutput && artifact.Name == name && (failedAttempt == "" || artifact.AttemptID == failedAttempt) {
 			return artifact, true
 		}
 	}

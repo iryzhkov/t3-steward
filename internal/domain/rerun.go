@@ -11,11 +11,27 @@ import (
 // between the two runs: the source run itself is never touched, because a run
 // that pretends it did not fail is a run nobody can learn from.
 type RerunProvenance struct {
-	SourceRunID     string `json:"sourceRunId"`
-	SourceTaskID    string `json:"sourceTaskId"`
-	SourceAttemptID string `json:"sourceAttemptId,omitempty"`
-	IdempotencyKey  string `json:"idempotencyKey"`
-	Reason          string `json:"reason,omitempty"`
+	SourceRunID     string          `json:"sourceRunId"`
+	SourceTaskID    string          `json:"sourceTaskId"`
+	SourceAttemptID string          `json:"sourceAttemptId,omitempty"`
+	IdempotencyKey  string          `json:"idempotencyKey"`
+	Reason          string          `json:"reason,omitempty"`
+	ReusedCommits   *[]ReusedCommit `json:"reusedCommits,omitempty"`
+}
+
+// ReusedCommit names retained failed-attempt evidence explicitly authorized by a rerun.
+type ReusedCommit struct {
+	Producer             string   `json:"producer"`
+	Name                 string   `json:"name"`
+	Commit               string   `json:"commit"`
+	SourceAttemptID      string   `json:"sourceAttemptId"`
+	VerificationFailures []string `json:"verificationFailures"`
+}
+
+// RerunCommitOptions carries custody-validated failed attempt identities.
+// The coordinator validates the retained records before supplying this option.
+type RerunCommitOptions struct {
+	FailedAttempts map[string]string
 }
 
 // CarriedInput is one output artifact of a source run that a rerun carries
@@ -88,7 +104,7 @@ var ErrRerunSourceLive = errors.New(
 // descendants, and refuses when a task that would be reused did not succeed:
 // starting a task whose input never existed is the failure this command is
 // supposed to prevent, not a case it is supposed to handle.
-func PlanRerun(run WorkflowRun, templates []Task, attempts []Attempt, from string) (RerunScope, error) {
+func PlanRerun(run WorkflowRun, templates []Task, attempts []Attempt, from string, commitOptions ...RerunCommitOptions) (RerunScope, error) {
 	var scope RerunScope
 	if from == "" {
 		return scope, errors.New("a rerun needs the task to start from")
@@ -140,7 +156,10 @@ func PlanRerun(run WorkflowRun, templates []Task, attempts []Attempt, from strin
 			scope.Rerun = append(scope.Rerun, task)
 			continue
 		}
-		if last[task.ID].Progress != ProgressSucceeded {
+		attempt := last[task.ID]
+		commitReuse := len(commitOptions) == 1 && attempt.Progress == ProgressFailed &&
+			attempt.ID != "" && commitOptions[0].FailedAttempts[task.ID] == attempt.ID
+		if attempt.Progress != ProgressSucceeded && !commitReuse {
 			unusable = append(unusable, fmt.Sprintf("%s is %s", task.Name, reusableState(last[task.ID])))
 			continue
 		}
