@@ -113,11 +113,6 @@ worker is upgraded.
   the review documents written under `.t3/reviews/<round>/<reviewer>/`; a
   mid-turn wake carries them too and is never held.
 
-## [0.11.0-rc.49] to [0.11.0-rc.115] - 2026-09-14 to 2026-10-06
-
-These releases were published without per-release headings; their entries
-were accumulated here and are not split by release.
-
 ### Changed
 
 - M16-5: Campaign executors receive a concise contract for authorized work,
