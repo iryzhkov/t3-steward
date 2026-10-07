@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -109,7 +110,7 @@ func (s *Store) ExecuteLease(ctx context.Context, request domain.LeaseRequest) (
 			response.Message = "refused: lease is free or expired"
 		} else if !request.Force && (lease.OwnerThread != request.OwnerThread || lease.Token != request.Token) {
 			response.Code = 10
-			response.Message = "refused: holder or fencing token does not match; " + heldLeaseMessage(*lease)
+			response.Message = "refused: holder or fencing token does not match; " + strings.TrimPrefix(heldLeaseMessage(*lease), "refused: ")
 		} else {
 			if request.Action == "renew" {
 				lease.ExpiresAt = now.Add(request.EffectiveTTL())
@@ -160,10 +161,18 @@ func loadLease(ctx context.Context, q leaseQuerier, name string) (*domain.Lease,
 	return &lease, nil
 }
 
+const leasePlanBareCharacters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._/:@#-"
+
 func heldLeaseMessage(lease domain.Lease) string {
 	detail := fmt.Sprintf("%q", lease.Reason)
 	if lease.Plan != "" {
-		detail = fmt.Sprintf("plan %s, %s", lease.Plan, detail)
+		plan := lease.Plan
+		// A plan reference prints bare; anything else is quoted so it cannot
+		// pose as the reason or close the parenthesis.
+		if strings.ContainsFunc(plan, func(r rune) bool { return !strings.ContainsRune(leasePlanBareCharacters, r) }) {
+			plan = fmt.Sprintf("%q", plan)
+		}
+		detail = fmt.Sprintf("plan %s, %s", plan, detail)
 	}
 	return fmt.Sprintf("refused: %s is held by thread %s (%s) until %s", lease.Name, lease.OwnerThread, detail, lease.ExpiresAt.Format(time.RFC3339Nano))
 }

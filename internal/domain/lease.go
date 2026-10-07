@@ -86,7 +86,7 @@ func ValidateLeaseName(name string) error {
 			return fmt.Errorf("release lease must be release:<name>")
 		}
 	default:
-		return fmt.Errorf("lease name must use repo: or release:")
+		return fmt.Errorf("lease name must start with repo: or release: followed by a name")
 	}
 	return nil
 }
@@ -94,12 +94,15 @@ func leaseText(label, value string, max int, required bool) error {
 	if !utf8.ValidString(value) || utf8.RuneCountInString(value) > max {
 		return fmt.Errorf("lease %s exceeds %d characters or is invalid UTF-8", label, max)
 	}
-	if required && (value == "" || strings.TrimSpace(value) != value) {
+	if (required || value != "") && (value == "" || strings.TrimSpace(value) != value) {
 		return fmt.Errorf("lease %s must be nonempty and trimmed", label)
 	}
+	// Format characters (bidi overrides, zero-width marks) and line or
+	// paragraph separators would let a holder disguise the refusal text that
+	// other threads read, so they are refused alongside control characters.
 	for _, r := range value {
-		if unicode.IsControl(r) {
-			return fmt.Errorf("lease %s contains a control character", label)
+		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp) {
+			return fmt.Errorf("lease %s contains a control, format or separator character", label)
 		}
 	}
 	return nil
