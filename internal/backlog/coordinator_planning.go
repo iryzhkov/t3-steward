@@ -203,10 +203,7 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 	routeEstimates := make([]RouteEstimate, 0)
 	for _, attempt := range input.Attempts {
 		task, _ := domain.TaskForAttempt(attempt, input.WorkflowRuns, input.Tasks)
-		cost := SeedCost(task.Difficulty)
-		if task.EstimatedCost != nil {
-			cost = *task.EstimatedCost
-		}
+		cost := TaskQuotaEstimate(task)
 		turns := task.MaxTurns
 		if turns < 1 {
 			turns = 1

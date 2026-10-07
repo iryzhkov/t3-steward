@@ -57,6 +57,7 @@ type PermanentValidator interface {
 // storage and persists the corresponding immutable domain records.
 type BundleIngester struct {
 	RegisterOnly      bool
+	QuotaAdmission    *SubmissionQuotaAdmission
 	DirectoryCatalogs map[string][]directoryresource.Binding
 	StorageRoot       string
 	Store             CoordinatorRecordStore
@@ -136,6 +137,9 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 			return IngestedBundle{}, fmt.Errorf("ingest task %q directories: %w", name, err)
 		}
 		directoryBindings[name] = bindings
+	}
+	if err := i.precheckQuota(ctx, manifest, root, sourceRoot, relativePaths, inputPaths, directoryBindings); err != nil {
+		return IngestedBundle{}, err
 	}
 	workflowID := i.newID("workflow")
 	runID := i.newID("run")
@@ -226,7 +230,9 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: materialize supervision: %w", err)
 		}
 	}
-	if err := i.Store.SaveCoordinatorRecords(ctx, records); err != nil {
+	// A transactional quota refusal can leave an inert supervision row, as
+	// with any metadata save failure; the unpublished run never exists.
+	if err := i.saveQuotaRecords(ctx, &records); err != nil {
 		if cleanupErr := removeIngestedTree(finalDir); cleanupErr != nil {
 			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: persist metadata: %w (cleanup failed: %v)", err, cleanupErr)
 		}

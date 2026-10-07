@@ -121,13 +121,48 @@ type Workflow struct {
 	CreatedAt time.Time       `json:"createdAt"`
 }
 
+// QuotaAdmissionReceipt records the quota truth and routes used when a submission
+// was admitted. Its ceiling is informational; descendants reserve at dispatch.
+type QuotaAdmissionReceipt struct {
+	AdmittedAt time.Time                   `json:"admittedAt"`
+	Pools      []QuotaAdmissionPoolReceipt `json:"pools,omitempty"`
+	Roots      []QuotaAdmissionRootReceipt `json:"roots,omitempty"`
+}
+
+type QuotaAdmissionPoolReceipt struct {
+	PoolID                string                        `json:"poolId"`
+	WindowSet             QuotaWindowSet                `json:"windowSet"`
+	Windows               []QuotaAdmissionWindowReceipt `json:"windows,omitempty"`
+	RootCost              float64                       `json:"rootCost"`
+	AlreadyAdmittedDemand float64                       `json:"alreadyAdmittedDemand"`
+	CampaignBudgetCeiling float64                       `json:"campaignBudgetCeiling"`
+	Decision              string                        `json:"decision"`
+}
+
+type QuotaAdmissionWindowReceipt struct {
+	Key                   BucketKey `json:"key"`
+	UsedPercent           float64   `json:"usedPercent"`
+	AvailableHeadroom     float64   `json:"availableHeadroom"`
+	AlreadyAdmittedDemand float64   `json:"alreadyAdmittedDemand"`
+	SafetyMarginPercent   float64   `json:"safetyMarginPercent"`
+}
+
+type QuotaAdmissionRootReceipt struct {
+	TaskID   string        `json:"taskId"`
+	TaskName string        `json:"taskName,omitempty"`
+	Route    ProviderRoute `json:"route"`
+	Cost     float64       `json:"cost"`
+	Decision string        `json:"decision"`
+}
+
 // WorkflowRun is one execution of a workflow definition.
 type WorkflowRun struct {
-	Graph         *GraphDefinition `json:"graph,omitempty"`
-	ID            string           `json:"id"`
-	WorkflowID    string           `json:"workflowId"`
-	GraphRevision int64            `json:"graphRevision,omitempty"`
-	Sink          *SinkTask        `json:"sink,omitempty"`
+	QuotaAdmission *QuotaAdmissionReceipt `json:"quotaAdmission,omitempty"`
+	Graph          *GraphDefinition       `json:"graph,omitempty"`
+	ID             string                 `json:"id"`
+	WorkflowID     string                 `json:"workflowId"`
+	GraphRevision  int64                  `json:"graphRevision,omitempty"`
+	Sink           *SinkTask              `json:"sink,omitempty"`
 	// Supervision is the run's durable supervision record, or nil for an
 	// unsupervised run, which is every run that exists today. It sits beside
 	// the sink because both are coordinator-owned state that belongs to the
