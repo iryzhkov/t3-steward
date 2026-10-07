@@ -97,9 +97,14 @@ so the order in which workers are polled does not matter. Each exchange then
 imports what its worker queued since, still before reconcile, and handles
 every other upload after. The scan of one worker's custody handles at most
 256 uploads; whatever lies past that bound, or cannot be fetched or imported
-yet, stays in the worker's custody and is imported by a later pass. Nothing
-waits for it: no offer, re-arm or planning decision is held back for a
-snapshot. A worker whose session cannot be opened is not dialled a second
+yet, stays in the worker's custody and is imported by a later pass. An upload
+that cannot be fetched or imported is stepped over, in either scan, and never
+hides what lies behind it, so every pass takes off the queue at least one
+upload it can handle among the first 256 and a snapshot further back is
+reached within a bounded number of passes. Only a queue whose first 256
+uploads all stay unfetchable or deferred keeps what lies behind them in the
+worker's custody until some of them can be handled. Nothing waits for it: no
+offer, re-arm or planning decision is held back for a snapshot. A worker whose session cannot be opened is not dialled a second
 time in the same pass.
 
 The latest snapshot also travels with the attempt's result, as
@@ -141,9 +146,12 @@ same pass, before the worker phase polls the worker that took the earlier
 one; the earlier epoch's snapshot is then imported under its V39 record as
 described above.
 
-A worker removed from the configuration, or whose connection is emptied,
-while it holds snapshots is not polled, and its released dispatches are
-offered again without waiting for it. When it is added back and polled, its
+A worker removed from the configuration while it holds snapshots is not
+polled, and its released dispatches are offered again without waiting for it.
+Emptying a worker's `connection` does not remove it: the worker is still
+polled in every pass, over the slot-only SSH route instead of the persistent
+connection, and its snapshots are imported as usual. When a removed worker is
+added back and polled, its
 snapshots are imported under the V39 records of the dispatches that took
 them: each upload names the worker epoch of the process that took it, and
 that must be the epoch the record carries. A snapshot whose record is missing, or whose attempt has

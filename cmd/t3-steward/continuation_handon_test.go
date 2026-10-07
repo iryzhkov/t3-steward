@@ -242,10 +242,8 @@ func TestTheHandOnIsNeverSettledByTheScanBound(t *testing.T) {
 	})
 	// passes runs Tick over one worker until the pass with the given number
 	// and reports the task's latest snapshot after each pass. Every exchange
-	// runs; nothing is held. The ordinary checkpoint pass after reconcile
-	// reports a fetch failure as the exchange's error, as it does on main, so
-	// tolerated names a case where that is expected.
-	passes := func(t *testing.T, w handOnWorker, control *queuedUploadControl, count int, tolerated bool) []string {
+	// runs, and none reports an error; nothing is held.
+	passes := func(t *testing.T, w handOnWorker, control *queuedUploadControl, count int) []string {
 		t.Helper()
 		session := w.session(t, control)
 		exchanged := 0
@@ -263,7 +261,7 @@ func TestTheHandOnIsNeverSettledByTheScanBound(t *testing.T) {
 		}
 		var latest []string
 		for pass := 1; pass <= count; pass++ {
-			if report := sessions.Tick(ctx, backlog.QuotaBridgeReport{}); len(report.Results) != 1 || (report.Results[0].Err != nil && !tolerated) {
+			if report := sessions.Tick(ctx, backlog.QuotaBridgeReport{}); len(report.Results) != 1 || report.Results[0].Err != nil {
 				t.Fatalf("pass %d: report = %+v", pass, report)
 			}
 			if exchanged != pass {
@@ -286,7 +284,7 @@ func TestTheHandOnIsNeverSettledByTheScanBound(t *testing.T) {
 		}
 		continuation, snapshotID := w.snapshot(t, 2)
 		control.uploads = append(control.uploads, continuation)
-		latest := passes(t, w, control, 2, false)
+		latest := passes(t, w, control, 2)
 		// The first pass imports the earlier snapshot and leaves the one past
 		// the bound in custody; the ordinary pass after reconcile takes one
 		// throttle checkpoint off the queue, so the next hand-on reaches it.
@@ -318,12 +316,109 @@ func TestTheHandOnIsNeverSettledByTheScanBound(t *testing.T) {
 		body := broken.raw
 		broken.raw = []byte("not the announced bytes")
 		control := &queuedUploadControl{uploads: []*pendingUpload{broken}}
-		if latest := passes(t, w, control, 1, true); latest[0] != "" || broken.acked {
+		if latest := passes(t, w, control, 1); latest[0] != "" || broken.acked {
 			t.Fatalf("a snapshot that could not be fetched was imported: %q", latest[0])
 		}
 		broken.raw = body
-		if latest := passes(t, w, control, 1, false); latest[0] != snapshotID || !broken.acked {
+		if latest := passes(t, w, control, 1); latest[0] != snapshotID || !broken.acked {
 			t.Fatalf("the repaired snapshot was not imported by the next pass: %q", latest[0])
 		}
 	})
+}
+
+// Review of the simplification, R1: uploads at the head of a worker's
+// custody that cannot be fetched never stop the passes from reaching what lies
+// behind them. Each pass takes at least one upload it can handle off the first
+// continuationHandOnRounds, so a valid snapshot past the scan bound is
+// imported within a bounded number of passes, and no exchange waits for it.
+func TestAnUnfetchableHeadNeverStarvesASnapshotPastTheScanBound(t *testing.T) {
+	ctx := context.Background()
+	for _, unavailable := range []int{1, 33} {
+		t.Run(fmt.Sprintf("%d unavailable at the head", unavailable), func(t *testing.T) {
+			w := newHandOnWorker(t)
+			control := &queuedUploadControl{}
+			for n := 0; n < continuationHandOnRounds; n++ {
+				blocker := w.blocker(t, n)
+				if n < unavailable {
+					// The announced bytes are gone from the worker's custody.
+					blocker.raw = []byte("unavailable")
+				}
+				control.uploads = append(control.uploads, blocker)
+			}
+			continuation, snapshotID := w.snapshot(t, 1)
+			control.uploads = append(control.uploads, continuation)
+			session := w.session(t, control)
+			sessions := &coordinatorWorkerSessions{
+				workerIDs: []string{"normandy"},
+				handOn: func(ctx context.Context, _ string) (backlog.WorkerExchangeReport, error) {
+					return handOnCoordinatorWorkerContinuations(ctx, session, backlog.WorkerExchangeReport{}, 1024)
+				},
+				exchange: func(ctx context.Context, _ string, _ backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error) {
+					return exchangeCoordinatorWorker(ctx, session, 1024, func(context.Context) (backlog.WorkerExchangeReport, error) {
+						return backlog.WorkerExchangeReport{}, nil
+					})
+				},
+			}
+			for pass := 1; pass <= 3; pass++ {
+				report := sessions.Tick(ctx, backlog.QuotaBridgeReport{})
+				if len(report.Results) != 1 || report.Results[0].Err != nil {
+					t.Fatalf("pass %d: report = %+v", pass, report)
+				}
+			}
+			if latest := w.latest(t); latest == nil || latest.ID != snapshotID || !continuation.acked {
+				t.Fatalf("the snapshot behind %d unavailable uploads was not imported after 3 passes: latest = %+v, acknowledged %t", unavailable, latest, continuation.acked)
+			}
+			for n, upload := range control.uploads[:unavailable] {
+				if upload.acked {
+					t.Fatalf("unavailable upload %d was acknowledged; it must stay in custody", n)
+				}
+			}
+		})
+	}
+}
+
+// Review of the simplification, R2: only a worker removed from the
+// configuration is no longer polled. A worker whose persistent connection is
+// emptied stays in every pass on the slot-only SSH route.
+func TestAWorkerWithAnEmptiedConnectionIsStillPolledOverSSH(t *testing.T) {
+	cfg := config.Default()
+	setCoordinatorTestRoots(t, &cfg)
+	kept := ""
+	for id := range cfg.BacklogV2.Workers {
+		if kept == "" || id < kept {
+			kept = id
+		}
+	}
+	if kept == "" {
+		t.Fatal("no workers configured")
+	}
+	for id, worker := range cfg.BacklogV2.Workers {
+		if id != kept {
+			delete(cfg.BacklogV2.Workers, id)
+			continue
+		}
+		worker.Connection = ""
+		cfg.BacklogV2.Workers[id] = worker
+	}
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	resolver := &countingResolver{calls: map[string]int{}}
+	sessions, err := newCoordinatorWorkerSessions(cfg.BacklogV2, store, 7, resolver, nil, backlog.CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := sessions.Tick(context.Background(), backlog.QuotaBridgeReport{})
+	if len(report.Results) != 1 || report.Results[0].WorkerID != kept || report.Results[0].Err == nil {
+		t.Fatalf("the worker with an emptied connection was not polled: %+v", report.Results)
+	}
+	total := 0
+	for _, calls := range resolver.calls {
+		total += calls
+	}
+	if total != 1 {
+		t.Fatalf("session opens = %v, want one for %s", resolver.calls, kept)
+	}
 }

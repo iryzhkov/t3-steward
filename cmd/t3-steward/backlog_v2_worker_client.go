@@ -298,9 +298,10 @@ func importCoordinatorWorkerResult(ctx context.Context, session coordinatorWorke
 	return report, nil
 }
 
-// continuationHandOnRounds bounds one hand-on scan of a worker's custody,
-// counted in uploads handled. It is a fairness bound only: whatever lies past
-// it is imported by a later pass, and nothing waits for it.
+// continuationHandOnRounds bounds one scan of a worker's checkpoint custody,
+// counted in uploads handled, for the hand-on and the ordinary pass alike. It
+// is a fairness bound only: whatever lies past it is imported by a later pass,
+// and nothing waits for it.
 const continuationHandOnRounds = 256
 
 // handOnCoordinatorWorkerContinuations imports the continuation.md snapshots
@@ -309,6 +310,32 @@ const continuationHandOnRounds = 256
 // the worker's custody for a later pass. An error means the worker could not
 // be polled or acknowledged.
 func handOnCoordinatorWorkerContinuations(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
+	return scanCoordinatorWorkerCheckpoints(ctx, session, report, maxArtifactBytes, true)
+}
+
+// importCoordinatorWorkerCheckpoint imports the worker's pending checkpoint
+// uploads after reconcile.
+func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
+	return scanCoordinatorWorkerCheckpoints(ctx, session, report, maxArtifactBytes, false)
+}
+
+// scanCoordinatorWorkerCheckpoints is the one scan of a worker's checkpoint
+// custody. Checkpoints are discovered one at a time, like results. One that
+// cannot be fetched or imported yet is skipped for the rest of this scan and
+// stays in the worker's custody; it never fails the exchange or hides what
+// lies behind it. It used to fail this worker's whole exchange on every
+// boundary, so its results, commands and offers stopped too (S14), and an
+// upload that could not be fetched at the head of the queue kept every
+// snapshot past the scan bound out of reach for good.
+//
+// The hand-on (continuationsOnly) imports every continuation.md snapshot it
+// meets and steps over every other upload. The ordinary pass imports what it
+// meets, going on past continuation.md snapshots, which arrive at every turn
+// end of every running attempt, and ending after one other checkpoint. So
+// each pass takes off the queue at least one upload it can handle among the
+// first continuationHandOnRounds, and a snapshot further back is reached
+// within a bounded number of passes.
+func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64, continuationsOnly bool) (backlog.WorkerExchangeReport, error) {
 	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
 		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
 	}
@@ -326,13 +353,13 @@ func handOnCoordinatorWorkerContinuations(ctx context.Context, session coordinat
 			return report, nil
 		}
 		seen[id] = struct{}{}
-		if !backlog.IsContinuationUpload(upload.Manifest) {
+		if continuationsOnly && !backlog.IsContinuationUpload(upload.Manifest) {
 			excluded = append(excluded, id)
 			continue
 		}
 		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
 		if err != nil {
-			slog.Warn("worker continuation snapshot not fetched", "manifest", id, "worker", upload.Manifest.WorkerID, "reason", err)
+			slog.Warn("worker checkpoint not fetched", "manifest", id, "worker", upload.Manifest.WorkerID, "reason", err)
 			excluded = append(excluded, id)
 			continue
 		}
@@ -346,7 +373,7 @@ func handOnCoordinatorWorkerContinuations(ctx context.Context, session coordinat
 			continue
 		}
 		if err != nil {
-			slog.Warn("worker continuation snapshot import deferred", "manifest", id, "worker", upload.Manifest.WorkerID, "reason", err)
+			slog.Warn("worker checkpoint import deferred", "manifest", id, "worker", upload.Manifest.WorkerID, "reason", err)
 			excluded = append(excluded, id)
 			continue
 		}
@@ -354,52 +381,9 @@ func handOnCoordinatorWorkerContinuations(ctx context.Context, session coordinat
 		if err := session.Client.AcknowledgeArtifact(ctx, id); err != nil {
 			return report, err
 		}
-	}
-	return report, nil
-}
-
-// importCoordinatorWorkerCheckpoint imports the worker's pending checkpoint
-// uploads after reconcile.
-func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
-	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
-		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
-	}
-	// Checkpoints are discovered one at a time, like results. A checkpoint that
-	// cannot be imported yet is skipped for the rest of this pass rather than
-	// failing the exchange: it used to fail this worker's whole exchange on
-	// every boundary, so its results, commands and offers stopped too (S14).
-	var deferred []string
-	for round := 0; round < 32; round++ {
-		upload, err := session.Client.PollArtifact(ctx, "checkpoint", deferred...)
-		if err != nil || upload == nil {
-			return report, err
+		if !continuationsOnly && imported.Name != domain.ContinuationArtifactName {
+			return report, nil
 		}
-		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
-		if err != nil {
-			return report, err
-		}
-		imported, err := session.CheckpointImporter.Import(ctx, fetched.Response, fetched)
-		if errors.Is(err, backlog.ErrCheckpointImportRejected) {
-			// Retrying cannot help; the bytes stay in the worker's custody.
-			slog.Error("worker checkpoint rejected and discarded", "manifest", upload.Manifest.ID,
-				"worker", upload.Manifest.WorkerID, "reason", err)
-			if err := session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID); err != nil {
-				return report, err
-			}
-			continue
-		}
-		if err != nil {
-			slog.Warn("worker checkpoint import deferred", "manifest", upload.Manifest.ID,
-				"worker", upload.Manifest.WorkerID, "reason", err)
-			deferred = append(deferred, upload.Manifest.ID)
-			continue
-		}
-		report.Checkpoints = append(report.Checkpoints, imported)
-		if err := session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID); err != nil || imported.Name != domain.ContinuationArtifactName {
-			return report, err
-		}
-		// A continuation.md snapshot arrives at every turn end of every running
-		// attempt; the pass goes on so they do not queue behind one another.
 	}
 	return report, nil
 }
