@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/privatefile"
 )
 
 // CachedRepository is a bare repository prepared as the source of an independent clone.
@@ -645,8 +646,9 @@ func writeWorkspaceBaseCommit(workspaceDir, commit string) error {
 	if commit == "" {
 		return nil
 	}
-	path := filepath.Join(workspaceDir, filepath.FromSlash(workspaceBaseCommitFile))
-	if err := os.WriteFile(path, []byte(commit+"\n"), 0o400); err != nil {
+	// .t3 may be tracked by the repository, so a link at base-commit must not
+	// redirect this write to a host file before containment exists.
+	if err := privatefile.WriteBelow(workspaceDir, workspaceBaseCommitFile, []byte(commit+"\n"), 0o400); err != nil {
 		return fmt.Errorf("prepare workspace: record base commit: %w", err)
 	}
 	return nil

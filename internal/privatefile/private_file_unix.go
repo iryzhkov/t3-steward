@@ -3,7 +3,8 @@
 // Package privatefile reads owner-only 0600 regular files whose content is
 // authority-bearing. It exists so that the worker bootstrap and the coordinator
 // client bootstrap are read under exactly the same rules rather than under two
-// copies of them.
+// copies of them. It also writes Steward's own files below a directory whose
+// entries it does not trust, such as a repository checkout.
 package privatefile
 
 import (
@@ -43,4 +44,23 @@ func Read(path string, limit int64) ([]byte, error) {
 		return nil, errors.New("private file read failed")
 	}
 	return raw, nil
+}
+
+// OpenNoFollow opens path for reading without following a final symbolic link
+// and without blocking on a FIFO. The caller checks what it opened.
+func OpenNoFollow(path string) (*os.File, error) {
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+// Owner reports the user ID that owns the file info describes.
+func Owner(info os.FileInfo) (int, bool) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return int(stat.Uid), true
 }
