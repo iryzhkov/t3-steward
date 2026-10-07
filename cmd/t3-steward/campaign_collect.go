@@ -510,7 +510,7 @@ func attentionText(a runAttention) string {
 	}
 	switch a.Kind {
 	case "ask", "attention":
-		return fmt.Sprintf("%s %s on %s: %s%s", a.Kind, a.Subject, a.Task, strconv.Quote(a.Detail), since)
+		return fmt.Sprintf("%s %s on %s: %s%s", a.Kind, textCell(a.Subject), textCell(a.Task), strconv.Quote(a.Detail), since)
 	case "task-failed":
 		return "task-failed: " + a.Detail
 	default:
@@ -518,7 +518,9 @@ func attentionText(a runAttention) string {
 	}
 }
 
-// textCell keeps a workflow name from breaking the table: it is author text.
+// textCell keeps author text (a workflow name, a wait or task ID) from
+// breaking the table: anything with a space or a character that needs
+// escaping is printed quoted.
 func textCell(value string) string {
 	if value == "" {
 		return "-"

@@ -3,8 +3,11 @@ package sqlite
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -218,5 +221,85 @@ func TestRunCollectionListIsPerThread(t *testing.T) {
 	}
 	if got := list("thread-c"); len(got) != 0 {
 		t.Fatalf("a thread with no collections listed %v", got)
+	}
+}
+
+// Self-review regression: CollectRun reads before it writes, so when another
+// connection (another process on the coordinator host) commits in between,
+// SQLite refuses the upgrade to a write with "database is locked" and no busy
+// timeout applies. The collection is retried rather than reported as a
+// failure the caller can do nothing about.
+func TestRunCollectionSurvivesAConcurrentWriter(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	first, err := openMigratedFixture(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	now := time.Date(2026, 10, 7, 15, 0, 0, 0, time.UTC)
+	finished := now.Add(-time.Hour)
+	if err := first.SaveCoordinatorRecords(ctx, CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{
+		{ID: "run-x", WorkflowID: "w", Progress: domain.ProgressSucceeded, Revision: 1, CreatedAt: finished, UpdatedAt: finished, CompletedAt: &finished},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	saveTestNodeWait(t, first, domain.NodeWait{
+		Request:   domain.NodeWaitRequest{ID: "nw-1", ThreadID: "thread", Target: domain.NodeRef{RunID: "run-x", TaskID: domain.SinkTaskName}, Timeout: time.Hour},
+		CreatedAt: finished, Delivery: "pending",
+	})
+	var wg sync.WaitGroup
+	errs := make(chan error, 400)
+	worker := func(store *Store) {
+		defer wg.Done()
+		for i := 0; i < 60; i++ {
+			// The run finishes again each time, so every collection writes.
+			done := now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+			if _, err := store.db.ExecContext(ctx, `UPDATE coordinator_workflow_runs SET record = json_set(record, '$.completedAt', ?) WHERE id = 'run-x'`, done); err != nil {
+				errs <- fmt.Errorf("update: %w", err)
+				return
+			}
+			if _, _, err := store.CollectRun(ctx, "thread", "run-x", "operator", now); err != nil {
+				errs <- err
+			}
+		}
+	}
+	wg.Add(2)
+	go worker(first)
+	go worker(second)
+	wg.Wait()
+	close(errs)
+	counts := map[string]int{}
+	for err := range errs {
+		counts[err.Error()]++
+	}
+	if len(counts) != 0 {
+		t.Fatalf("collections failed under a concurrent writer: %v", counts)
+	}
+}
+
+// Self-review regression: the list was a substr comparison whose length was
+// counted in bytes, so a thread ID with a multi-byte character was recorded
+// and then never listed again.
+func TestRunCollectionListFindsNonASCIIThread(t *testing.T) {
+	ctx := context.Background()
+	store, now := runCollectionFixture(t)
+	for i, thread := range []string{"thrëad-a", "线程-1", "thread%_x"} {
+		saveTestNodeWait(t, store, domain.NodeWait{
+			Request:   domain.NodeWaitRequest{ID: fmt.Sprintf("nw-unicode-%d", i), ThreadID: thread, Target: domain.NodeRef{RunID: "run-done", TaskID: domain.SinkTaskName}, Timeout: time.Hour},
+			CreatedAt: now, Delivery: "pending",
+		})
+		if _, _, err := store.CollectRun(ctx, thread, "run-done", "operator", now); err != nil {
+			t.Fatalf("%q: %v", thread, err)
+		}
+		listed, err := store.ListRunCollections(ctx, thread)
+		if err != nil || len(listed) != 1 || listed[0].ThreadID != thread || listed[0].RunID != "run-done" {
+			t.Fatalf("%q: listed %+v, %v; want the one collection just recorded", thread, listed, err)
+		}
 	}
 }

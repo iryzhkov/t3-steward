@@ -349,6 +349,20 @@ func TestCampaignUncollectedAttentionKinds(t *testing.T) {
 	}
 }
 
+// Self-review regression: wait and task IDs are printed in the ATTENTION cell
+// and must not break the row when they hold a tab or a newline.
+func TestCampaignUncollectedQuotesAttentionIDs(t *testing.T) {
+	f := newCollectFixture()
+	f.taskWaits[0].ID, f.taskWaits[0].TaskID = "w\t1\nX", "t\nk"
+	if err := f.cli().run(context.Background(), []string{"uncollected"}); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimRight(f.stdout.String(), "\n"), "\n")
+	if len(lines) != 8 || !strings.HasPrefix(lines[2], "run-ask") || !strings.Contains(lines[2], `ask "w\t1\nX" on "t\nk": "Which base?"`) {
+		t.Fatalf("rows broke or IDs were not quoted:\n%s", f.stdout.String())
+	}
+}
+
 func TestCampaignUncollectedEmptyView(t *testing.T) {
 	f := newCollectFixture()
 	if err := f.cli().run(context.Background(), []string{"uncollected", "--thread", "thread-nobody"}); err != nil {
@@ -591,11 +605,16 @@ func TestCampaignCollectHelpPagesRender(t *testing.T) {
 	for _, verb := range []string{"collect", "uncollected"} {
 		// cmdCampaign answers help through admitCampaignHelp before any
 		// configuration is read or any argument parsed.
-		var out bytes.Buffer
-		if handled, err := admitCampaignHelp(&out, []string{verb, "--help"}); !handled || err != nil {
-			t.Fatalf("%s --help: handled=%v err=%v", verb, handled, err)
+		var short bytes.Buffer
+		if handled, err := admitCampaignHelp(&short, []string{verb, "--help"}); !handled || err != nil || !strings.Contains(short.String(), "t3-steward campaign "+verb) {
+			t.Fatalf("%s --help: handled=%v err=%v\n%s", verb, handled, err, short.String())
 		}
-		body := out.String()
+		var out bytes.Buffer
+		if handled, err := admitCampaignHelp(&out, []string{verb, "--help", "full"}); !handled || err != nil {
+			t.Fatalf("%s --help full: handled=%v err=%v", verb, handled, err)
+		}
+		// The page is wrapped to the terminal; compare its words.
+		body := strings.Join(strings.Fields(out.String()), " ")
 		for _, want := range []string{"t3-steward campaign " + verb, "--thread", "upgrade", "node wait", "Only a finished run is collected", "Nothing is collected implicitly"} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("campaign %s help does not mention %q:\n%s", verb, want, body)
