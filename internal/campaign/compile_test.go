@@ -151,6 +151,9 @@ func TestCompilePlanRefusals(t *testing.T) {
 	}{
 		{"no front matter", "# A\n", []string{"plan.md:1:", "front matter"}},
 		{"unterminated front matter", "---\ncompile: v1\n", []string{"plan.md:1:", "closing ---"}},
+		{"empty front matter", "---\n---\n# A\n", []string{"plan.md:1:", "front matter is empty"}},
+		{"sequence front matter", "---\n- a\n---\n# A\n", []string{"plan.md:2:", "the front matter, which must be a mapping"}},
+		{"unit id too long", head + "units:\n  - {id: a" + strings.Repeat("b", MaxCompileUnitIDLength) + ", section: A}\n" + body, []string{"plan.md:9:", "at most 64"}},
 		{"unknown top-level key", head + "colour: red\nunits:\n  - {id: a, section: A}\n" + body, []string{"plan.md:8:", "colour"}},
 		{"unknown unit key", head + "units:\n  - id: a\n    section: A\n    owner: me\n" + body, []string{"plan.md:11:", "owner"}},
 		{"unknown route key", strings.Replace(head, "quota_pool: q}", "quota_pool: q, speed: fast}", 1) + "units:\n  - {id: a, section: A}\n" + body, []string{"plan.md:6:", "speed"}},
@@ -183,6 +186,9 @@ func TestCompilePlanRefusals(t *testing.T) {
 				if !strings.Contains(err.Error(), want) {
 					t.Fatalf("refusal %q does not contain %q", err, want)
 				}
+			}
+			if strings.Contains(err.Error(), "campaign.compile") {
+				t.Fatalf("refusal %q names a Go type the author never wrote", err)
 			}
 		})
 	}
@@ -259,6 +265,47 @@ func TestWriteCompiledUnitLeavesNothingBehindWhenAWriteFails(t *testing.T) {
 			continue
 		}
 		assertNoCompileLeftovers(t, out)
+	}
+}
+
+// A compile killed between retiring the old unit and renaming the new one
+// into place leaves the old unit only in a hidden sibling. The next compile
+// must refuse rather than write a fresh unit beside it and orphan it.
+func TestWriteCompiledUnitRefusesTheLeftoversOfAKilledCompile(t *testing.T) {
+	plan, err := ParseCompilePlan("plan.md", readCompileFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	retired := filepath.Join(out, ".compile-c1-retired-248858152", "c1")
+	if err := os.MkdirAll(retired, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(retired, "keep.txt"), []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, other := range []string{".compile-c1-924994213", ".compile-c1-x-1", ".compile-c10-5"} {
+		if err := os.MkdirAll(filepath.Join(out, other), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	leftovers, err := CompileLeftovers(out, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{filepath.Join(out, ".compile-c1-924994213"), filepath.Join(out, ".compile-c1-retired-248858152")}
+	if strings.Join(leftovers, "|") != strings.Join(want, "|") {
+		t.Fatalf("leftovers = %v, want %v (another unit's siblings are not this unit's)", leftovers, want)
+	}
+	for _, force := range []bool{false, true} {
+		_, err := WriteCompiledUnit(out, plan.Units[0], WriteOptions{Force: force})
+		if !errors.Is(err, ErrCompileLeftover) || !strings.Contains(err.Error(), ".compile-c1-retired-248858152") {
+			t.Fatalf("force=%t: err = %v, want a refusal naming the retired copy", force, err)
+		}
+	}
+	assertNoCompileLeftovers(t, out, ".compile-c1-924994213", ".compile-c1-retired-248858152", ".compile-c1-x-1", ".compile-c10-5")
+	if raw, err := os.ReadFile(filepath.Join(retired, "keep.txt")); err != nil || string(raw) != "mine" {
+		t.Fatalf("the retired copy was touched: %q %v", raw, err)
 	}
 }
 

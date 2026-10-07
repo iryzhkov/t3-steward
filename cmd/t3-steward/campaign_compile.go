@@ -79,13 +79,16 @@ func campaignCompileHelpPage() helpPage {
 			"class, required or surplus (default surplus); template: implement-review, the only template and the default; " +
 			"routes.execute and routes.review, each {instance, model, quota_pool, effort}; verify, an optional list of implement verify commands; " +
 			"and units, a list of {id, title, section}, such as {id: c1, title: Campaign compile skeleton, section: \"C-1\"}.\n\n" +
-			"A unit id is lower-case letters, digits and single hyphens starting with a letter; it names the unit directory and the workflow. " +
-			"section names the Markdown heading of the plan body whose section is the unit's brief: the heading's text is the section, or begins with it followed by a space or a colon, and the section runs to the next heading of the same or a higher level. " +
+			"A unit id is lower-case letters, digits and single hyphens starting with a letter, at most 64 bytes; it names the unit directory and the workflow. " +
+			"section names the Markdown heading of the plan body whose section is the unit's brief. Only ATX headings (lines starting with #) count, and not inside fenced code; the heading's text is the section, or begins with it followed by a space or a colon, and the section runs to the next heading of the same or a higher level. " +
 			"An unknown key, a missing or duplicate unit id, a section that matches no heading or several, and a ref that is not a full commit are refused with the plan line and the reason, before anything is written.\n\n" +
 			"Each unit directory holds workflow.yaml (version 2: an implement task that declares the commit implementation at HEAD and the outputs continuation.md and handoff.md, then a review task that needs it and takes the commit and handoff.md through inputs_from), " +
 			"inputs/plan.md (the whole plan, byte for byte), inputs/unit.md (the unit's section, byte for byte), prompts/implement.md and prompts/review.md. " +
 			"The prompts name the pinned ref, the unit id and the mounted paths .t3/inputs/inputs/plan.md, .t3/inputs/inputs/unit.md and .t3/dependencies/.\n\n" +
-			"A unit is written into a temporary sibling and renamed into place, so a failure leaves no half-written unit. " +
+			"A unit larger than a campaign may carry, the whole plan plus its section, is refused before anything is written. " +
+			"A unit is written into a temporary sibling (.compile-<id>-N) and renamed into place, so a failure leaves no half-written unit. " +
+			"A compile that was killed part-way can leave those siblings, including .compile-<id>-retired-N/<id>, the unit a --force was replacing; the next compile of that unit is refused, naming them, until they are moved back or removed. " +
+			"When some units are invalid and --check finds others impossible, the exit is 1. " +
 			"Each written unit then goes through the campaign validate and campaign plan paths, offline. Compile never submits; submit each directory with \"t3-steward campaign submit DIR/<unit id> --idempotency-key KEY\".",
 		Parsers: []parserSite{{Func: "parseCampaignCompileArgs"}},
 	}
@@ -176,8 +179,21 @@ func (c campaignCLI) runCompile(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	// Every existing directory is refused before any unit is written, so a
-	// refusal leaves the output directory exactly as it was.
+	// Every refusal below is made before any unit is written, so it leaves the
+	// output directory exactly as it was.
+	for _, unit := range units {
+		if size := compiledUnitBytes(unit); c.limits.MaxBytes > 0 && size > c.limits.MaxBytes {
+			return &campaign.CompilePlanError{Source: parsed.plan, Line: unit.Line, Reason: fmt.Sprintf(
+				"unit %q would be %d bytes, the whole plan plus its section, and a campaign may carry at most %d", unit.ID, size, c.limits.MaxBytes)}
+		}
+		leftovers, err := campaign.CompileLeftovers(parsed.out, unit.ID)
+		if err != nil {
+			return err
+		}
+		if len(leftovers) > 0 {
+			return fmt.Errorf("campaign compile: nothing was written: %w", campaign.CompileLeftoverError(unit.ID, leftovers))
+		}
+	}
 	if !parsed.force {
 		var existing []string
 		for _, unit := range units {
@@ -245,10 +261,27 @@ func (c campaignCLI) runCompile(ctx context.Context, args []string) error {
 	return afterDocument(campaignCompileVerdict(report))
 }
 
+// compiledUnitBytes is the size of a unit's files, which is what the
+// coordinator's message limit is measured against.
+func compiledUnitBytes(unit campaign.CompiledUnit) int64 {
+	var total int64
+	for _, file := range unit.Files {
+		total += int64(len(file.Content))
+	}
+	return total
+}
+
 // readCompilePlan reads the plan, bounded by the largest campaign the
 // coordinator accepts: every unit carries the whole plan, so a larger plan
 // could only compile into units nothing would accept.
 func readCompilePlan(path string, limit int64) ([]byte, error) {
+	// The mode is checked before the open: opening a FIFO for reading blocks
+	// until a writer appears, which would hang an unattended compile.
+	if info, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("campaign compile: %w", err)
+	} else if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("campaign compile: %s is not a regular file", path)
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("campaign compile: %w", err)

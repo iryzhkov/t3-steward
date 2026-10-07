@@ -169,6 +169,33 @@ func TestCampaignCompileArgumentRefusals(t *testing.T) {
 	}
 }
 
+// Leftovers of a killed compile, and a unit too large for any coordinator,
+// are refused before the first unit is written.
+func TestCampaignCompileRefusesBeforeWritingAnyUnit(t *testing.T) {
+	planPath, raw := compileFixturePlan(t)
+	out := filepath.Join(t.TempDir(), "wave")
+	if err := os.MkdirAll(filepath.Join(out, ".compile-b1-retired-1", "b1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var stdout bytes.Buffer
+	err := campaignTestCLI(t, &stdout).run(context.Background(), []string{"compile", planPath, "--out", out, "--force"})
+	if err == nil || !strings.Contains(err.Error(), "nothing was written") || !strings.Contains(err.Error(), ".compile-b1-retired-1") || exitCodeFor(err) != 1 {
+		t.Fatalf("err = %v (exit %d)", err, exitCodeFor(err))
+	}
+	assertDirectoryEntries(t, out, ".compile-b1-retired-1")
+
+	small := filepath.Join(t.TempDir(), "wave")
+	cli := campaignTestCLI(t, &stdout)
+	cli.limits.MaxBytes = int64(len(raw)) + 100
+	err = cli.run(context.Background(), []string{"compile", planPath, "--out", small})
+	if err == nil || !strings.Contains(err.Error(), "plan.md:12:") || !strings.Contains(err.Error(), "at most") || exitCodeFor(err) != 1 {
+		t.Fatalf("err = %v (exit %d)", err, exitCodeFor(err))
+	}
+	if _, statErr := os.Stat(small); !os.IsNotExist(statErr) {
+		t.Fatalf("an oversized unit created %s", small)
+	}
+}
+
 func TestCampaignCompileSelectsUnits(t *testing.T) {
 	planPath, _ := compileFixturePlan(t)
 	out := filepath.Join(t.TempDir(), "wave")

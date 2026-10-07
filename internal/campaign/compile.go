@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -52,6 +53,11 @@ var compileRefPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 // workflow name, so it has to satisfy both: lower-case letters, digits and
 // single hyphens, starting with a letter.
 var compileUnitIDPattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+
+// MaxCompileUnitIDLength bounds a unit id. The temporary siblings a unit is
+// written through add about thirty bytes to it, and a name past the file
+// system's limit would otherwise be refused only part-way through a wave.
+const MaxCompileUnitIDLength = 64
 
 // CompilePlanError is one refusal of a plan, at the plan line it concerns.
 type CompilePlanError struct {
@@ -127,6 +133,8 @@ var compileObjectNames = strings.NewReplacer(
 	"in type campaign.compileRoutes", "in routes",
 	"in type campaign.compileRoute", "in a route",
 	"in type campaign.compileUnitSpec", "in a unit",
+	"campaign.compileFrontMatter", "the front matter, which must be a mapping",
+	"campaign.compileRoutes", "routes, which must be a mapping",
 	"campaign.compileUnitSpec", "a unit",
 	"campaign.compileRoute", "a route",
 )
@@ -161,6 +169,9 @@ func ParseCompilePlan(source string, raw []byte) (CompilePlan, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(frontMatter))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&header); err != nil {
+		if errors.Is(err, io.EOF) {
+			return CompilePlan{}, refuse(1, "the front matter is empty; it must say compile: %s", CompileFormat)
+		}
 		return CompilePlan{}, compileDecodeError(source, err)
 	}
 	var document yaml.Node
@@ -254,6 +265,8 @@ func ParseCompilePlan(source string, raw []byte) (CompilePlan, error) {
 			return CompilePlan{}, refuse(line, "unit %d has no id", index+1)
 		case !compileUnitIDPattern.MatchString(spec.ID):
 			return CompilePlan{}, refuse(line, "unit id %q is not lower-case letters, digits and single hyphens starting with a letter; it becomes a directory and workflow name", spec.ID)
+		case len(spec.ID) > MaxCompileUnitIDLength:
+			return CompilePlan{}, refuse(line, "unit id %q is %d bytes; a unit id is at most %d", spec.ID, len(spec.ID), MaxCompileUnitIDLength)
 		case declared[spec.ID] != 0:
 			return CompilePlan{}, refuse(line, "duplicate unit id %q; it is first declared on line %d", spec.ID, declared[spec.ID])
 		case strings.TrimSpace(spec.Section) == "":
@@ -523,6 +536,44 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 	return unit, nil
 }
 
+// ErrCompileLeftover refuses to compile a unit beside the temporary siblings
+// of an earlier compile of it that never finished.
+var ErrCompileLeftover = errors.New("an earlier compile of this unit did not finish")
+
+// CompileLeftovers lists the temporary siblings an interrupted compile of one
+// unit left under out: a staging directory, or the retired copy of a unit a
+// forced compile was replacing when it stopped. A retired copy may be the only
+// copy of the previous unit, so nothing here deletes them; the caller refuses
+// and names them.
+func CompileLeftovers(out, id string) ([]string, error) {
+	entries, err := os.ReadDir(out)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var leftovers []string
+	for _, entry := range entries {
+		rest, found := strings.CutPrefix(entry.Name(), ".compile-"+id+"-")
+		if !found {
+			continue
+		}
+		rest = strings.TrimPrefix(rest, "retired-")
+		if rest != "" && strings.Trim(rest, "0123456789") == "" {
+			leftovers = append(leftovers, filepath.Join(out, entry.Name()))
+		}
+	}
+	return leftovers, nil
+}
+
+// CompileLeftoverError is the refusal of a unit with leftovers.
+func CompileLeftoverError(id string, leftovers []string) error {
+	return fmt.Errorf("%w: unit %s has %s. A -retired- directory holds the unit a forced compile was replacing; "+
+		"move its %s back into place if it is wanted, then remove these directories and compile again",
+		ErrCompileLeftover, id, strings.Join(leftovers, ", "), id)
+}
+
 // ErrCompiledUnitExists refuses to overwrite a unit directory without force.
 var ErrCompiledUnitExists = errors.New("the unit directory already exists")
 
@@ -538,12 +589,20 @@ type WriteOptions struct {
 // WriteCompiledUnit writes one unit under out/<id> and returns that
 // directory. The unit is written into a temporary sibling first and renamed
 // into place, so a failure part-way leaves no half-written unit, and a failed
-// forced write leaves the directory it would have replaced as it was.
+// forced write leaves the directory it would have replaced as it was. A
+// process killed part-way leaves its temporary siblings behind instead, and
+// the next compile of that unit is refused until they are dealt with (see
+// CompileLeftovers), so a retired copy is never silently orphaned.
 func WriteCompiledUnit(out string, unit CompiledUnit, options WriteOptions) (string, error) {
-	if !compileUnitIDPattern.MatchString(unit.ID) {
+	if !compileUnitIDPattern.MatchString(unit.ID) || len(unit.ID) > MaxCompileUnitIDLength {
 		return "", fmt.Errorf("unit id %q is not a directory name", unit.ID)
 	}
 	target := filepath.Join(out, unit.ID)
+	if leftovers, err := CompileLeftovers(out, unit.ID); err != nil {
+		return target, err
+	} else if len(leftovers) > 0 {
+		return target, CompileLeftoverError(unit.ID, leftovers)
+	}
 	exists := false
 	if _, err := os.Lstat(target); err == nil {
 		if !options.Force {
