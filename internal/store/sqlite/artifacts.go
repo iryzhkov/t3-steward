@@ -77,18 +77,21 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 	if historical && !isLiveContinuationSnapshot(artifact) {
 		return domain.Artifact{}, errors.New("live continuation publication is not a continuation snapshot")
 	}
+	// A live snapshot names the epoch of the dispatch that took it, and the
+	// latest is ordered by that epoch, so it must be this publication's.
+	if labelled, _, _ := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID); historical && labelled != publication.AssignmentEpoch {
+		return domain.Artifact{}, fmt.Errorf("%w: snapshot labelled with assignment epoch %d, published under %d", ErrStaleArtifactPublication, labelled, publication.AssignmentEpoch)
+	}
 	if historical && publication.AssignmentEpoch < assignment.Epoch {
 		dispatch, found, err := loadContinuationDispatch(ctx, tx, publication.AssignmentID, publication.AssignmentEpoch)
 		if err != nil {
 			return domain.Artifact{}, err
 		}
-		labelled, _, _ := domain.ContinuationLiveSequence(artifact.ID, artifact.AttemptID)
 		if !found || !dispatch.Offered ||
 			dispatch.Assignment.WorkerID != publication.WorkerID ||
 			dispatch.Assignment.WorkerEpoch != publication.WorkerEpoch ||
 			dispatch.Assignment.AttemptID != artifact.AttemptID ||
-			assignment.AttemptID != artifact.AttemptID ||
-			labelled != publication.AssignmentEpoch {
+			assignment.AttemptID != artifact.AttemptID {
 			return domain.Artifact{}, fmt.Errorf("%w: no dispatch of this worker process at assignment epoch %d", ErrStaleArtifactPublication, publication.AssignmentEpoch)
 		}
 	} else {
@@ -113,6 +116,11 @@ func (s *Store) CommitArtifactPublication(ctx context.Context, publication domai
 	if historical {
 		if attempt.AssignmentID != assignment.ID && attempt.AssignmentID != "" {
 			return domain.Artifact{}, fmt.Errorf("%w: attempt moved to another assignment", ErrStaleArtifactPublication)
+		}
+		// A supervision activation hands no checkpoint on; the importer
+		// refuses it too.
+		if attempt.IsSupervisionActivation() {
+			return domain.Artifact{}, fmt.Errorf("%w: supervision activation", ErrStaleArtifactPublication)
 		}
 	} else if attempt.AssignmentID != assignment.ID || attempt.Revision != publication.AttemptRevision {
 		return domain.Artifact{}, fmt.Errorf("%w: attempt identity or revision changed", ErrStaleArtifactPublication)

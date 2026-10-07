@@ -216,6 +216,47 @@ func TestTheHistoricalPublicationFenceUsesTheFrozenDispatch(t *testing.T) {
 			}
 		})
 	}
+	// Self-review, lens 5: the fence is the authority, so it refuses on its
+	// own what the importer refuses: a live snapshot labelled with an epoch
+	// other than its dispatch's, which would outrank the replacement's, and a
+	// snapshot of a supervision activation.
+	t.Run("current epoch, snapshot labelled with a higher epoch", func(t *testing.T) {
+		f := newRearmedDispatch(t, nil)
+		claimed := f.current
+		claimed.State = domain.AssignmentClaimed
+		if err := f.store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Assignments: []domain.Assignment{claimed}}); err != nil {
+			t.Fatal(err)
+		}
+		publication := f.publication()
+		publication.WorkerID, publication.WorkerEpoch, publication.AssignmentEpoch = claimed.WorkerID, claimed.WorkerEpoch, 2
+		publication.Artifact.ID = domain.ContinuationLiveArtifactID(f.attempt.ID, 99, 1)
+		if published, err := f.store.CommitArtifactPublication(ctx, publication); !errors.Is(err, ErrStaleArtifactPublication) {
+			t.Fatalf("the epoch-2 dispatch published a snapshot labelled epoch 99: %+v, %v", published, err)
+		}
+	})
+	for _, current := range []bool{false, true} {
+		t.Run(map[bool]string{false: "earlier epoch", true: "current epoch"}[current]+", supervision activation", func(t *testing.T) {
+			f := newRearmedDispatch(t, &ContinuationDecision{Offered: true})
+			publication := f.publication()
+			if current {
+				claimed := f.current
+				claimed.State = domain.AssignmentClaimed
+				if err := f.store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Assignments: []domain.Assignment{claimed}}); err != nil {
+					t.Fatal(err)
+				}
+				publication.WorkerID, publication.WorkerEpoch, publication.AssignmentEpoch = claimed.WorkerID, claimed.WorkerEpoch, 2
+				publication.Artifact.ID = domain.ContinuationLiveArtifactID(f.attempt.ID, 2, 1)
+			}
+			activation := f.attempt
+			activation.SupervisionActivationID = "activation-1"
+			if err := f.store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{activation}}); err != nil {
+				t.Fatal(err)
+			}
+			if published, err := f.store.CommitArtifactPublication(ctx, publication); !errors.Is(err, ErrStaleArtifactPublication) {
+				t.Fatalf("a supervision activation's snapshot was published: %+v, %v", published, err)
+			}
+		})
+	}
 	// The equal-epoch path is unchanged: the current dispatch's own worker
 	// publishes against the current row, with or without a V39 row.
 	t.Run("current epoch", func(t *testing.T) {
