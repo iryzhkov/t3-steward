@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_at ON events(at_ns);
 CREATE INDEX IF NOT EXISTS events_kind_at ON events(kind, at_ns);
+CREATE INDEX IF NOT EXISTS events_kind_route ON events(kind, route);
 `
 
 // Meta keys.
@@ -213,12 +214,14 @@ func (s *Store) Path() string { return s.path }
 
 // Append stores events, each at most once by event id.
 func (s *Store) Append(ctx context.Context, events []Event) error {
-	return s.commit(ctx, events, nil, nil)
+	return s.commit(ctx, events, nil, nil, nil)
 }
 
-// commit writes events and meta values in one transaction. failure, when set,
-// aborts it before the commit, as a crash would.
-func (s *Store) commit(ctx context.Context, events []Event, meta map[string]string, failure error) error {
+// commit writes events and meta values in one transaction. An event is stored
+// at most once by event id; one of replacements overwrites the stored event
+// with its id. failure, when set, aborts the transaction before the commit, as
+// a crash would.
+func (s *Store) commit(ctx context.Context, events, replacements []Event, meta map[string]string, failure error) error {
 	if s.readOnly {
 		return errors.New("quota telemetry store is open read-only")
 	}
@@ -227,7 +230,11 @@ func (s *Store) commit(ctx context.Context, events []Event, meta map[string]stri
 		return fmt.Errorf("begin quota telemetry write: %w", err)
 	}
 	defer tx.Rollback()
-	for _, event := range events {
+	const insert = `INSERT OR IGNORE INTO events(event_id, kind, at_ns, quota_pool_id, route, record) VALUES (?, ?, ?, ?, ?, ?)`
+	const replace = `INSERT INTO events(event_id, kind, at_ns, quota_pool_id, route, record) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT(event_id) DO UPDATE SET kind = excluded.kind, at_ns = excluded.at_ns,
+			quota_pool_id = excluded.quota_pool_id, route = excluded.route, record = excluded.record`
+	for index, event := range append(events[:len(events):len(events)], replacements...) {
 		raw, err := encodeEvent(event)
 		if err != nil {
 			return err
@@ -239,8 +246,11 @@ func (s *Store) commit(ctx context.Context, events []Event, meta map[string]stri
 		case event.Reading != nil:
 			route = event.Reading.BucketKey
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO events(event_id, kind, at_ns, quota_pool_id, route, record)
-			VALUES (?, ?, ?, ?, ?, ?)`, event.EventID, event.Kind, event.At.UnixNano(), pool, route, raw); err != nil {
+		statement := insert
+		if index >= len(events) {
+			statement = replace
+		}
+		if _, err := tx.ExecContext(ctx, statement, event.EventID, event.Kind, event.At.UnixNano(), pool, route, raw); err != nil {
 			return fmt.Errorf("append quota telemetry event %q: %w", event.EventID, err)
 		}
 	}
@@ -733,6 +743,20 @@ func (s *Store) scanEvents(ctx context.Context, query string, args ...any) ([]Ev
 	return events, nil
 }
 
+// latestReadingPerKeyQuery lists the newest reading of each bucket key in
+// [?1, ?2), at most ?3 keys. It steps from one key to the next through the
+// (kind, route) index, so its cost grows with the number of keys, not of
+// retained readings.
+const latestReadingPerKeyQuery = `WITH RECURSIVE keys(route) AS (
+	SELECT (SELECT MIN(route) FROM events WHERE kind = 'reading' AND route >= ?1 AND route < ?2)
+	UNION ALL
+	SELECT (SELECT MIN(route) FROM events WHERE kind = 'reading' AND route > keys.route AND route < ?2)
+	FROM keys WHERE keys.route IS NOT NULL
+	LIMIT ?3
+)
+SELECT (SELECT record FROM events WHERE kind = 'reading' AND route = keys.route ORDER BY seq DESC LIMIT 1)
+FROM keys WHERE keys.route IS NOT NULL`
+
 // attachDeltas computes the deltas of every finish event among events. The
 // spans are loaded once for all of them; the readings per finish, from the
 // two 30-minute windows around its start and its finish, with the newest
@@ -793,9 +817,7 @@ func (s *Store) attachDeltas(ctx context.Context, events []Event, now time.Time)
 		prefix := event.Work.Route.ProviderInstanceID + "/"
 		latest, loaded := latestByInstance[prefix]
 		if !loaded {
-			latest, err = s.scanEvents(ctx, `SELECT record FROM events WHERE seq IN (
-				SELECT MAX(seq) FROM events WHERE kind = 'reading' AND substr(route, 1, ?) = ? GROUP BY route)
-				LIMIT ?`, len(prefix), prefix, maxDeltaRows)
+			latest, err = s.scanEvents(ctx, latestReadingPerKeyQuery, prefix, prefix[:len(prefix)-1]+"0", maxDeltaRows)
 			if err != nil {
 				return err
 			}

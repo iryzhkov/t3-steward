@@ -233,7 +233,7 @@ func (r *Recorder) recordFailure(now time.Time, failure error) {
 		// The failed span is persisted too, so a restart before the next
 		// successful tick still records its gap.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		_ = r.store.commit(ctx, nil, map[string]string{
+		_ = r.store.commit(ctx, nil, nil, map[string]string{
 			metaTicks: strconv.FormatInt(stats.Ticks, 10), metaFailures: strconv.FormatInt(stats.Failures, 10),
 			metaLastError: message, metaLastErrorAt: formatInstant(now),
 			metaFailedTicks: strconv.Itoa(r.failedTicks), metaFailedSince: formatInstant(r.failedSince),
@@ -325,7 +325,10 @@ func (r *Recorder) ensureSource(ctx context.Context) error {
 
 // tickResult is everything one tick commits.
 type tickResult struct {
-	events          []Event
+	events []Event
+	// replacements overwrite stored events: a finish recorded before its
+	// start was read, completed with that start.
+	replacements    []Event
 	meta            map[string]string
 	skippedReadings int64
 	skippedChecks   int64
@@ -399,7 +402,11 @@ func (r *Recorder) tick(ctx context.Context, now time.Time) error {
 		result.events[index].SchemaVersion = SchemaVersion
 		result.events[index].RecordedAt = now
 	}
-	if err := r.store.commit(ctx, result.events, result.meta, r.failCommit); err != nil {
+	for index := range result.replacements {
+		result.replacements[index].SchemaVersion = SchemaVersion
+		result.replacements[index].RecordedAt = now
+	}
+	if err := r.store.commit(ctx, result.events, result.replacements, result.meta, r.failCommit); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -556,11 +563,42 @@ func (r *Recorder) collectLifecycle(ctx context.Context, now time.Time, meta Met
 					work.DispatchToStartMs = &queued
 				}
 			}
+			if err := r.completeFinish(ctx, *work, result); err != nil {
+				return err
+			}
 		}
 		result.events = append(result.events, event)
 	}
 	result.meta[metaAuditWatermark] = strconv.FormatInt(watermark, 10)
 	return nil
+}
+
+// completeFinish gives a finish recorded before its start was read the start
+// it now has, with its duration. The finish was recorded from open work that
+// had only a dispatch, because the claim lay beyond the tick's audit batch or
+// was written after the batch was read; every other field stays as recorded.
+func (r *Recorder) completeFinish(ctx context.Context, started Work, result *tickResult) error {
+	stored, found, err := r.store.event(ctx, KindFinish+":"+started.Key())
+	if err != nil || !found || stored.Work == nil || stored.Work.StartedAt != nil {
+		return err
+	}
+	work := *stored.Work
+	work.StartedAt = started.StartedAt
+	setDuration(&work)
+	stored.Work = &work
+	result.replacements = append(result.replacements, stored)
+	return nil
+}
+
+// setDuration derives a finished work's duration from its start. A finish
+// recorded before its start, by clocks that disagree, has no duration rather
+// than a negative one.
+func setDuration(work *Work) {
+	work.DurationMs = nil
+	if work.StartedAt != nil && work.FinishedAt != nil && !work.FinishedAt.Before(*work.StartedAt) {
+		duration := work.FinishedAt.Sub(*work.StartedAt).Milliseconds()
+		work.DurationMs = &duration
+	}
 }
 
 // lifecycleEvent builds a dispatch or start event from one audit row and the
@@ -843,12 +881,7 @@ func (r *Recorder) collectFinishes(ctx context.Context, now time.Time, meta Meta
 		}
 		work.FinishedAt = &finishedAt
 		work.DispatchToStartMs = nil
-		// A finish recorded before its start, by clocks that disagree, has
-		// no duration rather than a negative one.
-		if work.StartedAt != nil && !finishedAt.Before(*work.StartedAt) {
-			duration := finishedAt.Sub(*work.StartedAt).Milliseconds()
-			work.DurationMs = &duration
-		}
+		setDuration(&work)
 		result.events = append(result.events, Event{EventID: KindFinish + ":" + work.Key(), Kind: KindFinish,
 			At: finishedAt, QuotaPoolID: work.Route.QuotaPoolID, Work: &work})
 		if withChecks {

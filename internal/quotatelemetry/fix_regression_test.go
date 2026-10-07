@@ -2,6 +2,8 @@ package quotatelemetry
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,6 +86,81 @@ func TestDispatchStartAndFinishInOneTick(t *testing.T) {
 	if work.StartedAt == nil || !work.StartedAt.Equal(start) || work.DurationMs == nil || *work.DurationMs != 10000 ||
 		work.DispatchedAt == nil || !work.DispatchedAt.Equal(dispatched) {
 		t.Fatalf("finish = %+v; want start %s, duration 10000 and dispatch %s", work, start, dispatched)
+	}
+}
+
+// A finish recorded before its start was read, because the claim lay beyond
+// the tick's audit batch, takes the start when a later tick reads it.
+func TestFinishRecordedBeforeItsStartIsRepaired(t *testing.T) {
+	path := testStorePath(t)
+	source := newFakeSource()
+	clock := &fakeClock{now: testBase}
+	recorder := newTestRecorder(t, path, source, clock)
+	mustTick(t, recorder)
+	// The offer is the last row of one batch and the claim the first of the next.
+	for index := range auditBatch - 1 {
+		source.appendAudit("worker-heartbeat", fmt.Sprintf("noise-%d", index), "", "", 0, testBase)
+	}
+	task, attempt, assignment := testWork("split", 1, "gate", opusRoute, domain.ExecutionRoleExecutor)
+	source.addWork(task, attempt, assignment)
+	start, end := testBase.Add(2*time.Second), testBase.Add(12*time.Second)
+	source.appendAudit("assignment-offered", assignment.ID, attempt.ID, task.ID, 1, testBase.Add(time.Second))
+	source.appendAudit("assignment-claimed", assignment.ID, attempt.ID, task.ID, 1, start)
+	attempt.Progress = domain.ProgressSucceeded
+	attempt.CompletedAt = &end
+	source.setAttempt(attempt)
+	clock.Advance(30 * time.Second)
+	mustTick(t, recorder)
+	if finishes := eventsOfKind(allEvents(t, path, clock.Now()), KindFinish); len(finishes) != 1 || finishes[0].Work.StartedAt != nil {
+		t.Fatalf("first batch finishes = %+v; want one finish without a start yet", finishes)
+	}
+	clock.Advance(30 * time.Second)
+	mustTick(t, recorder)
+	mustTick(t, recorder)
+
+	events := allEvents(t, path, clock.Now())
+	finishes, starts := eventsOfKind(events, KindFinish), eventsOfKind(events, KindStart)
+	if len(finishes) != 1 || len(starts) != 1 {
+		t.Fatalf("finishes = %d, starts = %d; want 1 and 1", len(finishes), len(starts))
+	}
+	work := finishes[0].Work
+	if work.StartedAt == nil || !work.StartedAt.Equal(start) || work.DurationMs == nil || *work.DurationMs != 10000 ||
+		work.FinishedAt == nil || !work.FinishedAt.Equal(end) || work.Outcome != string(domain.ProgressSucceeded) {
+		t.Fatalf("finish = %+v; want it repaired with start %s and duration 10000", work, start)
+	}
+	if !finishes[0].At.Equal(end) {
+		t.Fatalf("finish at = %s; want %s", finishes[0].At, end)
+	}
+}
+
+// The newest reading of each bucket key is found through an index, not by
+// scanning every retained reading on each read.
+func TestLatestReadingPerKeyUsesTheIndex(t *testing.T) {
+	store, err := OpenStore(testStorePath(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rows, err := store.db.Query(`EXPLAIN QUERY PLAN `+latestReadingPerKeyQuery, "claudeAgent/", "claudeAgent0", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(plan, "\n")
+	if !strings.Contains(text, "events_kind_route") || strings.Contains(text, "TEMP B-TREE") || strings.Contains(text, "SCAN events") {
+		t.Fatalf("query plan:\n%s\nwant every step through events_kind_route, with no scan or temporary tree", text)
 	}
 }
 
