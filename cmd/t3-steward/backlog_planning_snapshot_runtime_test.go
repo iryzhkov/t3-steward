@@ -96,7 +96,7 @@ func TestCoordinatorPlannerPublishesSuccessfulNoAssignmentPass(t *testing.T) {
 	explain := func() backlogadmin.Explanation {
 		t.Helper()
 		response, err := service.Query(ctx, backlogadmin.Query{
-			Version: backlogadmin.ExtendedReadVersion, Kind: backlogadmin.QueryExplanation,
+			Version: backlogadmin.CurrentReadVersion, Kind: backlogadmin.QueryExplanation,
 			Principal:     backlogadmin.Principal{ID: "local:1000", Roles: []string{backlogadmin.LocalAdminRole}},
 			WorkflowRunID: "run", TaskID: "task",
 		})

@@ -20,12 +20,19 @@ var (
 	v1GraphAmendmentSchemaText string
 	//go:embed v1_unknown_recovery_schema.txt
 	v1UnknownRecoverySchemaText string
+	// rc116_extended_response_schema.txt is the v1_response_schema.txt that
+	// TestWriteV1ResponseSchema wrote on v0.11.0-rc.116: every key path an
+	// ExtendedReadVersion answer had in that release, whose clients ask for
+	// that version and decode the answer strictly.
+	//go:embed rc116_extended_response_schema.txt
+	rc116ExtendedResponseSchemaText string
 )
 
 var (
-	v1ResponseSchema        = parseKeySchema(v1ResponseSchemaText)
-	v1GraphAmendmentSchema  = parseKeySchema(v1GraphAmendmentSchemaText)
-	v1UnknownRecoverySchema = parseKeySchema(v1UnknownRecoverySchemaText)
+	v1ResponseSchema            = parseKeySchema(v1ResponseSchemaText)
+	v1GraphAmendmentSchema      = parseKeySchema(v1GraphAmendmentSchemaText)
+	v1UnknownRecoverySchema     = parseKeySchema(v1UnknownRecoverySchemaText)
+	rc116ExtendedResponseSchema = parseKeySchema(rc116ExtendedResponseSchemaText)
 )
 
 // keySchema is a parsed key path list: the paths a decoder accepts, and the
@@ -82,6 +89,14 @@ func (s keySchema) prune(value any, path string) {
 // out, so a strict client of that release reads it.
 func projectV1Response(response *Response) error {
 	return projectToSchema(response, v1ResponseSchema)
+}
+
+// projectRC116ExtendedResponse gives response the shape an ExtendedReadVersion
+// answer had in v0.11.0-rc.116: every field added since, such as an attempt's
+// review gate or a worker's quota runway, is left out, so a strict client of
+// that release reads it.
+func projectRC116ExtendedResponse(response *Response) error {
+	return projectToSchema(response, rc116ExtendedResponseSchema)
 }
 
 // projectV1Answers gives the graph amendment and unknown recovery answers of

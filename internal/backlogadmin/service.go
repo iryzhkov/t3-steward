@@ -275,21 +275,29 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	response, err := s.query(ctx, query)
 	// A progress mirror is asked for only by a client of this release, which
 	// reads the whole response.
-	if err != nil || query.Version != Version || query.ProgressMirror != nil {
+	if err != nil || query.ProgressMirror != nil {
 		return response, err
 	}
 	// A strict older client rejects every field its release did not declare,
-	// so a v1 read keeps the shape v1 had; this release's clients ask for
-	// ExtendedReadVersion.
-	if err := projectV1Response(&response); err != nil {
-		return Response{}, fmt.Errorf("project the v1 %s response: %w", query.Kind, err)
+	// so a v1 read keeps the shape v1 had, and an ExtendedReadVersion read the
+	// shape it had in rc.116; this release's clients ask for
+	// CurrentReadVersion.
+	switch query.Version {
+	case Version:
+		if err := projectV1Response(&response); err != nil {
+			return Response{}, fmt.Errorf("project the v1 %s response: %w", query.Kind, err)
+		}
+	case ExtendedReadVersion:
+		if err := projectRC116ExtendedResponse(&response); err != nil {
+			return Response{}, fmt.Errorf("project the rc.116 extended %s response: %w", query.Kind, err)
+		}
 	}
 	return response, nil
 }
 
 func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	extendedRead := query.Version == ExtendedReadVersion && query.Kind != QueryStatus
+	extendedRead := (query.Version == ExtendedReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
 	if query.Version != Version && !intakeStatus && !extendedRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}
