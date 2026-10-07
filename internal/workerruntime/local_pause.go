@@ -304,21 +304,6 @@ func (r *Runtime) keepPauseCheckpoint(id string, checkpoint *domain.CheckpointMe
 	})
 }
 
-// withdrawLocalPause forgets a pause request that never took effect.
-func (r *Runtime) withdrawLocalPause(id string) error {
-	return r.journal.update(func(state *journalState) error {
-		current, ok := state.Attempts[id]
-		if !ok || current.LocalThrottle == nil {
-			return nil
-		}
-		current.LocalThrottle = nil
-		current.UpdatedAt = r.now()
-		state.Attempts[id] = current
-		state.Sequence++
-		return nil
-	})
-}
-
 // attemptLive reports whether the attempt is still live according to the
 // last assignment state this worker holds: claimed, under a lease that has
 // not expired, with no coordinator stop command. A cancelled attempt fails

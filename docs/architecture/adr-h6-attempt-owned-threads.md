@@ -98,19 +98,22 @@ Must:
    snapshot exchange, for its host's bucket observations, and the quota bridge merges them with
    the coordinator's own by bucket key, keeping the freshest. A pool closes at its stop threshold
    whichever host observed it, and `snapshot-stale` clears while any worker has a fresh reading.
-   Draining and stopped observations close admission for new starts. Optional burn rate,
-   drain threshold, projected drain crossing and drain deadline observations let planning
-   block a task whose expected runtime plus checkpoint margin reaches that crossing. The
-   earliest crossing, drain deadline or exhaustion bounds the runway; absent fields preserve
-   the behavior for older worker observations.
+   Draining and stopped observations close admission for new starts. Planning blocks a task
+   whose expected runtime plus checkpoint margin reaches the bucket's drain crossing: the
+   earliest of the projected crossing of the drain threshold, the drain deadline and
+   exhaustion bounds the runway. The coordinator decodes optional burn rate, drain threshold,
+   projected drain crossing and drain deadline fields on worker observations, and absent
+   fields preserve today's behavior, but workers do not send them yet (see below).
    The wire version is unchanged: an older worker is never asked and never sends, an older
    coordinator never asks, so neither meets the field. The pause reason and thread state in the
    journal excerpt of each assignment observation are gated by the same ask: both sides decode
    snapshots strictly, so any field added to the snapshot is sent only to a coordinator that
-   asked for `quota-observations-v1` on that exchange. The new runway metadata has no
-   separate negotiation in this candidate: a coordinator that supports the older
-   observation shape still rejects populated runway fields through its strict decoder.
-   The unit's compatibility contract must be resolved before a mixed-version rollout.
+   asked for `quota-observations-v1` on that exchange. The runway fields would need their own
+   ask: an rc.115 coordinator asks for `quota-observations-v1` and rejects any unknown field
+   through its strict decoder, so a worker that sent them would have every snapshot refused.
+   Workers therefore leave them unset until a coordinator opt-in (a snapshot request flag
+   and worker capability) exists; until then the projected crossing bounds the runway only
+   for buckets the coordinator observes itself.
 5. `t3-steward thread stop <thread-id> [--session]` dispatches `thread.turn.interrupt` and, with
    `--session`, `thread.session.stop` through the local T3 control client and prints what it
    sent. `t3-steward backlog rewake <run>/<task> --reason TEXT` resumes an attempt that is

@@ -3,7 +3,6 @@ package workerruntime
 import (
 	"context"
 	"fmt"
-	"math"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -257,26 +256,14 @@ func (g HostQuotaGuard) Observations(ctx context.Context) ([]domain.WorkerQuotaO
 		if st.ObservedAt.IsZero() {
 			continue
 		}
-		thresholds := daemon.ThresholdsFor(g.Config, st.Key, st.LimitName, st.WindowDuration)
-		drainPercent := thresholds.DrainPercent
-		if st.AppliedThresholds != nil {
-			drainPercent = st.AppliedThresholds.DrainPercent
-		}
-		var drainsAt *time.Time
-		if st.RatePerMinute > 0 && st.UsedPercent < drainPercent {
-			minutes := (drainPercent - st.UsedPercent) / st.RatePerMinute
-			nanos := minutes * float64(time.Minute)
-			if !math.IsNaN(nanos) && !math.IsInf(nanos, 0) && nanos > 0 && nanos < float64(math.MaxInt64) {
-				at := st.ObservedAt.Add(time.Duration(nanos)).UTC()
-				drainsAt = &at
-			}
-		}
+		// The runway fields of WorkerQuotaObservation stay unset: an rc.115
+		// coordinator asks for observations through quota-observations-v1 and
+		// decodes them strictly, so it would reject the whole snapshot. They
+		// can be sent once a coordinator opt-in for them exists.
 		out = append(out, domain.WorkerQuotaObservation{
 			Key: st.Key, Phase: st.Phase, UsedPercent: st.UsedPercent, Healthy: st.Healthy,
 			ObservedAt: st.ObservedAt, ResetsAt: st.ResetsAt, Epoch: st.Epoch,
 			LimitName: st.LimitName, ModelSelector: st.ModelSelector,
-			RatePerMinute: st.RatePerMinute, DrainPercent: drainPercent,
-			DrainsAt: drainsAt, DrainDeadline: st.DrainDeadline,
 		})
 	}
 	return out, nil
