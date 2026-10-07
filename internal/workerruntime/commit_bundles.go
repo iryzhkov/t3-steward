@@ -21,14 +21,17 @@ func commitBundleDeliveries(pkg workerproto.ExecutionPackage, open func(workerpr
 	deliveries := make(map[string]backlog.CommitBundleDelivery, len(pkg.CommitBundles))
 	for _, input := range pkg.CommitBundles {
 		ref := backlog.CampaignRef(input.WorkflowRunID, input.TaskID, input.Name)
-		if input.Bundle == nil {
-			deliveries[ref] = backlog.CommitBundleDelivery{Omitted: input.Omitted}
-			continue
+		delivery := backlog.CommitBundleDelivery{Omitted: input.Omitted}
+		if input.Bundle != nil {
+			object := *input.Bundle
+			delivery = backlog.CommitBundleDelivery{
+				SHA256: object.SHA256, Size: object.Size,
+				Open: func(context.Context) (io.ReadCloser, error) { return open(object) },
+			}
 		}
-		object := *input.Bundle
-		deliveries[ref] = backlog.CommitBundleDelivery{
-			SHA256: object.SHA256, Size: object.Size,
-			Open: func(context.Context) (io.ReadCloser, error) { return open(object) },
+		deliveries[ref] = delivery
+		if failedRef := failedCommitBundleRef(pkg, input); failedRef != "" {
+			deliveries[failedRef] = delivery
 		}
 	}
 	return deliveries

@@ -229,7 +229,11 @@ func (d *LocalDriver) verifyDependencyIntegrity(ctx context.Context, pkg workerp
 			if len(data) > 1<<20 {
 				continue
 			}
-			if provenance, err := backlog.ParseCommitProvenance(data); err == nil {
+			provenance, parseErr := backlog.ParseCommitProvenance(data)
+			if parseErr != nil && backlog.LooksLikeCommitProvenance(data) {
+				return dependencyFailure(dependency, object, parseErr)
+			}
+			if parseErr == nil {
 				if err := validateDependencyProvenance(pkg, dependency, provenance); err != nil {
 					return dependencyFailure(dependency, object, err)
 				}
@@ -246,7 +250,7 @@ func (d *LocalDriver) verifyDependencyIntegrity(ctx context.Context, pkg workerp
 		}
 	}
 	for _, input := range pkg.CommitBundles {
-		if !commits[backlog.CampaignRef(input.WorkflowRunID, input.TaskID, input.Name)] {
+		if !commits[backlog.CampaignRef(input.WorkflowRunID, input.TaskID, input.Name)] && !commits[failedCommitBundleRef(pkg, input)] {
 			return &backlog.DependencyIntegrityError{Producer: input.TaskID, Artifact: input.Name, Err: errors.New("declared commit provenance is not materialized")}
 		}
 	}
@@ -275,6 +279,9 @@ func (d *LocalDriver) restoreDependencyCommit(ctx context.Context, pkg workerpro
 	}
 	provenance, err := backlog.ParseCommitProvenance(data)
 	if err != nil {
+		if backlog.LooksLikeCommitProvenance(data) {
+			return err
+		}
 		return nil
 	}
 	if err := validateDependencyProvenance(pkg, dependency, provenance); err != nil {
@@ -295,6 +302,9 @@ func (d *LocalDriver) restoreDependencyCommit(ctx context.Context, pkg workerpro
 }
 
 func validateDependencyProvenance(pkg workerproto.ExecutionPackage, dependency workerproto.DependencyInput, provenance backlog.CommitProvenance) error {
+	if provenance.FailedAttempt != nil && (dependency.Provenance == nil || dependency.Provenance.AttemptID != provenance.FailedAttempt.ID) {
+		return errors.New("failed commit provenance does not match its carried dependency attempt")
+	}
 	run, task := pkg.Identity.WorkflowRunID, dependency.TaskID
 	if dependency.Provenance != nil {
 		run, task = dependency.Provenance.RunID, dependency.Provenance.TaskID
