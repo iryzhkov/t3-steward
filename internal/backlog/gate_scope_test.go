@@ -101,6 +101,23 @@ func TestGateScopeCleanupFailureIsNotReportedAsTimeout(t *testing.T) {
 	}
 }
 
+// The cleanup deadline can expire while a state query is still running, and
+// the query is then killed. That is the deadline on a scope last seen active,
+// not a user manager that stopped answering. Where spawning a process is slow,
+// as on macOS, the deadline usually lands inside a query, and the failure used
+// to read "state unknown (signal: killed)". Here every query after the first
+// outlasts the deadline, so the deadline always lands inside one.
+func TestScopeCleanupDeadlineDuringQueryKeepsObservedState(t *testing.T) {
+	fake := t.TempDir()
+	asked := filepath.Join(fake, "asked")
+	ctl := writeExecutable(t, fake, "systemctl", fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = show ]; then\n  if [ -e %q ]; then exec sleep 10; fi\n  touch %q\n  echo active\nfi\n", asked, asked))
+	err := (SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: 500 * time.Millisecond}).clearScope("t3-steward-test.scope")
+	var cleanup *ScopeCleanupError
+	if !errors.As(err, &cleanup) || cleanup.Detail != "state active" {
+		t.Fatalf("deadline during a state query reported as %v", err)
+	}
+}
+
 // A failed kill of a live scope is not an absent scope. A gate child survived
 // a systemctl kill that failed, waited for the worker to open one declared
 // output for hashing and rewrote another before its digest. The runner used

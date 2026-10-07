@@ -241,12 +241,20 @@ func (r SystemdScopeRunner) clearScope(unit string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	killOutput, killErr := exec.CommandContext(ctx, r.systemctl(), "--user", "kill", "--kill-who=all", "--signal=KILL", unit).CombinedOutput()
-	state := ""
+	// observed is the last state the user manager answered with. The deadline
+	// can expire while a query is running, and the query is then killed; that
+	// is still the deadline, not a user manager that stopped answering.
+	observed := ""
 	for {
 		out, err := exec.CommandContext(ctx, r.systemctl(), "--user", "show", "--property=ActiveState", "--value", unit).CombinedOutput()
-		state = strings.TrimSpace(string(out))
+		state := strings.TrimSpace(string(out))
 		if err == nil && (state == "inactive" || state == "failed") {
 			return nil
+		}
+		if err == nil {
+			observed = state
+		} else if ctx.Err() != nil && observed != "" {
+			return scopeCleanupError(unit, observed, killErr, killOutput)
 		}
 		if err != nil {
 			// Without an answer from the user manager nothing more can be
