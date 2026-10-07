@@ -35,7 +35,7 @@ func (c taskRunCLI) renderDryRun(parsed taskRunArgs, project, ref string, route 
 	}
 	doc := taskRunDryDocument{Selection: parsed.selection, SchemaVersion: 1, DryRun: true, Project: project, Ref: ref, Fresh: parsed.fresh, Route: printedRoute(route), IdempotencyKey: key, NotifyThread: thread, PromptCharacters: size}
 	if !parsed.asJSON && parsed.selection != nil {
-		fmt.Fprintf(c.stdout, "role %s\npolicy %s\nreason %s\neffort %s\n", parsed.selection.Role, parsed.selection.PolicyDigest, parsed.selection.Reason, parsed.selection.Effort)
+		renderPolicySelection(c.stdout, *parsed.selection)
 	}
 	if parsed.asJSON {
 		return encodeCampaignJSON(c.stdout, doc)

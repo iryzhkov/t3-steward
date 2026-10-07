@@ -47,7 +47,7 @@ with a client timeout of the round deadline plus a two-minute collection margin.
 --gate requires --wait on submission and rejects anything other than accept.
 Exit 0: all required results valid, whatever verdict; 2: collection failed; 3: gate rejected;
 1: pending, timeout of the client wait, invalid flags or submission failure.
---role ROLE chooses one independent candidate; explicit --reviewer/--independent/
+--role ROLE chooses one independent candidate using route-ranking/v1; explicit --reviewer/--independent/
 --model override that choice. --effort low|medium|high overrides policy effort;
 --policy-file PATH selects a file (default beside coordinator-client.json).
 The role never chooses a judge or swarm route and never bypasses diversity or tiers.
@@ -76,6 +76,7 @@ See docs/m16-review-checkpoint.md.
 type reviewArgs struct {
 	role, policyFile, effort                                            string
 	policy                                                              *routePolicy
+	rankView                                                            routeRankView
 	selections                                                          []policySelection
 	efforts                                                             map[string]string
 	plans, reviewers, swarmModels                                       []string
@@ -511,9 +512,11 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 	}
 	a.policy = p
 	if a.role != "" && len(a.reviewers) == 0 {
-		if err := c.task.validateLoadedPolicy(ctx, p); err != nil {
+		workers, err := c.task.policyCatalogWorkers(ctx, p)
+		if err != nil {
 			return err
 		}
+		a.rankView = c.task.routeRankingView(ctx, workers)
 	}
 	project, err := reviewProject(a.project, projects)
 	if err != nil {
@@ -575,7 +578,8 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 		}{Schema: "review-submit/v1", Round: response.RunID, Notify: notification, Selections: a.selections})
 	}
 	for _, s := range a.selections {
-		fmt.Fprintf(c.task.stdout, "role %s\nroute %s\npolicy %s\nreason %s\neffort %s\n", s.Role, s.Route, s.PolicyDigest, s.Reason, s.Effort)
+		fmt.Fprintf(c.task.stdout, "route %s\n", s.Route)
+		renderPolicySelection(c.task.stdout, s)
 	}
 	fmt.Fprintf(c.task.stdout, "round %s\nresult: t3-steward review result %s --wait\n", response.RunID, response.RunID)
 	return nil

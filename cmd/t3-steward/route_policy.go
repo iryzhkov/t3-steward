@@ -44,12 +44,14 @@ type policyConstraints struct {
 	Tiers                   []string `yaml:"tiers,omitempty" json:"tiers,omitempty"`
 }
 type policySelection struct {
-	Schema       string `json:"schema"`
-	Role         string `json:"role,omitempty"`
-	Route        string `json:"route"`
-	PolicyDigest string `json:"policyDigest"`
-	Reason       string `json:"reason"`
-	Effort       string `json:"effort,omitempty"`
+	Schema       string                `json:"schema"`
+	Role         string                `json:"role,omitempty"`
+	Route        string                `json:"route"`
+	PolicyDigest string                `json:"policyDigest"`
+	Reason       string                `json:"reason"`
+	Effort       string                `json:"effort,omitempty"`
+	Ranking      string                `json:"ranking,omitempty"`
+	Candidates   []policyRankCandidate `json:"candidates,omitempty"`
 }
 
 func validPolicyEffort(e string) error {
@@ -205,16 +207,6 @@ func (c taskRunCLI) loadPolicy(ctx context.Context, path, role string) (*routePo
 	// authorization is required when the policy chooses a route automatically.
 	return p, nil
 }
-func (c taskRunCLI) validateLoadedPolicy(ctx context.Context, p *routePolicy) error {
-	if c.query == nil {
-		return errors.New("configured route catalog unavailable; configure coordinator-client.json")
-	}
-	response, err := c.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryWorkers})
-	if err != nil {
-		return fmt.Errorf("configured route catalog unavailable: %w; check t3-steward coordinator identity", err)
-	}
-	return validatePolicyCatalog(p, response.Workers)
-}
 func policyEffort(p *routePolicy, route string) (string, error) {
 	effort := ""
 	for _, r := range p.Roles {
@@ -229,9 +221,24 @@ func policyEffort(p *routePolicy, route string) (string, error) {
 	}
 	return effort, nil
 }
-func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, project backlogadmin.Project, accept func(string) bool) (policySelection, error) {
+
+// policyCandidateVerdict is the shared policy eligibility seam. Pools come
+// only from workers eligible for this project and this invocation.
+type policyCandidateVerdict struct {
+	Route          string
+	Ordinal        int
+	Eligible       bool
+	Reason         string
+	ProviderFamily string
+	Tier           string
+	Effort         string
+	Pools          []string
+	err            error
+}
+
+func evaluatePolicyCandidates(p *routePolicy, role, model, effort, worker string, project backlogadmin.Project, accept func(string) bool) (*policyRole, []policyCandidateVerdict, error) {
 	if err := validPolicyEffort(effort); err != nil {
-		return policySelection{}, err
+		return nil, nil, err
 	}
 	var rr *policyRole
 	for i := range p.Roles {
@@ -240,15 +247,17 @@ func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, proje
 		}
 	}
 	if role != "" && rr == nil {
-		return policySelection{}, fmt.Errorf("unknown role %q; inspect t3-steward policy show", role)
+		return nil, nil, fmt.Errorf("unknown role %q; inspect t3-steward policy show", role)
 	}
-	// A fully resolved explicit route with no role has no eligibility decision
-	// to make. Keep the caller's pin even on older catalogs and sleeping workers.
 	if model != "" && rr == nil {
 		if !review.ValidRoute(model) {
-			return policySelection{}, fmt.Errorf("explicit route %q must be INSTANCE/MODEL", model)
+			return nil, nil, fmt.Errorf("explicit route %q must be INSTANCE/MODEL", model)
 		}
-		return explicitPolicySelection(p, role, model, effort)
+		s, err := explicitPolicySelection(p, role, model, effort)
+		if err != nil {
+			return nil, nil, err
+		}
+		return nil, []policyCandidateVerdict{{Route: model, Eligible: true, Reason: s.Reason, Effort: s.Effort}}, nil
 	}
 	candidates := []policyCandidate{}
 	if model != "" {
@@ -256,7 +265,9 @@ func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, proje
 	} else if rr != nil {
 		candidates = rr.Candidates
 	}
-	for _, candidate := range candidates {
+	verdicts := make([]policyCandidateVerdict, 0, len(candidates))
+	for ordinal, candidate := range candidates {
+		v := policyCandidateVerdict{Route: candidate.Route, Ordinal: ordinal}
 		eligible := project
 		eligible.Workers = nil
 		for _, w := range project.Workers {
@@ -266,68 +277,101 @@ func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, proje
 		}
 		route, err := deriveTaskRunRoute(candidate.Route, worker, "", eligible)
 		if err != nil {
+			v.Reason = err.Error()
+			verdicts = append(verdicts, v)
 			continue
 		}
 		pair := route.Instance + "/" + route.Model
+		v.Route = pair
 		if accept != nil && !accept(pair) {
+			v.Reason = "caller selection constraints refused route"
+			verdicts = append(verdicts, v)
 			continue
 		}
 		metadata := backlogadmin.ProjectRoute{}
+		poolSet := map[string]bool{}
 		for _, w := range eligible.Workers {
 			for _, r := range w.Routes {
 				if r.Instance+"/"+r.Model == pair {
 					if metadata.ProviderFamily != "" && (metadata.ProviderFamily != r.ProviderFamily || metadata.Tier != r.Tier) {
-						return policySelection{}, fmt.Errorf("conflicting catalog metadata for %s", pair)
+						v.err = fmt.Errorf("conflicting catalog metadata for %s", pair)
 					}
 					metadata = r
+					// Explicit pins retain old readiness behaviour; automatic ranking only
+					// sees ready, advertising workers.
+					if w.Ready && w.Advertises {
+						poolSet[r.QuotaPool] = true
+					}
 				}
 			}
 		}
-		tier := ""
+		v.ProviderFamily = metadata.ProviderFamily
 		switch metadata.Tier {
 		case "executor":
-			tier = "standard"
+			v.Tier = "standard"
 		case "critical":
-			tier = "premium"
+			v.Tier = "premium"
 		case "economy":
-			tier = "economy"
+			v.Tier = "economy"
 		}
-		if tier == "" && rr != nil && len(rr.Constraints.Tiers) > 0 {
-			continue
+		for pool := range poolSet {
+			v.Pools = append(v.Pools, pool)
 		}
-		if model == "" && tier != "" && tier != candidate.Tier {
-			continue
-		}
-		if rr != nil {
-			cs := rr.Constraints
-			if len(cs.ProviderFamilies) > 0 && (metadata.ProviderFamily == "" || !contains(cs.ProviderFamilies, metadata.ProviderFamily)) {
-				continue
+		sort.Strings(v.Pools)
+		switch {
+		case v.err != nil:
+			v.Reason = v.err.Error()
+		case v.Tier == "" && rr != nil && len(rr.Constraints.Tiers) > 0:
+			v.Reason = "catalog tier unavailable"
+		case model == "" && v.Tier != "" && v.Tier != candidate.Tier:
+			v.Reason = "catalog tier does not match policy candidate"
+		case rr != nil && len(rr.Constraints.ProviderFamilies) > 0 && (metadata.ProviderFamily == "" || !contains(rr.Constraints.ProviderFamilies, metadata.ProviderFamily)):
+			v.Reason = "provider family outside role allow list"
+		case rr != nil && len(rr.Constraints.ExcludeProviderFamilies) > 0 && (metadata.ProviderFamily == "" || contains(rr.Constraints.ExcludeProviderFamilies, metadata.ProviderFamily)):
+			v.Reason = "provider family excluded by role"
+		case rr != nil && len(rr.Constraints.Tiers) > 0 && !contains(rr.Constraints.Tiers, v.Tier):
+			v.Reason = "tier outside role constraints"
+		default:
+			v.Effort = effort
+			if v.Effort == "" {
+				if model == "" {
+					v.Effort = candidate.Effort
+				} else {
+					v.Effort, v.err = policyEffort(p, pair)
+				}
 			}
-			if len(cs.ExcludeProviderFamilies) > 0 && (metadata.ProviderFamily == "" || contains(cs.ExcludeProviderFamilies, metadata.ProviderFamily)) {
-				continue
-			}
-			if len(cs.Tiers) > 0 && !contains(cs.Tiers, tier) {
-				continue
-			}
-		}
-		effective := effort
-		if effective == "" {
-			if model == "" {
-				effective = candidate.Effort
+			if v.err != nil {
+				v.Reason = v.err.Error()
 			} else {
-				effective, err = policyEffort(p, pair)
-				if err != nil {
-					return policySelection{}, err
+				v.Eligible = true
+				v.Reason = "first eligible candidate in policy order"
+				if model != "" {
+					v.Reason = "explicit model override"
 				}
 			}
 		}
-		reason := "first eligible candidate in policy order"
-		if model != "" {
-			reason = "explicit model override"
-		}
-		return policySelection{Schema: "route-selection/v1", Role: role, Route: pair, PolicyDigest: p.Digest, Reason: reason, Effort: effective}, nil
+		verdicts = append(verdicts, v)
 	}
-	return policySelection{}, fmt.Errorf("no eligible candidate for role %q and model %q; check t3-steward models --project %s and policy show; explicit models remain pinned", role, model, project.Name)
+	return rr, verdicts, nil
+}
+
+func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, project backlogadmin.Project, accept func(string) bool) (policySelection, error) {
+	_, verdicts, err := evaluatePolicyCandidates(p, role, model, effort, worker, project, accept)
+	if err != nil {
+		return policySelection{}, err
+	}
+	for _, v := range verdicts {
+		if v.err != nil {
+			return policySelection{}, v.err
+		}
+		if v.Eligible {
+			return policySelection{Schema: "route-selection/v1", Role: role, Route: v.Route, PolicyDigest: p.Digest, Reason: v.Reason, Effort: v.Effort}, nil
+		}
+	}
+	return policySelection{}, noEligiblePolicyRoute(role, model, project)
+}
+func noEligiblePolicyRoute(role, model string, project backlogadmin.Project) error {
+	return fmt.Errorf("no eligible candidate for role %q and model %q; check t3-steward models --project %s and policy show; explicit models remain pinned", role, model, project.Name)
 }
 
 // explicitPolicySelection adds effort and provenance without route resolution.
@@ -359,7 +403,16 @@ func policySnapshotInputs(existing pinnedinput.Snapshot, p *routePolicy, selecti
 	for _, e := range existing.Manifest.Entries {
 		paths = append(paths, filepath.Join(dir, e.Name))
 	}
-	raw, err := json.Marshal(selections)
+	// Quota is live telemetry. Pin only the ranking version alongside stable
+	// provenance and the chosen route, never live reasons or candidate bands.
+	pinned := append([]policySelection(nil), selections...)
+	for i := range pinned {
+		if pinned[i].Ranking != "" {
+			pinned[i].Candidates = nil
+			pinned[i].Reason = pinned[i].Ranking
+		}
+	}
+	raw, err := json.Marshal(pinned)
 	if err != nil {
 		return pinnedinput.Snapshot{}, err
 	}
@@ -447,7 +500,7 @@ func resolveReviewPolicy(a reviewArgs, project backlogadmin.Project) (reviewArgs
 			}
 			return review.ValidateSelection(review.Round{Risk: a.risk, Reviewers: members}, families) == nil
 		}
-		s, err := selectPolicyRoute(a.policy, a.role, "", a.effort, "", project, accept)
+		s, err := selectPolicyRouteRanked(a.policy, a.role, "", a.effort, "", project, accept, a.rankView)
 		if err != nil {
 			return a, fmt.Errorf("%w; Phase A selects one reviewer and never fills a judge or fans out a role. %s", err, reviewPolicyRemedy(routes, families, a.risk))
 		}
