@@ -593,6 +593,8 @@ on `release_rerun_source` (`graph_rerun.go:13-15`).
 
 ### 6.3 Migration approach
 
+Schema numbers are reserved and may merge out of order; the runner applies every missing registered version. A lower migration must apply cleanly on top of any higher migration already released.
+
 Exactly the existing one. Add `coordinatorMigrationV18` as a DDL string in the new
 `internal/store/sqlite/supervision.go`, register `{18, coordinatorMigrationV18}` in the versioned list
 (`store.go:301-321`), bump `currentSchemaVersion` to 18 (`coordinator.go:13`).
