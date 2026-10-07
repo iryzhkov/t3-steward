@@ -240,13 +240,18 @@ is not snapshotted.
 The snapshot runs Git on the worker host, outside any containment the attempt
 had, so it never reads the task's repository configuration: it runs in a
 private Git directory the worker writes, with no hooks, attributes, system or
-global configuration, and a minimal environment, borrowing the workspace's
-objects. Filters the task's attributes name are therefore not applied, and
-files are kept as they are on disk (a Git LFS file is kept whole rather than
-as a pointer). The private ref lives only in the bundle, not in the
-workspace. A workspace whose `.git` is not its own directory, or whose objects
-come from another repository through alternates, is not snapshotted; the
-failure says so.
+global configuration, and a minimal environment. HEAD, the index, the ignore
+rules and the workspace's own objects are copied in as data; symbolic links
+in the object store are skipped, so no object from outside the workspace
+reaches the bundle. Filters the task's attributes name are therefore not
+applied: a file the task's index records as unchanged is kept as the index
+has it, and a changed one as it is on disk (a changed Git LFS file is kept
+whole rather than as a pointer). The private ref lives only in the bundle,
+not in the workspace. A workspace whose `.git` or object store is not its own
+directory, whose objects come from another repository through alternates, or
+whose ignore rules cannot be read is not snapshotted; the failure says so.
+Recover a bundle in a clone that has the base commit with
+`git fetch wip.bundle refs/steward/wip/<attempt>:refs/heads/<name>`.
 
 `backlog explain` (as a `turn end:` detail) and `backlog task show` (as a
 `turn end:` line) show the state, for example `waiting for 2 background
