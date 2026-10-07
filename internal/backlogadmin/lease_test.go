@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,12 +107,28 @@ func TestLeaseLocalAndSSHCarriers(t *testing.T) {
 	}
 }
 func TestLeaseOlderCoordinatorHelperProcess(t *testing.T) {
-	if os.Getenv("T3_LEASE_OLD_COORDINATOR") != "1" {
+	mode := os.Getenv("T3_LEASE_OLD_COORDINATOR")
+	if mode != "1" && mode != "unsigned" {
 		t.Skip("helper process")
 	}
 	request, err := readRemoteFrame(bufio.NewReader(os.Stdin), 1<<20)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if mode == "unsigned" {
+		// The base coordinator rejects an unknown operation in validate, before
+		// verifying the signature, so it refuses without credentials: an
+		// unsigned frame on stdout, the returned error on stderr, and exit 1.
+		response, err := newRemoteFrame(request.Operation, request.SessionID, "response-"+request.RequestID, testCoordinatorID, request.Sender, request.Sequence, time.Now(), request.Deadline, localResponse{Version: LocalTransportVersion, Error: "unknown admin frame operation", ErrorClass: ClassProtocol})
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.InReplyTo = request.RequestID
+		if err := writeRemoteFrame(os.Stdout, response, 1<<20); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintln(os.Stderr, "error: coordinator-exchange refused lease: malformed: unknown admin frame operation")
+		os.Exit(1)
 	}
 	credentials := testAdminCredentials()
 	response, err := newRemoteFrame(request.Operation, request.SessionID, "response-"+request.RequestID, testCoordinatorID, request.Sender, request.Sequence, time.Now(), request.Deadline, localResponse{Version: LocalTransportVersion, Error: "unknown admin frame operation", ErrorClass: ClassProtocol})
@@ -162,18 +179,20 @@ func TestLeaseOlderCoordinatorCarrierMessages(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	factory := func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		command := exec.CommandContext(ctx, os.Args[0], "-test.run=TestLeaseOlderCoordinatorHelperProcess")
-		command.Env = append(os.Environ(), "T3_LEASE_OLD_COORDINATOR=1")
-		return command
-	}
-	remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: testCoordinatorID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: 30 * time.Second, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = remote.Lease(context.Background(), leaseTestRequest())
-	if ClassOf(err) != ClassProtocol || !strings.Contains(err.Error(), "the coordinator does not support leases; upgrade it") {
-		t.Fatalf("old SSH: %v", err)
+	for _, mode := range []string{"1", "unsigned"} {
+		factory := func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=TestLeaseOlderCoordinatorHelperProcess")
+			command.Env = append(os.Environ(), "T3_LEASE_OLD_COORDINATOR="+mode)
+			return command
+		}
+		remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: testCoordinatorID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: 30 * time.Second, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = remote.Lease(context.Background(), leaseTestRequest())
+		if ClassOf(err) != ClassProtocol || !strings.Contains(err.Error(), "the coordinator does not support leases; upgrade it") {
+			t.Fatalf("old SSH (%s): %v", mode, err)
+		}
 	}
 }
 

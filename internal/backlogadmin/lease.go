@@ -95,18 +95,18 @@ func leaseCompatibilityError(err error) error {
 	// text: a refusal that echoes client input (an unknown lease action) must
 	// not be rewritten into upgrade guidance.
 	var transport *TransportError
-	message := err.Error()
+	answer := err
 	if errors.As(err, &transport) && transport.Err != nil {
-		message = transport.Err.Error()
+		answer = transport.Err
 	}
-	switch {
-	// Older local coordinators strictly decode the envelope before dispatch:
-	// the missing Lease field therefore fails before the unknown-operation path.
-	case message == `decode local admin frame: json: unknown field "lease"`:
-	case message == "unknown local admin operation", message == "unknown admin frame operation":
-	case message == `coordinator-exchange: unknown operation "lease"`:
-	default:
-		return err
+	// An older SSH coordinator refuses the unknown operation unsigned and exits
+	// nonzero, so the client appends its stderr to the refusal; the
+	// coordinator's own answer is then the one wrapped cause.
+	if !olderCoordinatorAnswer(answer.Error()) {
+		cause := errors.Unwrap(answer)
+		if cause == nil || !olderCoordinatorAnswer(cause.Error()) {
+			return err
+		}
 	}
 	upgrade := errors.New("the coordinator does not support leases; upgrade it")
 	if transport != nil {
@@ -115,4 +115,18 @@ func leaseCompatibilityError(err error) error {
 		return &copy
 	}
 	return upgrade
+}
+
+// olderCoordinatorAnswer reports whether message is exactly what a coordinator
+// without leases answers to a lease request.
+func olderCoordinatorAnswer(message string) bool {
+	switch message {
+	// Older local coordinators strictly decode the envelope before dispatch:
+	// the missing Lease field therefore fails before the unknown-operation path.
+	case `decode local admin frame: json: unknown field "lease"`,
+		"unknown local admin operation", "unknown admin frame operation",
+		`coordinator-exchange: unknown operation "lease"`:
+		return true
+	}
+	return false
 }
