@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"io"
 )
 
 type LeaseStore interface {
@@ -102,15 +103,27 @@ func leaseCompatibilityError(err error) error {
 	// An older SSH coordinator refuses the unknown operation unsigned and exits
 	// nonzero, so the client appends its stderr to the refusal; the
 	// coordinator's own answer is then the one wrapped cause.
+	//
+	// Behind a forced command that runs the operation word the client sends, an
+	// older coordinator refuses the word before reading any frame: stdout is
+	// empty and the whole answer is the one stderr line, appended to the EOF.
 	if !olderCoordinatorAnswer(answer.Error()) {
 		cause := errors.Unwrap(answer)
-		if cause == nil || !olderCoordinatorAnswer(cause.Error()) {
+		switch {
+		case cause == nil:
+			return err
+		case olderCoordinatorAnswer(cause.Error()):
+		case errors.Is(cause, io.EOF) && answer.Error() == io.EOF.Error()+`: error: coordinator-exchange: unknown operation "lease"`:
+		default:
 			return err
 		}
 	}
 	upgrade := errors.New("the coordinator does not support leases; upgrade it")
 	if transport != nil {
+		// The answer itself is a protocol mismatch, whatever class stderr noise
+		// suggested.
 		copy := *transport
+		copy.Class = ClassProtocol
 		copy.Err = upgrade
 		return &copy
 	}

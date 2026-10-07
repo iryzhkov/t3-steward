@@ -108,8 +108,14 @@ func TestLeaseLocalAndSSHCarriers(t *testing.T) {
 }
 func TestLeaseOlderCoordinatorHelperProcess(t *testing.T) {
 	mode := os.Getenv("T3_LEASE_OLD_COORDINATOR")
-	if mode != "1" && mode != "unsigned" {
+	if mode != "1" && mode != "unsigned" && mode != "pinned" {
 		t.Skip("helper process")
+	}
+	if mode == "pinned" {
+		// Behind a forced command that runs the client's operation word, the
+		// base coordinator refuses the unknown word before reading any frame.
+		fmt.Fprintln(os.Stderr, `error: coordinator-exchange: unknown operation "lease"`)
+		os.Exit(1)
 	}
 	request, err := readRemoteFrame(bufio.NewReader(os.Stdin), 1<<20)
 	if err != nil {
@@ -179,7 +185,7 @@ func TestLeaseOlderCoordinatorCarrierMessages(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"1", "unsigned"} {
+	for _, mode := range []string{"1", "unsigned", "pinned"} {
 		factory := func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
 			command := exec.CommandContext(ctx, os.Args[0], "-test.run=TestLeaseOlderCoordinatorHelperProcess")
 			command.Env = append(os.Environ(), "T3_LEASE_OLD_COORDINATOR="+mode)
