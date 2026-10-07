@@ -659,7 +659,34 @@ func placementCapabilities(manifest Manifest, task ManifestTask) []string {
 	if ConsumesDeclaredCommit(manifest, task) && !slices.Contains(capabilities, workerproto.PackageCapabilityCommitBundle) {
 		capabilities = append(capabilities, workerproto.PackageCapabilityCommitBundle)
 	}
+	// The offer requires these for a review-declared task and for a consumer
+	// of a review-declared producer's commit (M16-3); placing such a task on
+	// a worker without them would only have its offer withheld.
+	if task.ReviewRequirements != nil && !slices.Contains(capabilities, workerproto.PackageCapabilityWorkspaceHead) {
+		capabilities = append(capabilities, workerproto.PackageCapabilityWorkspaceHead)
+	}
+	if consumesReviewedCommit(manifest, task) && !slices.Contains(capabilities, workerproto.PackageCapabilityAcceptedDependencies) {
+		capabilities = append(capabilities, workerproto.PackageCapabilityAcceptedDependencies)
+	}
 	return capabilities
+}
+
+// consumesReviewedCommit reports whether a task takes a declared commit from a
+// producer that declares review requirements, whose commit is staged and
+// reaches the consumer only as an accepted dependency.
+func consumesReviewedCommit(manifest Manifest, task ManifestTask) bool {
+	for producer, names := range task.InputsFrom {
+		producerTask, ok := manifest.Tasks[producer]
+		if !ok || producerTask.ReviewRequirements == nil {
+			continue
+		}
+		for _, declaration := range producerTask.OutputDeclarations() {
+			if declaration.Commit != nil && slices.ContainsFunc(names, func(name string) bool { return filepath.ToSlash(name) == declaration.Name }) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // RequireCommitBundleCapability adds the commit bundle capability to a task
