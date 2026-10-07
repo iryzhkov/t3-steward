@@ -762,6 +762,7 @@ func (c campaignCLI) prepare(source string) (campaign.Bundle, campaign.Plan, err
 	if err != nil {
 		return campaign.Bundle{}, campaign.Plan{}, fmt.Errorf("%s: %w", source, err)
 	}
+	annotateCampaignLocalRoles(&plan, defaultRoutePolicyPath(), c.stderr)
 	return bundle, plan, nil
 }
 

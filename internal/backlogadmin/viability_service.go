@@ -36,7 +36,12 @@ type CredentialResolver interface {
 
 // ViabilitySettings is what a viability answer needs beyond the coordinator's
 // own records.
+// RoleWorkerEligible applies the coordinator's placement constraints to selection.
+// ready=false ignores transient health and live resource pressure.
+type RoleWorkerEligible func(ViabilityTask, string, bool) bool
+
 type ViabilitySettings struct {
+	ResolveRoles   func(context.Context, []ViabilityTask, []Project, RoleWorkerEligible) (map[string]domain.RoleSelection, map[string]ViabilityReason)
 	ResourcePolicy domain.ResourcePlacementPolicy
 	ReviewRoutes   map[string]config.ReviewRouteMetadata
 	// Projects and SetupProfiles are the catalog entries this coordinator is
@@ -193,8 +198,41 @@ func (v view) viability(ctx context.Context, settings ViabilitySettings, request
 			SupervisionViabilityReasons(*request.Supervision, inventories,
 				settings.SupervisorClientConfigured)...)
 	}
+	selections := map[string]domain.RoleSelection{}
+	failures := map[string]ViabilityReason{}
+	hasRoles := false
 	for _, task := range request.Tasks {
-		matrix.Tasks = append(matrix.Tasks, v.viabilityTask(ctx, settings, task, workers))
+		hasRoles = hasRoles || task.Role != ""
+	}
+	if hasRoles {
+		if settings.ResolveRoles == nil {
+			for _, task := range request.Tasks {
+				if task.Role != "" {
+					failures[task.Name] = newViabilityReason("role-unsupported", "this coordinator does not support role:; upgrade the coordinator")
+				}
+			}
+		} else {
+			selections, failures = settings.ResolveRoles(ctx, request.Tasks, v.projects(settings, Filter{}), v.roleWorkerEligible(settings, workers))
+		}
+	}
+	for _, task := range request.Tasks {
+		if reason, failed := failures[task.Name]; failed {
+			matrix.Tasks = append(matrix.Tasks, ViabilityTaskResult{Task: task.Name, Outcome: ViabilityImpossible, Reasons: []ViabilityReason{reason}})
+			continue
+		}
+		var selection *domain.RoleSelection
+		if task.Role != "" {
+			value, ok := selections[task.Name]
+			if !ok {
+				matrix.Tasks = append(matrix.Tasks, ViabilityTaskResult{Task: task.Name, Outcome: ViabilityImpossible, Reasons: []ViabilityReason{newViabilityReason("role-unsupported", "this coordinator does not support role:; upgrade the coordinator")}})
+				continue
+			}
+			selection = &value
+			task.Routes = []domain.ProviderRoute{value.ProviderRoute()}
+		}
+		result := v.viabilityTask(ctx, settings, task, workers)
+		result.RoleSelection = selection
+		matrix.Tasks = append(matrix.Tasks, result)
 	}
 	matrix.Outcome = matrixOutcome(matrix)
 	return matrix

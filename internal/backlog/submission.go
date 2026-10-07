@@ -74,6 +74,7 @@ type SubmissionService struct {
 	NewKey            func() string
 	// Permanent refuses a permanently impossible manifest during ingestion.
 	Permanent PermanentValidator
+	Roles     ManifestRoleResolver
 	// Audit records every submission decision, including a skipped client check.
 	Audit func(context.Context, SubmissionAudit)
 
@@ -92,16 +93,24 @@ func (s *SubmissionService) validatePermanent(ctx context.Context, bundleDir str
 		return nil, nil
 	}
 	_ = root.Close()
+	selections, err := resolveManifestRoles(ctx, s.Roles, manifest)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := manifestWithRoleSelections(manifest, selections)
+	if err != nil {
+		return nil, err
+	}
 	if s.Permanent == nil {
 		if HasTaskReviewRequirements(manifest) {
 			return nil, fmt.Errorf("%w: configured admission validation required for review_requirements", ErrValidationUnavailable)
 		}
-		return nil, nil
+		return validatedManifestAdmission{digest: admissionDigest(manifest), selections: selections}, nil
 	}
-	if err := s.Permanent.ValidatePermanent(ctx, manifest); err != nil {
+	if err := s.Permanent.ValidatePermanent(ctx, resolved); err != nil {
 		return nil, err
 	}
-	return validatedManifestAdmission{digest: admissionDigest(manifest)}, nil
+	return validatedManifestAdmission{digest: admissionDigest(manifest), selections: selections}, nil
 }
 
 func (s *SubmissionService) SubmitDirectory(ctx context.Context, request DirectorySubmission) (SubmissionResult, error) {

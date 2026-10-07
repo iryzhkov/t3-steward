@@ -1378,6 +1378,7 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		}
 		state, control, attempt := taskState(task)
 		fmt.Fprintf(out, "  %s (%s): %s %s attempt=%s%s\n", task.Task.Name, task.Task.ID, state, control, attempt, evidenceMarker(task.Evidence))
+		renderRoleSelection(out, task.Task.RoleSelection)
 		// A failed task says why, so the run's answer is readable without a
 		// "task show" per task.
 		if task.Attempt != nil && task.Attempt.ReviewVerdict != nil {

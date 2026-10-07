@@ -151,6 +151,6 @@ func advertisedRouteList(projectName string, workers []viabilityWorker) string {
 // and the reader should not need a second command to find out which.
 func noRouteDetail(taskName, projectName string, workers []viabilityWorker) string {
 	return fmt.Sprintf("task %q declares no provider route (instance and model); "+
-		"the coordinator never chooses one, and the eligible workers of project %q advertise: %s",
+		"declare routes or role: so the coordinator can resolve one; the eligible workers of project %q advertise: %s",
 		taskName, projectName, advertisedRouteList(projectName, workers))
 }

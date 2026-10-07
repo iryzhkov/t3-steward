@@ -123,11 +123,12 @@ type Workflow struct {
 
 // WorkflowRun is one execution of a workflow definition.
 type WorkflowRun struct {
-	Graph         *GraphDefinition `json:"graph,omitempty"`
-	ID            string           `json:"id"`
-	WorkflowID    string           `json:"workflowId"`
-	GraphRevision int64            `json:"graphRevision,omitempty"`
-	Sink          *SinkTask        `json:"sink,omitempty"`
+	RouteSelections map[string]RoleSelection `json:"routeSelections,omitempty"`
+	Graph           *GraphDefinition         `json:"graph,omitempty"`
+	ID              string                   `json:"id"`
+	WorkflowID      string                   `json:"workflowId"`
+	GraphRevision   int64                    `json:"graphRevision,omitempty"`
+	Sink            *SinkTask                `json:"sink,omitempty"`
 	// Supervision is the run's durable supervision record, or nil for an
 	// unsupervised run, which is every run that exists today. It sits beside
 	// the sink because both are coordinator-owned state that belongs to the
@@ -177,6 +178,9 @@ type ProviderRoute struct {
 
 // Task is an immutable node in a workflow definition.
 type Task struct {
+	Role               string                  `json:"role,omitempty"`
+	RoleEffort         string                  `json:"roleEffort,omitempty"`
+	RoleSelection      *RoleSelection          `json:"roleSelection,omitempty"`
 	ReviewOutput       *ReviewOutput           `json:"reviewOutput,omitempty"`
 	ReviewRequirements *TaskReviewRequirements `json:"reviewRequirements,omitempty"`
 	// ReviewJudge is derived only from a validated review manifest by ingestion.
@@ -430,15 +434,16 @@ const (
 
 // Trigger is one observed firing of a schedule.
 type Trigger struct {
-	ID              string       `json:"id"`
-	ScheduleID      string       `json:"scheduleId"`
-	ScheduleVersion int          `json:"scheduleVersion"`
-	NominalAt       time.Time    `json:"nominalAt"`
-	OccurrenceKey   string       `json:"occurrenceKey"`
-	State           TriggerState `json:"state"`
-	WorkflowRunID   string       `json:"workflowRunId,omitempty"`
-	Reason          string       `json:"reason,omitempty"`
-	ObservedAt      time.Time    `json:"observedAt"`
+	RoleResolutionError string       `json:"roleResolutionError,omitempty"`
+	ID                  string       `json:"id"`
+	ScheduleID          string       `json:"scheduleId"`
+	ScheduleVersion     int          `json:"scheduleVersion"`
+	NominalAt           time.Time    `json:"nominalAt"`
+	OccurrenceKey       string       `json:"occurrenceKey"`
+	State               TriggerState `json:"state"`
+	WorkflowRunID       string       `json:"workflowRunId,omitempty"`
+	Reason              string       `json:"reason,omitempty"`
+	ObservedAt          time.Time    `json:"observedAt"`
 }
 
 // QuotaPool groups provider instances that consume the same provider limit.

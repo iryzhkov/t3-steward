@@ -93,6 +93,9 @@ type Service struct {
 	// reviewCheckpoint opens in-task review rounds. It is composed by the
 	// coordinator runtime from its own configuration and worker transport.
 	reviewCheckpoint ReviewCheckpointOpener
+
+	// scheduleTriggerResolver shares role expansion with the recurring timer.
+	scheduleTriggerResolver func(context.Context, domain.ScheduleTriggerRequest) (domain.ScheduleTriggerRequest, error)
 }
 
 // SetWorkerAuthorization supplies the provider authorization the coordinator

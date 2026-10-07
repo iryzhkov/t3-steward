@@ -229,7 +229,7 @@ func policyEffort(p *routePolicy, route string) (string, error) {
 	}
 	return effort, nil
 }
-func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, project backlogadmin.Project, accept func(string) bool) (policySelection, error) {
+func selectPolicyRouteCandidate(p *routePolicy, role, model, effort, worker string, project backlogadmin.Project, accept func(string) bool) (policySelection, error) {
 	if err := validPolicyEffort(effort); err != nil {
 		return policySelection{}, err
 	}

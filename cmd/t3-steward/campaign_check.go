@@ -29,12 +29,25 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 		BundleBytes:   bundleBytes,
 		BundleFiles:   bundleFiles,
 	}
+	hasRoles := false
+	selectedTaskExists := only == ""
 	for _, task := range plan.Tasks {
-		if only != "" && task.Name != only {
+		hasRoles = hasRoles || task.Role != ""
+		selectedTaskExists = selectedTaskExists || task.Name == only
+	}
+	if !selectedTaskExists {
+		return backlogadmin.ViabilityRequest{}, fmt.Errorf("campaign check: no task named %q in this campaign", only)
+	}
+	for _, task := range plan.Tasks {
+		if !hasRoles && only != "" && task.Name != only {
 			continue
 		}
 		request.Tasks = append(request.Tasks, backlogadmin.ViabilityTask{
-			Name:           task.Name,
+			Name: task.Name,
+			Role: task.Role, RoleEffort: task.RoleEffort,
+			Needs:          append([]string(nil), task.Needs...),
+			Producers:      campaignRoleProducers(task),
+			ReviewType:     task.ReviewType,
 			Project:        plan.Environment.Project,
 			Type:           plan.Environment.Type,
 			Ref:            plan.Environment.Ref,
@@ -50,6 +63,13 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 			ExpiresAt:      task.Timing.ExpiresAt,
 			Outputs:        len(task.Outputs),
 		})
+	}
+	if !hasRoles {
+		for i := range request.Tasks {
+			request.Tasks[i].Needs = nil
+			request.Tasks[i].Producers = nil
+			request.Tasks[i].ReviewType = false
+		}
 	}
 	if plan.Supervision != nil {
 		// A supervised campaign asks for one thing none of its tasks asks for: a
@@ -239,7 +259,46 @@ func (c campaignCLI) checkViability(ctx context.Context, plan campaign.Plan, bun
 	if err != nil {
 		return backlogadmin.ViabilityMatrix{}, err
 	}
-	return c.viability(ctx, request)
+	matrix, err := c.viability(ctx, request)
+	hasRoles := false
+	for _, task := range request.Tasks {
+		hasRoles = hasRoles || task.Role != ""
+	}
+	if err != nil {
+		if hasRoles && strings.Contains(err.Error(), "unknown field") {
+			return matrix, fmt.Errorf("this coordinator does not support role:; upgrade the coordinator: %w", err)
+		}
+		return matrix, err
+	}
+	for _, task := range request.Tasks {
+		if task.Role == "" {
+			continue
+		}
+		supported := false
+		for _, result := range matrix.Tasks {
+			if result.Task == task.Name {
+				supported = result.RoleSelection != nil
+				for _, reason := range result.Reasons {
+					if strings.HasPrefix(reason.Code, "role-") || reason.Code == "unknown-role" || reason.Code == "route-policy-unavailable" {
+						supported = true
+					}
+				}
+			}
+		}
+		if !supported {
+			return matrix, fmt.Errorf("this coordinator does not support role:; upgrade the coordinator")
+		}
+	}
+	if only != "" {
+		selected := matrix.Tasks[:0]
+		for _, result := range matrix.Tasks {
+			if result.Task == only {
+				selected = append(selected, result)
+			}
+		}
+		matrix.Tasks = selected
+	}
+	return matrix, nil
 }
 
 // campaignImpossible turns a refused matrix into the one error an agent reads.
@@ -408,6 +467,19 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 	}
 	for _, task := range document.Matrix.Tasks {
 		linef("  %s  %s", task.Task, task.Outcome)
+		if task.RoleSelection != nil {
+			s := task.RoleSelection
+			linef("    role: %s; selected route: %s; effort: %s; policy digest: %s", s.Role, s.Route, s.Effort, s.PolicyDigest)
+			linef("    %s", s.Reason)
+			for _, candidate := range s.Candidates {
+				if !candidate.Eligible {
+					linef("    candidate %s: %s", candidate.Route, candidate.Reason)
+				}
+			}
+			if s.Diversity.Reason != "" {
+				linef("    diversity: %s", s.Diversity.Reason)
+			}
+		}
 		if task.SelectedWorker != "" {
 			linef("    selected worker: %s", task.SelectedWorker)
 		}

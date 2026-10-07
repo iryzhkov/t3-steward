@@ -56,12 +56,14 @@ type PermanentValidator interface {
 // BundleIngester copies a validated version 2 submission into coordinator-owned
 // storage and persists the corresponding immutable domain records.
 type BundleIngester struct {
+	roleSelections    map[string]domain.RoleSelection
 	RegisterOnly      bool
 	DirectoryCatalogs map[string][]directoryresource.Binding
 	StorageRoot       string
 	Store             CoordinatorRecordStore
 	// Permanent, when set, refuses a permanently impossible manifest before any
 	// record is built or any file is staged.
+	Roles      ManifestRoleResolver
 	Permanent  PermanentValidator
 	Now        func() time.Time
 	NewID      func() string
@@ -108,8 +110,24 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	if HasTaskReviewRequirements(manifest) && i.Permanent == nil {
 		return IngestedBundle{}, fmt.Errorf("%w: review_requirements needs configured permanent admission validation", ErrValidationUnavailable)
 	}
+	resolver := i.Roles
+	if receipt, ok := i.Permanent.(ManifestRoleResolver); ok {
+		resolver = receipt
+	}
+	selections, err := resolveManifestRoles(ctx, resolver, manifest)
+	if err != nil {
+		return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
+	}
+	i.roleSelections = selections
+	validationManifest := manifest
+	if _, sealed := i.Permanent.(validatedManifestAdmission); !sealed {
+		validationManifest, err = manifestWithRoleSelections(manifest, selections)
+		if err != nil {
+			return IngestedBundle{}, err
+		}
+	}
 	if i.Permanent != nil {
-		if err := i.Permanent.ValidatePermanent(ctx, manifest); err != nil {
+		if err := i.Permanent.ValidatePermanent(ctx, validationManifest); err != nil {
 			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
 		}
 	}
@@ -420,6 +438,14 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 			ID: i.newID("attempt"), WorkflowRunID: runID, TaskID: taskID, Number: 1,
 			Progress: progress, Control: domain.ControlUnassigned, UpdatedAt: now,
 		})
+	}
+	for n := range records.Tasks {
+		task := &records.Tasks[n]
+		taskManifest := manifest.Tasks[task.Name]
+		task.Role, task.RoleEffort = taskManifest.Role, taskManifest.Options["effort"]
+		if selection, ok := i.roleSelections[task.Name]; ok && !i.RegisterOnly {
+			*task = domain.ApplyRoleSelection(*task, selection)
+		}
 	}
 	run, err := domain.BindRunSink(records.WorkflowRuns[0], records.Tasks)
 	if err != nil {
