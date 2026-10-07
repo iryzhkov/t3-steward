@@ -78,6 +78,7 @@ func newBacklogRunner(cfg config.Config, store *sqlite.Store, control backlog.Co
 		Quantile:        cfg.Backlog.Quantile,
 		MinSamples:      cfg.Backlog.MinSamples,
 		LongWindowCap:   cfg.Backlog.LongWindowCap,
+		IgnoreWindows:   cfg.Policy.IgnoreWindows,
 		HistoryDays:     cfg.Backlog.HistoryDays,
 		DryRun:          cfg.Policy.DryRun,
 		Logger:          logger,

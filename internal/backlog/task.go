@@ -110,6 +110,41 @@ func SeedMinutes(difficulty int) float64 {
 	return minsSeed[3]
 }
 
+// windowHours is the length of each known quota window. Cost estimates are
+// expressed in percent of the short window, so a longer window needs the
+// estimate scaled down before it is compared against that window's usage.
+var windowHours = map[string]float64{
+	"five_hour": 5,
+	"primary":   5,
+	"seven_day": 7 * 24,
+	"secondary": 7 * 24,
+}
+
+// shortWindowHours is the window that cost estimates are denominated in.
+const shortWindowHours = 5
+
+// WindowScale converts a cost in percent of the short window into a cost in
+// percent of the named window. A five-hour window scales by 1; a seven-day
+// window scales by 5/168, because the same work is a much smaller share of it.
+// An unknown window name scales by 1, which is the conservative choice: it
+// keeps the old behaviour rather than admitting a task on a guess.
+func WindowScale(window string) float64 {
+	hours := 0.0
+	for prefix, h := range windowHours {
+		if window == prefix || strings.HasPrefix(window, prefix+"_") {
+			// Prefer the longest matching prefix, so "seven_day_opus" does not
+			// match a shorter unrelated key.
+			if h > hours {
+				hours = h
+			}
+		}
+	}
+	if hours <= 0 {
+		return 1
+	}
+	return shortWindowHours / hours
+}
+
 // IsEnabled reports whether the task may run.
 func (t Task) IsEnabled() bool { return t.Enabled == nil || *t.Enabled }
 

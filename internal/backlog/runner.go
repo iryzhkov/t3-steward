@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -43,6 +44,10 @@ type Options struct {
 	MinSamples      int
 	LongWindowCap   float64
 	HistoryDays     int
+	// IgnoreWindows are policy.ignore_windows: window-name globs the
+	// watchdog records but never acts on. The gate skips them too, so a
+	// window that is not a hard limit cannot hold a task back.
+	IgnoreWindows []string
 	DryRun          bool
 	Logger          *slog.Logger
 	// LocalHost is this machine's name as tasks refer to it. Tasks whose
@@ -459,6 +464,21 @@ func (r *Runner) forward(ctx context.Context, t Task, st *State, host string) {
 	r.save(ctx, st)
 }
 
+// ignoredWindow reports whether a window name matches policy.ignore_windows.
+// The globs are matched case-insensitively, as the daemon matches them.
+func (r *Runner) ignoredWindow(window string) bool {
+	w := strings.ToLower(window)
+	for _, ig := range r.opts.IgnoreWindows {
+		if ig == "" {
+			continue
+		}
+		if ok, err := path.Match(strings.ToLower(ig), w); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
 // gateOpen decides whether a task may start now.
 func (r *Runner) gateOpen(t Task, st *State, instance string, buckets []domain.BucketState, now time.Time) (bool, string) {
 	urgent := t.Deadline != nil && t.Deadline.Sub(now) < 24*time.Hour
@@ -470,6 +490,9 @@ func (r *Runner) gateOpen(t Task, st *State, instance string, buckets []domain.B
 	mins := st.EstimatedMins
 	for _, b := range buckets {
 		if b.Key.ProviderInstanceID != instance {
+			continue
+		}
+		if r.ignoredWindow(b.Key.Window) {
 			continue
 		}
 		if !b.Healthy {
@@ -487,6 +510,9 @@ func (r *Runner) gateOpen(t Task, st *State, instance string, buckets []domain.B
 		if mins > 0 && untilReset.Minutes() < mins {
 			share = untilReset.Minutes() / mins
 		}
+		// The estimate is in percent of the short window. A longer window is
+		// a bigger denominator, so the same work is a smaller share of it.
+		share *= WindowScale(b.Key.Window)
 		if untilReset > 24*time.Hour {
 			if b.UsedPercent+cost*share > r.opts.LongWindowCap {
 				return false, fmt.Sprintf("%s at %.0f%% plus %.0f%% would exceed the long-window cap of %.0f%%", b.Key, b.UsedPercent, cost*share, r.opts.LongWindowCap)
