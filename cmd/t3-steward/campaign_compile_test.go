@@ -137,6 +137,31 @@ func TestCampaignCompileRefusedPlanWritesNothing(t *testing.T) {
 	}
 }
 
+// A front matter is one YAML document: a key after an explicit document end
+// is refused like any unknown key, never silently dropped.
+func TestCampaignCompileRefusesASecondFrontMatterDocument(t *testing.T) {
+	planPath, raw := compileFixturePlan(t)
+	broken := strings.Replace(string(raw), "\n---\n# Remaining", "\n...\ncolour: red\n---\n# Remaining", 1)
+	if broken == string(raw) {
+		t.Fatal("the fixture no longer closes its front matter before # Remaining")
+	}
+	if err := os.WriteFile(planPath, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "wave")
+	var stdout bytes.Buffer
+	err := campaignTestCLI(t, &stdout).run(context.Background(), []string{"compile", planPath, "--out", out})
+	if err == nil || !strings.Contains(err.Error(), "plan.md:18:") || !strings.Contains(err.Error(), "continues after its YAML document ends") {
+		t.Fatalf("err = %v", err)
+	}
+	if code := exitCodeFor(err); code != 1 {
+		t.Fatalf("exit = %d, want 1", code)
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("a refused plan created %s: %v", out, statErr)
+	}
+}
+
 func TestCampaignCompileArgumentRefusals(t *testing.T) {
 	planPath, _ := compileFixturePlan(t)
 	out := filepath.Join(t.TempDir(), "wave")

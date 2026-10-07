@@ -172,6 +172,9 @@ func TestCompilePlanRefusals(t *testing.T) {
 		{"bad class", head + "class: urgent\nunits:\n  - {id: a, section: A}\n" + body, []string{"plan.md:8:", "urgent"}},
 		{"missing review route", strings.Replace(head, "  review: {instance: codex, model: m, quota_pool: q}\n", "", 1) + "units:\n  - {id: a, section: A}\n" + body, []string{"plan.md:5:", "routes.review"}},
 		{"route without a model", strings.Replace(head, "instance: codex, model: m,", "instance: codex,", 1) + "units:\n  - {id: a, section: A}\n" + body, []string{"plan.md:7:", "model"}},
+		{"key after a document end", head + "units:\n  - {id: a, section: A}\n...\ncolour: red\n" + body, []string{"plan.md:", "continues after its YAML document ends"}},
+		{"document start with content", head + "units:\n  - {id: a, section: A}\n--- red\n" + body, []string{"plan.md:10:", "continues after its YAML document ends"}},
+		{"malformed YAML after a document end", head + "units:\n  - {id: a, section: A}\n...\nunits: [\n" + body, []string{"plan.md:", "continues after its YAML document ends"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := ParseCompilePlan("plan.md", []byte(test.plan))
@@ -191,6 +194,23 @@ func TestCompilePlanRefusals(t *testing.T) {
 				t.Fatalf("refusal %q names a Go type the author never wrote", err)
 			}
 		})
+	}
+}
+
+// An explicit document end with nothing but a comment after it is still one
+// document, so the single-document rule does not refuse it.
+func TestCompilePlanAcceptsABareDocumentEnd(t *testing.T) {
+	raw := string(readCompileFixture(t))
+	ended := strings.Replace(raw, "\n---\n# Remaining", "\n...\n# nothing follows\n---\n# Remaining", 1)
+	if ended == raw {
+		t.Fatal("the fixture no longer closes its front matter before # Remaining")
+	}
+	plan, err := ParseCompilePlan("plan.md", []byte(ended))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Units) != 2 {
+		t.Fatalf("units = %d, want 2", len(plan.Units))
 	}
 }
 

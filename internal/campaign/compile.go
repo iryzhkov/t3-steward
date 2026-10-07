@@ -174,6 +174,27 @@ func ParseCompilePlan(source string, raw []byte) (CompilePlan, error) {
 		}
 		return CompilePlan{}, compileDecodeError(source, err)
 	}
+	// The front matter is exactly one YAML document. Whatever follows an
+	// explicit document end (... or a --- with content) would otherwise be
+	// dropped without the strict decoding above ever seeing it.
+	const secondDocument = "the front matter continues after its YAML document ends; it must be a single YAML document between the --- lines"
+	var trailing yaml.Node
+	switch err := decoder.Decode(&trailing); {
+	case errors.Is(err, io.EOF):
+	case err != nil:
+		var refusal *CompilePlanError
+		if errors.As(compileDecodeError(source, err), &refusal) {
+			refusal.Reason = secondDocument + ": " + refusal.Reason
+			return CompilePlan{}, refusal
+		}
+		return CompilePlan{}, compileDecodeError(source, err)
+	default:
+		line := trailing.Line
+		if len(trailing.Content) > 0 {
+			line = trailing.Content[0].Line
+		}
+		return CompilePlan{}, refuse(line, "%s", secondDocument)
+	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(frontMatter, &document); err != nil {
 		return CompilePlan{}, compileDecodeError(source, err)
