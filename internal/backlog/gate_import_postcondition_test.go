@@ -261,4 +261,16 @@ func TestAmendedGateReportIsValidEvidence(t *testing.T) {
 	if err := validateGateReport(task, amended); err != nil {
 		t.Fatalf("oversized amendment rejected: %v", err)
 	}
+	// Invalid UTF-8 under the byte limit must not grow past it once the
+	// report is marshalled and decoded.
+	raw, err = amendGateForChangedOutputs(report, []string{strings.Repeat("\xff", 10000)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amended, err = decodeGateEvidence(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateGateReport(task, amended); err != nil {
+		t.Fatalf("invalid UTF-8 amendment rejected (reason %d bytes): %v", len(amended.Failure.Reason), err)
+	}
 }

@@ -298,7 +298,9 @@ const gateFailureReasonMax = 16384
 // result stays within the coordinator's evidence limit; if the report cannot,
 // it becomes a preparation-style failure for this attempt, as runGate does.
 func amendGateForChangedOutputs(report GateReport, changed []string) ([]byte, error) {
-	reason := strings.Join(changed, "; ")
+	// Invalid UTF-8 would be marshalled as three-byte replacement characters
+	// and could exceed the coordinator's limit after decoding.
+	reason := strings.ToValidUTF8(strings.Join(changed, "; "), "?")
 	if len(reason) > gateFailureReasonMax {
 		const suffix = " [truncated]"
 		reason = strings.ToValidUTF8(reason[:gateFailureReasonMax-len(suffix)], "") + suffix
