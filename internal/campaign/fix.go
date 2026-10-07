@@ -228,8 +228,20 @@ func GenerateFixChain(source FixSource, options FixOptions) (CompiledUnit, error
 		}
 		return out
 	}
+	verification := append([]string(nil), source.Producer.Verification...)
+	const cleanTreeVerification = "git diff --quiet && git diff --cached --quiet"
+	foundCleanTree := false
+	for _, command := range verification {
+		if command == cleanTreeVerification {
+			foundCleanTree = true
+			break
+		}
+	}
+	if !foundCleanTree {
+		verification = append(verification, cleanTreeVerification)
+	}
 	fixTask := func(name string, needs []string, from map[string][]string) backlog.ManifestTask {
-		return backlog.ManifestTask{PromptFile: "prompts/" + name + ".md", Needs: needs, InputsFrom: from, Outputs: []string{"continuation.md", "handoff.md", "verification.log"}, Commits: []backlog.ManifestCommit{{Name: "fix", Revision: "HEAD"}}, Verify: append(append([]string(nil), source.Producer.Verification...), "git diff --quiet && git diff --cached --quiet"), Routes: routes(source.Producer), Placement: backlog.ManifestPlacement{Hosts: append([]string(nil), source.Producer.Placement.Hosts...)}, Resources: backlog.ManifestResources{Preset: source.Producer.ResourcePreset}, MaxTurns: source.Producer.MaxTurns}
+		return backlog.ManifestTask{PromptFile: "prompts/" + name + ".md", Needs: needs, InputsFrom: from, Outputs: []string{"continuation.md", "handoff.md", "verification.log"}, Commits: []backlog.ManifestCommit{{Name: "fix", Revision: "HEAD"}}, Verify: append([]string(nil), verification...), Routes: routes(source.Producer), Placement: backlog.ManifestPlacement{Hosts: append([]string(nil), source.Producer.Placement.Hosts...)}, Resources: backlog.ManifestResources{Preset: source.Producer.ResourcePreset}, MaxTurns: source.Producer.MaxTurns}
 	}
 	reviewTask := func(name string, needs []string, from map[string][]string) backlog.ManifestTask {
 		return backlog.ManifestTask{PromptFile: "prompts/" + name + ".md", Needs: needs, InputsFrom: from, Outputs: []string{"continuation.md", "review.md", "verdict.json"}, ReviewOutput: &domain.ReviewOutput{Verdict: "verdict.json"}, Verify: []string{"head -1 review.md | grep -Eq '^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'"}, Routes: routes(source.Review), MaxTurns: source.Review.MaxTurns}
