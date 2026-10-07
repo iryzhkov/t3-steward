@@ -427,6 +427,15 @@ func MarshalCommitProvenance(provenance CommitProvenance) ([]byte, error) {
 	return append(raw, '\n'), nil
 }
 
+// LooksLikeCommitProvenance distinguishes a recognized but invalid commit record
+// from an ordinary dependency file. Such records must never bypass preparation.
+func LooksLikeCommitProvenance(raw []byte) bool {
+	var header struct {
+		Version string `json:"version"`
+	}
+	return json.Unmarshal(raw, &header) == nil && header.Version == CampaignCommitRecordVersion
+}
+
 // ParseCommitProvenance reads a provenance document and refuses anything that
 // is not one, so that an ordinary dependency file is never mistaken for a
 // commit reference.

@@ -489,6 +489,9 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		}
 		provenance, parseErr := ParseCommitProvenance(raw)
 		if parseErr != nil {
+			if LooksLikeCommitProvenance(raw) {
+				return fmt.Errorf("resolve dependency commits: %w", parseErr)
+			}
 			// An ordinary dependency file is not a commit reference.
 			return nil
 		}
