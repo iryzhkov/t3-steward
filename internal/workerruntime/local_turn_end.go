@@ -278,25 +278,18 @@ func newSnapshotRepository(ctx context.Context, workspace, gitDir string) (snaps
 	if _, err := os.Lstat(filepath.Join(objects, "info", "alternates")); !errors.Is(err, os.ErrNotExist) {
 		return snapshotRepository{}, errors.New("the workspace borrows objects from another repository")
 	}
-	// HEAD and the object format are read from the workspace's repository;
-	// neither runs anything the configuration names.
+	// HEAD is read from the files, not by Git in the workspace's repository:
+	// that would read the task's configuration, and a promisor remote there
+	// makes Git fetch a missing commit by running a command the task named.
+	// The object format follows from the length of the object name.
 	home := filepath.Dir(gitDir)
-	sourceRepository := snapshotRepository{workspace: workspace, gitDir: source, home: home}
-	head, err := sourceRepository.run(ctx, nil, "rev-parse", "--verify", "HEAD^{commit}")
+	head, err := readWorkspaceHead(source)
 	if err != nil {
 		return snapshotRepository{}, fmt.Errorf("resolve HEAD: %w", err)
 	}
-	format, err := sourceRepository.run(ctx, nil, "rev-parse", "--show-object-format")
-	if err != nil {
-		return snapshotRepository{}, fmt.Errorf("read object format: %w", err)
-	}
 	config := "[core]\n\trepositoryformatversion = 0\n\tbare = false\n"
-	switch format {
-	case "sha1":
-	case "sha256":
+	if len(head) == 64 {
 		config = "[core]\n\trepositoryformatversion = 1\n\tbare = false\n[extensions]\n\tobjectformat = sha256\n"
-	default:
-		return snapshotRepository{}, fmt.Errorf("unknown object format %q", format)
 	}
 	for _, dir := range []string{"objects/info", "refs/heads", "refs/tags", "info"} {
 		if err := os.MkdirAll(filepath.Join(gitDir, filepath.FromSlash(dir)), 0o700); err != nil {
@@ -321,7 +314,73 @@ func newSnapshotRepository(ctx context.Context, workspace, gitDir string) (snaps
 			return snapshotRepository{}, err
 		}
 	}
-	return snapshotRepository{workspace: workspace, gitDir: gitDir, home: home, head: head}, nil
+	git := snapshotRepository{workspace: workspace, gitDir: gitDir, home: home}
+	// The commit itself must be there: the private repository has no remote
+	// to fetch it from.
+	if git.head, err = git.run(ctx, nil, "rev-parse", "--verify", "--end-of-options", head+"^{commit}"); err != nil {
+		return snapshotRepository{}, fmt.Errorf("resolve HEAD: %w", err)
+	}
+	return git, nil
+}
+
+// readWorkspaceHead is the object name HEAD names in the repository at
+// gitDir, read from HEAD, the loose ref files and packed-refs, following
+// symbolic refs a few levels.
+func readWorkspaceHead(gitDir string) (string, error) {
+	name := "HEAD"
+	for range 5 {
+		var value string
+		if raw, err := readBoundedRegularFile(filepath.Join(gitDir, filepath.FromSlash(name)), 4096); err == nil {
+			value = strings.TrimSpace(string(raw))
+		} else if !errors.Is(err, os.ErrNotExist) || name == "HEAD" {
+			return "", err
+		} else if value, err = packedRef(gitDir, name); err != nil {
+			return "", err
+		}
+		target, symbolic := strings.CutPrefix(value, "ref: ")
+		if !symbolic {
+			if !objectName(value) {
+				return "", fmt.Errorf("%s does not name an object", name)
+			}
+			return value, nil
+		}
+		target = strings.TrimSpace(target)
+		if !strings.HasPrefix(target, "refs/") || strings.Contains(target, "..") || strings.ContainsAny(target, "\\\x00") {
+			return "", fmt.Errorf("%s names an unusable ref %q", name, target)
+		}
+		name = target
+	}
+	return "", errors.New("HEAD is a chain of symbolic refs")
+}
+
+// packedRef is ref's object name in gitDir's packed-refs.
+func packedRef(gitDir, ref string) (string, error) {
+	raw, err := readBoundedRegularFile(filepath.Join(gitDir, "packed-refs"), 64<<20)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("ref %s does not exist", ref)
+		}
+		return "", err
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if value, name, ok := strings.Cut(strings.TrimSpace(line), " "); ok && name == ref {
+			return value, nil
+		}
+	}
+	return "", fmt.Errorf("ref %s does not exist", ref)
+}
+
+// objectName reports whether value is a full SHA-1 or SHA-256 object name.
+func objectName(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // run runs one git command with a minimal environment and returns its

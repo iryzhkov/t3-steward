@@ -109,6 +109,44 @@ func TestSnapshotRunsNoCommandTheTaskConfigured(t *testing.T) {
 	}
 }
 
+// HEAD is resolved without running Git in the task's repository: there, a
+// promisor remote the task configured makes Git fetch a missing HEAD commit
+// by running the command the remote names.
+func TestSnapshotFetchesNothingThroughATaskRemote(t *testing.T) {
+	f := newWIPFixture(t, commitOutputs)
+	marker := filepath.Join(t.TempDir(), "host-marker")
+	writeTestFile(t, filepath.Join(f.workspace, "a.txt"), "modified\n")
+	runGitForTest(t, f.workspace, "config", "core.repositoryformatversion", "1")
+	runGitForTest(t, f.workspace, "config", "extensions.partialClone", "origin")
+	runGitForTest(t, f.workspace, "config", "remote.origin.promisor", "true")
+	runGitForTest(t, f.workspace, "config", "remote.origin.url", "ext::sh -c touch% "+marker)
+	runGitForTest(t, f.workspace, "config", "protocol.ext.allow", "always")
+	writeTestFile(t, filepath.Join(f.workspace, ".git", "HEAD"), strings.Repeat("1", 40)+"\n")
+
+	summary, err := f.driver.SnapshotWorkInProgress(context.Background(), f.pkg, f.workspace)
+	if _, statErr := os.Stat(marker); statErr == nil {
+		t.Fatal("the snapshot ran the command of a remote the task configured")
+	}
+	if err == nil {
+		t.Fatalf("snapshot of a missing HEAD = %q, want an error", summary)
+	}
+}
+
+// HEAD is read through symbolic and packed refs, and the object format
+// follows from it.
+func TestSnapshotReadsHeadFromPackedRefs(t *testing.T) {
+	f := newWIPFixture(t, commitOutputs)
+	writeTestFile(t, filepath.Join(f.workspace, "a.txt"), "modified\n")
+	runGitForTest(t, f.workspace, "pack-refs", "--all")
+	if _, err := os.Stat(filepath.Join(f.workspace, ".git", "refs", "heads", "main")); err == nil {
+		t.Fatal("the branch is still a loose ref")
+	}
+	summary, err := f.driver.SnapshotWorkInProgress(context.Background(), f.pkg, f.workspace)
+	if err != nil || !strings.HasPrefix(summary, "wip.bundle retained") {
+		t.Fatalf("snapshot = %q, %v", summary, err)
+	}
+}
+
 // Objects borrowed from another repository, or a .git that points elsewhere,
 // would make the worker read objects the task chose from outside the
 // workspace into the bundle, so such a workspace is not snapshotted.
