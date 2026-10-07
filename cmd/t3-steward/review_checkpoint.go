@@ -155,7 +155,7 @@ func (c *coordinatorReviewCheckpoint) OpenReviewCheckpoint(ctx context.Context, 
 	// idempotent and staging repeats it under its own owner lock.
 	allocated, err := c.store.AllocateReviewCheckpoint(ctx, snapshot.Authority, candidate)
 	if err != nil {
-		return checkpointStoreRefusal("allocate review checkpoint", err)
+		return c.checkpointAllocationRefusal(ctx, "allocate review checkpoint", err, request.WorkflowRunID, request.TaskID)
 	}
 	round, err := c.store.GetReviewRound(ctx, allocated.RoundID)
 	if err != nil {
@@ -179,7 +179,7 @@ func (c *coordinatorReviewCheckpoint) OpenReviewCheckpoint(ctx context.Context, 
 	// immediately before the child is created from it.
 	current, err := c.store.AllocateReviewCheckpoint(ctx, staged.Admission.Authority, candidate)
 	if err != nil {
-		return checkpointStoreRefusal("confirm review checkpoint", err)
+		return c.checkpointAllocationRefusal(ctx, "confirm review checkpoint", err, request.WorkflowRunID, request.TaskID)
 	}
 	if current != staged.Checkpoint || current != allocated {
 		return checkpointRefusal(domain.ReviewCheckpointHeadConflict, false, "checkpoint %q changed while it was staged", request.CheckpointID)
@@ -192,6 +192,24 @@ func (c *coordinatorReviewCheckpoint) OpenReviewCheckpoint(ctx context.Context, 
 		return checkpointStoreRefusal("materialize review child", err)
 	}
 	return domain.ReviewCheckpointResult{Round: checkpointRound(staged.Admission.Authority, current, receipt, branch, false)}
+}
+
+// checkpointAllocationRefusal adds the task's actual allocation count and
+// frozen budget to a limit refusal, including rounds that never materialized.
+// The count comes from the durable authority, not the current attempt or child
+// runs. A failed read stays retryable rather than inventing a count.
+func (c *coordinatorReviewCheckpoint) checkpointAllocationRefusal(ctx context.Context, step string, err error, runID, taskID string) domain.ReviewCheckpointResult {
+	if errors.Is(err, sqlite.ErrReviewAuthorityLimit) {
+		latest, found, readErr := c.store.LatestReviewRoundHead(ctx, runID, taskID)
+		if readErr != nil {
+			return checkpointStoreRefusal("read exhausted review budget", readErr)
+		}
+		if !found {
+			return checkpointStoreRefusal("read exhausted review budget", errors.New("round limit was exhausted but no allocated round was found"))
+		}
+		err = fmt.Errorf("%w: %d of %d review rounds allocated; no further round can be opened; the lead can start a new run with a fresh budget using campaign rerun %s --from %s", err, latest.RoundsUsed, latest.RoundLimit, runID, taskID)
+	}
+	return checkpointStoreRefusal(step, err)
 }
 
 // fence authenticates the caller as the current live turn of its task, using

@@ -125,7 +125,8 @@ review round from its durable records at that moment and decides, in this order:
 | Code | When |
 | --- | --- |
 | `review-required` | No review round exists for the task. |
-| `review-not-accepted` | The latest round is pending, rejected, or its stored results do not re-validate as accepting. |
+| `review-not-accepted` | The latest round is pending, or rejected/invalid with a round still available. |
+| `review-round-limit-exhausted` | A rejected/invalid latest round, changed HEAD or declared commit needs another round, but the frozen budget is exhausted. The lead starts a new run. |
 | `workspace-head-unknown` | The worker reported no usable HEAD; the gate fails closed. |
 | `head-changed-after-review` | The physical HEAD is not the head the latest round accepted, or a declared commit output resolved to another commit. Both heads are named. |
 | `dirty-tree-after-review` | HEAD is the accepted head, but tracked files differ from it. |
@@ -139,8 +140,8 @@ verdict alone.
 A failing decision fails the attempt with the reason
 `review gate <code>: <detail>`. The decision, passing or failing, is stored on
 the attempt as `reviewGate`, with the round, its checkpoint and verdict, the
-reviewed head, the workspace HEAD, and the dirty paths or declared commit
-concerned.
+reviewed head, the workspace HEAD, the rounds used and frozen round limit,
+and the dirty paths or declared commit concerned.
 
 ## Head invalidation
 
@@ -249,13 +250,15 @@ settles the attempt.
 - The frozen review authority is bound to the task's first attempt
   (M16-1), so a retried attempt cannot open rounds of its own. A retry
   completes only if its HEAD is exactly the head the latest round accepted;
-  otherwise a gate failure is in effect final for the task until M16-4
-  decides how rounds carry across attempts.
+  otherwise it fails. Allocated rounds count across attempts, including cancelled
+  and timed-out rounds. The lead uses `campaign rerun <run> --from <task>` to
+  create a new run with a fresh review authority and budget.
 - The latest round is read in its own snapshot rather than in the transaction
   that settles the attempt. That is safe because opening a round needs a live
   turn, and an attempt whose result is being imported is no longer live. A
   verdict recorded in between can only turn pending into a verdict, which at
   worst fails a task that would have passed a moment later.
 - The head is not checked to descend from the frozen base.
-- Round limits, escalation and cancelling open rounds when the task ends are
-  out of scope (M16-4).
+- Pending rounds at the limit still report `review-not-accepted`; dirty trees
+  still report `dirty-tree-after-review`. See [review round limits](m16-review-round-limits.md)
+  for escalation and automatic cancellation after an executor ends.

@@ -46,6 +46,9 @@ func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected r
 	if reason == "" {
 		return ReviewChildCancellationResult{Status: "no-action"}, tx.Commit()
 	}
+	if attempts == nil && round.Terminal() {
+		return ReviewChildCancellationResult{Status: "no-action"}, tx.Commit()
+	}
 	result := ReviewChildCancellationResult{Status: "stop-requested", Reason: reason}
 	ids := make([]string, 0, len(attempts))
 	for id := range attempts {
@@ -117,7 +120,7 @@ func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected r
 	}
 	roundRevision := round.Revision
 	for _, member := range round.Reviewers {
-		if member.State != "pending" || !cancelledTasks[member.TaskID] {
+		if member.State != "pending" || (attempts != nil && !cancelledTasks[member.TaskID]) {
 			continue
 		}
 		// A terminal latest execution remains collector-owned even if a stranded
@@ -134,7 +137,7 @@ func (s *Store) ReconcileReviewChildCancellation(ctx context.Context, expected r
 				newlyCancelled = true
 			}
 		}
-		if !newlyCancelled {
+		if attempts != nil && !newlyCancelled {
 			continue
 		}
 		state := "failed"
@@ -386,7 +389,7 @@ func reviewCancellationParentTx(ctx context.Context, tx *sql.Tx, p review.Parent
 		assignment.State == domain.AssignmentCompleted || assignment.State == domain.AssignmentUnknown {
 		return "parent assignment ownership lost", nil
 	}
-	if assignment.State != domain.AssignmentClaimed || !a.TurnLive() ||
+	if assignment.State != domain.AssignmentClaimed ||
 		a.ThreadID != p.ThreadID || a.AssignmentID != p.AssignmentID {
 		return "", ErrReviewAuthorityIdentity
 	}

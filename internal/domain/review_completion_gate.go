@@ -36,6 +36,8 @@ const MaxWorkspaceHeadDirtyPaths = 20
 type ReviewRoundHead struct {
 	RoundID      string `json:"roundId"`
 	Number       int    `json:"number"`
+	RoundsUsed   int    `json:"roundsUsed,omitempty"`
+	RoundLimit   int    `json:"roundLimit,omitempty"`
 	CheckpointID string `json:"checkpointId"`
 	BaseCommit   string `json:"baseCommit,omitempty"`
 	HeadCommit   string `json:"headCommit"`
@@ -61,6 +63,8 @@ const (
 	ReviewGateRequired ReviewGateCode = "review-required"
 	// ReviewGateNotAccepted: the latest round is pending, rejected or invalid.
 	ReviewGateNotAccepted ReviewGateCode = "review-not-accepted"
+	// ReviewGateRoundLimitExhausted requires the lead to start a new run.
+	ReviewGateRoundLimitExhausted ReviewGateCode = "review-round-limit-exhausted"
 	// ReviewGateHeadChanged: HEAD, or a declared commit, is not the head the
 	// latest round accepted.
 	ReviewGateHeadChanged ReviewGateCode = "head-changed-after-review"
@@ -80,6 +84,8 @@ type ReviewCompletionGate struct {
 	Detail         string              `json:"detail"`
 	RoundID        string              `json:"roundId,omitempty"`
 	RoundNumber    int                 `json:"roundNumber,omitempty"`
+	RoundsUsed     int                 `json:"roundsUsed,omitempty"`
+	RoundLimit     int                 `json:"roundLimit,omitempty"`
 	CheckpointID   string              `json:"checkpointId,omitempty"`
 	RoundVerdict   string              `json:"roundVerdict,omitempty"`
 	ReviewedHead   string              `json:"reviewedHead,omitempty"`
@@ -98,8 +104,23 @@ type ReviewCompletionGate struct {
 //
 // The latest round decides, not the best one: an accepted round followed by a
 // newer one means the work moved on, and only the newer round has seen it.
-func EvaluateReviewCompletionGate(latest *ReviewRoundHead, head *WorkspaceHead, commits []DeclaredCommitHead) ReviewCompletionGate {
-	gate := ReviewCompletionGate{}
+func EvaluateReviewCompletionGate(latest *ReviewRoundHead, head *WorkspaceHead, commits []DeclaredCommitHead) (gate ReviewCompletionGate) {
+	// Escalate only failures requiring another round. Pending reviews and dirty
+	// trees retain their existing remedies, and old records lacking counts retain
+	// the pre-limit behavior.
+	defer func() {
+		if latest == nil {
+			return
+		}
+		gate.RoundsUsed, gate.RoundLimit = latest.RoundsUsed, latest.RoundLimit
+		if !gate.NewRoundNeeded || gate.RoundLimit <= 0 || gate.RoundsUsed < gate.RoundLimit {
+			return
+		}
+		gate.Code, gate.NewRoundNeeded = ReviewGateRoundLimitExhausted, false
+		cause := strings.Split(gate.Detail, "; a new review round")[0]
+		gate.Detail = fmt.Sprintf("review round %d of %d (checkpoint %s) at %s is %s; %d rounds used of round_limit %d, so no further round can be opened; %s; the lead decides: campaign rerun <run> --from <task> starts a new run with a new round budget",
+			latest.Number, gate.RoundLimit, latest.CheckpointID, latest.HeadCommit, latest.Verdict, gate.RoundsUsed, gate.RoundLimit, cause)
+	}()
 	physical, headErr := usableWorkspaceHead(head)
 	if headErr == "" {
 		gate.PhysicalHead = physical
