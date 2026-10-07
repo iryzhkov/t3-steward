@@ -13,13 +13,15 @@ func TestLeaseTextRejectsPaddingAndInvisibleSeparators(t *testing.T) {
 	if err := valid.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	lineSeparator, paragraphSeparator := string(rune(0x2028)), string(rune(0x2029))
+	bidiOverride, zeroWidthSpace := string(rune(0x202e)), string(rune(0x200b))
 	for name, mutate := range map[string]func(*LeaseRequest){
 		"blank plan":           func(r *LeaseRequest) { r.Plan = "   " },
 		"padded plan":          func(r *LeaseRequest) { r.Plan = " jocasta:x@1 " },
-		"line separator plan":  func(r *LeaseRequest) { r.Plan = "x refused: y" },
-		"bidi override plan":   func(r *LeaseRequest) { r.Plan = "x‮y" },
-		"paragraph sep reason": func(r *LeaseRequest) { r.Reason = "a b" },
-		"zero width reason":    func(r *LeaseRequest) { r.Reason = "a​b" },
+		"line separator plan":  func(r *LeaseRequest) { r.Plan = "x" + lineSeparator + "refused: y" },
+		"bidi override plan":   func(r *LeaseRequest) { r.Plan = "x" + bidiOverride + "y" },
+		"paragraph sep reason": func(r *LeaseRequest) { r.Reason = "a" + paragraphSeparator + "b" },
+		"zero width reason":    func(r *LeaseRequest) { r.Reason = "a" + zeroWidthSpace + "b" },
 	} {
 		r := valid
 		mutate(&r)
@@ -28,7 +30,7 @@ func TestLeaseTextRejectsPaddingAndInvisibleSeparators(t *testing.T) {
 		}
 	}
 	r := valid
-	r.Plan, r.Reason = "jocasta:abc@3", `rc.116 "integrate", día 2`
+	r.Plan, r.Reason = "jocasta:abc@3", "rc.116 \"integrate\", d"+string(rune(0xed))+"a 2"
 	if err := r.Validate(); err != nil {
 		t.Fatalf("ordinary plan and reason refused: %v", err)
 	}
