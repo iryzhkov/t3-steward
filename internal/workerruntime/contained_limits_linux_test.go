@@ -12,15 +12,96 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // A contained run the memory limit killed has no T3 outcome left to capture.
 // A forced quiesce, which failure collection and cleanup use, must still stop
 // its unit and keep the named cause; otherwise the attempt can never end.
 func TestForcedQuiesceStopsAContainedRunTheMemoryLimitKilled(t *testing.T) {
+	manager, pkg, launch, stopped := oomKilledContainedRun(t)
+	if err := manager.Quiesce(context.Background(), pkg, false); err == nil {
+		t.Fatal("an unforced quiesce adopted a run whose outcome it cannot capture")
+	}
+	if err := manager.Quiesce(context.Background(), pkg, true); err != nil {
+		t.Fatalf("forced quiesce of a memory-killed run: %v", err)
+	}
+	if _, err := os.Stat(stopped); err != nil {
+		t.Fatalf("the unit was never stopped: %v", err)
+	}
+	observation, err := manager.Supervisor.Observe(context.Background(), launch)
+	if err != nil || !observation.Stopped || observation.Failure != "contained run exceeded its 6000 MB memory reservation" {
+		t.Fatalf("stopped observation %+v %v", observation, err)
+	}
+	retained, err := manager.Attach(context.Background(), pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message, err := retained.LastAssistantMessage(context.Background(), pkg.Identity.ThreadID); err != nil || !strings.Contains(message, "6000 MB memory reservation") {
+		t.Fatalf("retained outcome %q %v does not name the reservation", message, err)
+	}
+}
+
+// containedRunDriver drives the runtime through the real LocalDriver and
+// ContainedT3 for the contained package of the fixture.
+type containedRunDriver struct {
+	fakeDriver
+	local *LocalDriver
+	pkg   workerproto.ExecutionPackage
+}
+
+func (d *containedRunDriver) ObserveThread(ctx context.Context, _ workerproto.ExecutionPackage) (backlog.DispatchThreadState, error) {
+	return d.local.ObserveThread(ctx, d.pkg)
+}
+
+func (d *containedRunDriver) StopPreparation(ctx context.Context, _ workerproto.ExecutionPackage) error {
+	return d.local.StopPreparation(ctx, d.pkg)
+}
+
+// A running attempt whose contained run the memory limit killed ends as a
+// failed attempt naming the reservation, after the real forced quiesce has
+// stopped its unit, instead of waiting for an observation that never comes.
+func TestRunningAttemptWhoseContainedRunTheMemoryLimitKilledFails(t *testing.T) {
+	manager, pkg, _, stopped := oomKilledContainedRun(t)
+	root := t.TempDir()
+	driver := &containedRunDriver{fakeDriver: fakeDriver{workspace: filepath.Join(root, "workspace"), workspaceReady: true},
+		local: &LocalDriver{ScopedT3: manager}, pkg: pkg}
+	runtime := newClaimedRuntime(t, root, &driver.fakeDriver)
+	runtime.driver = driver
+	if err := runtime.markPhase("assignment-1", PhaseRunning, "", driver.workspace, "thread-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := runtime.journal.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record := state.Attempts["assignment-1"]; record.Phase != PhaseFailed || record.Failure != "contained run exceeded its 6000 MB memory reservation" {
+		t.Fatalf("attempt is %s with failure %q", record.Phase, record.Failure)
+	}
+	if _, err := os.Stat(stopped); err != nil {
+		t.Fatalf("the attempt failed before its unit was stopped: %v", err)
+	}
+	retained, err := manager.Attach(context.Background(), pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message, err := retained.LastAssistantMessage(context.Background(), pkg.Identity.ThreadID); err != nil || !strings.Contains(message, "6000 MB memory reservation") {
+		t.Fatalf("retained outcome %q %v does not name the reservation", message, err)
+	}
+}
+
+// oomKilledContainedRun prepares an attached contained run whose unit systemd
+// reports as failed by the memory limit, with a systemctl stand-in on PATH. It
+// returns the path the stand-in creates when the unit is stopped.
+func oomKilledContainedRun(t *testing.T) (ContainedT3, workerproto.ExecutionPackage, providercontainment.Launch, string) {
+	t.Helper()
 	root := t.TempDir()
 	journal, err := providercontainment.CanonicalRoot(filepath.Join(root, "journal"))
 	if err != nil {
@@ -77,25 +158,5 @@ func TestForcedQuiesceStopsAContainedRunTheMemoryLimitKilled(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	if err := manager.Quiesce(context.Background(), pkg, false); err == nil {
-		t.Fatal("an unforced quiesce adopted a run whose outcome it cannot capture")
-	}
-	if err := manager.Quiesce(context.Background(), pkg, true); err != nil {
-		t.Fatalf("forced quiesce of a memory-killed run: %v", err)
-	}
-	if _, err := os.Stat(stopped); err != nil {
-		t.Fatalf("the unit was never stopped: %v", err)
-	}
-	observation, err := manager.Supervisor.Observe(context.Background(), launch)
-	if err != nil || !observation.Stopped || observation.Failure != "contained run exceeded its 6000 MB memory reservation" {
-		t.Fatalf("stopped observation %+v %v", observation, err)
-	}
-	retained, err := manager.Attach(context.Background(), pkg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if message, err := retained.LastAssistantMessage(context.Background(), pkg.Identity.ThreadID); err != nil || !strings.Contains(message, "6000 MB memory reservation") {
-		t.Fatalf("retained outcome %q %v does not name the reservation", message, err)
-	}
+	return manager, pkg, launch, stopped
 }

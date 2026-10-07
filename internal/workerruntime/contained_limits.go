@@ -36,10 +36,38 @@ func (p ContainedT3) endedRun(ctx context.Context, record ContainedAttachment, l
 	if err != nil {
 		return nil
 	}
-	if obs.Stopped || strings.HasPrefix(obs.State, "failed/") || strings.HasPrefix(obs.State, "inactive/") {
+	if runEnded(obs) {
 		return &obs
 	}
 	return nil
+}
+
+// runEnded reports whether systemd has already ended the contained unit, so no
+// provider runs in it any more.
+func runEnded(obs providercontainment.SupervisorObservation) bool {
+	return obs.Stopped || strings.HasPrefix(obs.State, "failed/") || strings.HasPrefix(obs.State, "inactive/")
+}
+
+// ContainedRunEndedError reports a contained run that systemd ended with a
+// known cause, such as the memory limit killing it. It is a definite outcome,
+// not an observation that is merely unavailable: the attempt it belongs to has
+// failed with Failure as the reason.
+type ContainedRunEndedError struct {
+	Failure string
+	State   string
+}
+
+func (e *ContainedRunEndedError) Error() string {
+	return fmt.Sprintf("%s (supervisor is %s)", e.Failure, e.State)
+}
+
+// endedWithCause is the definite outcome of an observation, or nil when the run
+// has not ended or ended for no known reason.
+func endedWithCause(obs providercontainment.SupervisorObservation) error {
+	if obs.Failure == "" || !runEnded(obs) {
+		return nil
+	}
+	return &ContainedRunEndedError{Failure: obs.Failure, State: obs.State}
 }
 
 // containedFailure is the error for a supervisor that is no longer running the
@@ -48,8 +76,8 @@ func (p ContainedT3) endedRun(ctx context.Context, record ContainedAttachment, l
 // ended: it is named, and counts as a failed preparation instead of an
 // uncertain one that would be retried for ever.
 func containedFailure(obs providercontainment.SupervisorObservation) error {
-	if obs.Failure != "" {
-		return fmt.Errorf("%s (supervisor is %s)", obs.Failure, obs.State)
+	if err := endedWithCause(obs); err != nil {
+		return err
 	}
 	return fmt.Errorf("%w: supervisor is %s", ErrContainedCustody, obs.State)
 }
