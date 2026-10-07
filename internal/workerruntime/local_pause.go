@@ -39,17 +39,9 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		return nil
 	}
 	if !required {
-		if record.LocalThrottle != nil {
-			// A drain was requested and no bucket requires a pause any more
-			// while the thread kept working; the request is moot. That is not
-			// necessarily a recovery: the window may have expired, its draining
-			// reading gone stale, or quota checks been disabled.
-			r.log.Info("no quota bucket requires a pause any more; the pause request is withdrawn", "assignment", id)
-			if err := r.withdrawLocalPause(id); err != nil {
-				return err
-			}
-			record.LocalThrottle = nil
-		}
+		// A queued notice can still end this turn after quota recovers. Keep
+		// the durable intent until a stopped observation and completion check;
+		// even a failed send may have reached T3 before its reply was lost.
 		return nil
 	}
 	now := r.now()
@@ -245,9 +237,13 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 			if direct {
 				observed, observedTurnID, err = observer.ObserveThreadTurn(ctx, record.Package.Package)
 			}
-			if err == nil && observed == backlog.DispatchThreadStopped {
-				turnID = observedTurnID
+			if err != nil || observed != backlog.DispatchThreadStopped || observedTurnID == "" {
+				// An unanswered turn fence is not evidence of unfinished work.
+				// Retry it before any completion decision or provider resume.
+				r.log.Warn("quota stopped-turn identity unavailable; pause waits", "assignment", id, "error", err)
+				return r.keepPauseCheckpoint(id, checkpoint)
 			}
+			turnID = observedTurnID
 		}
 	}
 	now := r.now()
@@ -353,6 +349,21 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 		return r.endLocalPause(id, "thread is running again")
 	case backlog.DispatchThreadMissing:
 		return r.markUnknown(id, "paused T3 thread is missing")
+	}
+	if _, observesTurns := r.driver.(turnObserver); observesTurns && record.LocalThrottle.StoppedTurnID == "" {
+		// Older journals may contain a stopped pause without a turn fence.
+		// Repair that evidence before permitting a completion check or resume.
+		if err := r.markLocalPauseStopped(ctx, id, record.LocalThrottle.Checkpoint); err != nil {
+			return err
+		}
+		current, exists, err := r.currentRecord(id)
+		if err != nil {
+			return err
+		}
+		if !exists || current.LocalThrottle == nil || current.LocalThrottle.StoppedTurnID == "" {
+			return nil
+		}
+		record = current
 	}
 	if completed, pending, err := r.collectCompletedLocalPause(ctx, id, record); err != nil {
 		return err

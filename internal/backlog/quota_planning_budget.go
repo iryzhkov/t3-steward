@@ -47,6 +47,12 @@ func deriveQuotaPlanningWindows(
 		if !finiteQuotaPlanningNumber(state.UsedPercent) || state.UsedPercent < 0 || state.UsedPercent > 100 {
 			return nil, fmt.Errorf("quota planning window %q usage must be between zero and 100", state.Key.String())
 		}
+		if state.AppliedThresholds != nil {
+			drain := state.AppliedThresholds.DrainPercent
+			if !finiteQuotaPlanningNumber(drain) || drain < 0 || drain > 100 {
+				return nil, fmt.Errorf("quota planning window %q drain threshold must be between zero and 100", state.Key.String())
+			}
+		}
 		forecastHorizon := bridge.MaxObservationAge
 		if state.ResetsAt != nil && state.ResetsAt.After(now) {
 			forecastHorizon = state.ResetsAt.Sub(now)

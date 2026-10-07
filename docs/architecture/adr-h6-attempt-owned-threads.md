@@ -74,7 +74,10 @@ Must:
    working attempt's route is draining, it durably records the request and sends the drain
    notice without waiting for the turn to stop, so reconciliation and lease exchanges continue.
    A later pass observes the stop and reads optional checkpoint evidence; a missing checkpoint
-   file still records the pause. If a thread ended during a host drain before the worker recorded
+   file still records the pause. A queued notice's intent survives quota recovery while the
+   turn remains active; its later stop is still a pause. Missing or failed stopped-turn identity
+   lookups defer completion and resume until the worker can fence the stopped turn.
+   If a thread ended during a host drain before the worker recorded
    a request, it is parked with reason `turn ended during a host quota drain`. An explicit
    completion marker from the exact stopped turn, verified through the existing provider
    completion gate, takes the normal collection path instead of spending quota on a resume. When it is stopped, the worker still sends the
@@ -104,7 +107,10 @@ Must:
    coordinator never asks, so neither meets the field. The pause reason and thread state in the
    journal excerpt of each assignment observation are gated by the same ask: both sides decode
    snapshots strictly, so any field added to the snapshot is sent only to a coordinator that
-   asked for `quota-observations-v1` on that exchange.
+   asked for `quota-observations-v1` on that exchange. The new runway metadata has no
+   separate negotiation in this candidate: a coordinator that supports the older
+   observation shape still rejects populated runway fields through its strict decoder.
+   The unit's compatibility contract must be resolved before a mixed-version rollout.
 5. `t3-steward thread stop <thread-id> [--session]` dispatches `thread.turn.interrupt` and, with
    `--session`, `thread.session.stop` through the local T3 control client and prints what it
    sent. `t3-steward backlog rewake <run>/<task> --reason TEXT` resumes an attempt that is
