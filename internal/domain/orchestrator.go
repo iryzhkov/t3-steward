@@ -175,6 +175,12 @@ type ProviderRoute struct {
 	QuotaPoolID        string            `json:"quotaPoolId,omitempty"`
 }
 
+// TaskGate is the worker-owned final gate, after ordinary verification.
+type TaskGate struct {
+	Commands []string      `json:"commands" yaml:"commands"`
+	Timeout  time.Duration `json:"timeout" yaml:"timeout"`
+}
+
 // Task is an immutable node in a workflow definition.
 type Task struct {
 	ReviewOutput       *ReviewOutput           `json:"reviewOutput,omitempty"`
@@ -205,6 +211,7 @@ type Task struct {
 	Context      *ProjectContext       `json:"context,omitempty"`
 	Outputs      []ArtifactDeclaration `json:"outputs,omitempty"`
 	Verification []string              `json:"verification,omitempty"`
+	Gate         *TaskGate             `json:"gate,omitempty"`
 	Placement    Placement             `json:"placement"`
 	// ResourceDemand sizes the task independently of the eligibility rules in
 	// Placement, which is why it is a sibling field rather than a member.
@@ -515,6 +522,7 @@ const (
 	ArtifactSummary      ArtifactKind = "summary"
 	ArtifactGitState     ArtifactKind = "git-state"
 	ArtifactVerification ArtifactKind = "verification"
+	ArtifactGate         ArtifactKind = "gate"
 )
 
 // Artifact is immutable metadata for retained content.

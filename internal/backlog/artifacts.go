@@ -37,6 +37,7 @@ type AttemptFinalization struct {
 	// commit it was built on.
 	Repository string
 	BaseCommit string
+	WorkerID   string
 	// CommitBundles retains a bundle of each declared commit so that a
 	// consumer on another worker can import it. It is set only when the
 	// coordinator declared the commit bundle capability on the package, which
@@ -103,7 +104,16 @@ type AttemptFinalizer struct {
 	Processes   ProcessRunner
 	// CampaignRefs keeps a declared commit reachable for the campaign's
 	// lifetime. It is required only by a task that declares one.
-	CampaignRefs CampaignRefStore
+	CampaignRefs          CampaignRefStore
+	GateTimeoutMax        time.Duration
+	GateToolchainIdentity string
+	// GateContained marks a gate run through the contained supervisor, which
+	// reports exit status only; the report records that limitation.
+	GateContained bool
+	// afterGate, when set by a test, runs once the gate has finished and
+	// before outputs are captured: the window a process left behind by a gate
+	// command could use.
+	afterGate func()
 }
 
 // Finalize runs verification, captures immutable artifacts, and returns a strict
@@ -135,6 +145,38 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 	}
 	gated := request.ReviewGated || request.Task.ReviewRequirements != nil
 
+	// gatedCommit pins publication to the commit the gate attested, so a
+	// declared revision that moves afterwards cannot publish an ungated tree.
+	gatedCommit := ""
+	// gateReport and gateExtra let a passing report be amended when a declared
+	// output no longer matches the gated commit at capture.
+	var gateReport GateReport
+	gateExtra := -1
+	if request.Task.Gate != nil && len(failures) == 0 {
+		report, log, gateErr := f.runGate(ctx, request)
+		if gateErr != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize gate: %w", gateErr)
+		}
+		if f.afterGate != nil {
+			f.afterGate()
+		}
+		raw, marshalErr := json.MarshalIndent(report, "", "  ")
+		if marshalErr != nil {
+			return FinalizedAttempt{}, marshalErr
+		}
+		gateReport, gateExtra = report, len(request.Extra)
+		request.Extra = append(slices.Clone(request.Extra),
+			FinalizationArtifact{ID: "gate-" + request.Attempt.ID, Name: "gate", Kind: domain.ArtifactGate, MediaType: "application/json", Producer: "gate", Content: append(raw, '\n')},
+			FinalizationArtifact{ID: "gate-log-" + request.Attempt.ID, Name: "gate/log.txt", Kind: domain.ArtifactGate, MediaType: "text/plain", Producer: "gate", Content: log})
+		if report.Passed {
+			gatedCommit = report.attestedCommit
+			if gatedCommit == "" {
+				return FinalizedAttempt{}, errors.New("finalize gate: passing report names no attested commit")
+			}
+		} else {
+			failures = append(failures, fmt.Sprintf("gate command failed (%d): %s: %s", report.Failure.ExitCode, report.Failure.Command, report.Failure.Reason))
+		}
+	}
 	workspaceRoot, err := os.OpenRoot(request.WorkspaceDir)
 	if err != nil {
 		return FinalizedAttempt{}, fmt.Errorf("finalize attempt: open workspace: %w", err)
@@ -190,6 +232,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 
 	now := f.now()
 	artifacts := make([]domain.Artifact, 0, len(outputs)+len(reports))
+	var changedOutputs []string
 	for _, output := range outputs {
 		artifactName := filepath.ToSlash(output.declaration.Name)
 		storagePath := filepath.ToSlash(filepath.Join(
@@ -206,6 +249,20 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if copyErr != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", output.declaration.Name, copyErr)
 		}
+		if gatedCommit != "" {
+			// A process left behind by a gate command can rewrite an output
+			// after the gate's checks, so what was captured must be what the
+			// gate saw and, for a tracked file, the gated commit's content.
+			if reason, checkErr := gatedOutputMatches(ctx, request.WorkspaceDir, gatedCommit, gateReport.outputDigests,
+				output.declaration.Name, output.relative,
+				filepath.Join(stageDir, "artifacts", "outputs", output.declaration.Name), file.sha256); checkErr != nil {
+				return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", output.declaration.Name, checkErr)
+			} else if reason != "" {
+				changed := fmt.Sprintf("declared output %q %s", output.declaration.Name, reason)
+				failures = append(failures, changed)
+				changedOutputs = append(changedOutputs, changed)
+			}
+		}
 		media := output.declaration.MediaType
 		if media == "" {
 			media = mediaType(output.declaration.Name)
@@ -217,6 +274,16 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			Size: file.size, SHA256: file.sha256, StoragePath: file.storagePath,
 			Producer: request.Task.Name, CreatedAt: now,
 		})
+	}
+	if len(changedOutputs) != 0 {
+		// The coordinator decides the attempt from the uploaded evidence, not
+		// from this completion, so the gate report itself must fail. The log is
+		// kept as the gate wrote it.
+		raw, amendErr := amendGateForChangedOutputs(gateReport, changedOutputs)
+		if amendErr != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize gate: %w", amendErr)
+		}
+		request.Extra[gateExtra].Content = raw
 	}
 	for index, report := range reports {
 		name := fmt.Sprintf("verification/%03d.json", index+1)
@@ -276,7 +343,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			WorkflowRunID: request.Attempt.WorkflowRunID, TaskID: request.Task.ID,
 			Name: declaration.Name, Repository: request.Repository,
 			WorkspaceDir: request.WorkspaceDir, Revision: declaration.Commit.Revision,
-			Base: request.BaseCommit, CreatedAt: now,
+			ExpectedCommit: gatedCommit, Base: request.BaseCommit, CreatedAt: now,
 		}
 		var provenance CommitProvenance
 		var publishErr error
@@ -414,13 +481,17 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 	}
 
 	for index, extra := range extras {
+		storageName := extra.Name
+		if extra.Kind == domain.ArtifactGate && extra.Name == "gate" {
+			storageName = "gate/report.json"
+		}
 		storagePath := filepath.ToSlash(filepath.Join(
 			"runs", request.Attempt.WorkflowRunID, request.Task.ID, request.Attempt.ID,
-			"artifacts", extra.Name,
+			"artifacts", storageName,
 		))
 		file, writeErr := writeIngestedFile(
 			bytes.NewReader(extra.Content),
-			filepath.Join(stageDir, "artifacts", filepath.FromSlash(extra.Name)),
+			filepath.Join(stageDir, "artifacts", filepath.FromSlash(storageName)),
 			extra.Name,
 			storagePath,
 		)
@@ -584,7 +655,7 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 	}
 	artifactByKey := make(map[artifactKey]domain.Artifact, len(artifacts))
 	for _, artifact := range artifacts {
-		if artifact.Kind != domain.ArtifactOutput {
+		if artifact.Kind != domain.ArtifactOutput && !(artifact.Kind == domain.ArtifactGate && (artifact.Name == "gate" || artifact.Name == "gate/log.txt")) {
 			continue
 		}
 		key := artifactKey{taskID: artifact.TaskID, name: artifact.Name}
@@ -595,9 +666,10 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 	}
 
 	type selectedArtifact struct {
-		producer string
-		artifact domain.Artifact
-		source   string
+		producer         string
+		artifact         domain.Artifact
+		source           string
+		materializedPath string
 	}
 	var selected []selectedArtifact
 	directDependencies := make(map[string]struct{}, len(task.Needs))
@@ -683,7 +755,7 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 		if err != nil {
 			return nil, fmt.Errorf("materialize dependencies: carried output %q from %q: %w", item.Name, item.Producer, err)
 		}
-		selected = append(selected, selectedArtifact{producer: item.Producer, artifact: artifact, source: relative})
+		selected = append(selected, selectedArtifact{producer: item.Producer, artifact: artifact, source: relative, materializedPath: gateCarriedDependencyPath(item)})
 	}
 	if len(selected) == 0 {
 		return nil, nil
@@ -717,7 +789,14 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 
 	materialized := make([]string, 0, len(selected))
 	for _, item := range selected {
-		destination := filepath.Join(stageDir, item.producer, filepath.FromSlash(item.artifact.Name))
+		materializedName := item.artifact.Name
+		if item.materializedPath != "" {
+			materializedName = item.materializedPath
+		}
+		if item.artifact.Kind == domain.ArtifactGate && materializedName == "gate" {
+			materializedName = "gate/report.json"
+		}
+		destination := filepath.Join(stageDir, item.producer, filepath.FromSlash(materializedName))
 		file, err := copyIngestedFile(storage, item.source, destination, item.artifact.Name, "")
 		if err != nil {
 			return nil, fmt.Errorf("materialize dependencies: copy %q from %q: %w", item.artifact.Name, item.producer, err)
@@ -725,7 +804,7 @@ func MaterializeDependencies(workspaceDir, storageRoot, workflowRunID string, ta
 		if file.size != item.artifact.Size || !strings.EqualFold(file.sha256, item.artifact.SHA256) {
 			return nil, fmt.Errorf("materialize dependencies: checksum mismatch for %q from %q", item.artifact.Name, item.producer)
 		}
-		materialized = append(materialized, filepath.ToSlash(filepath.Join(".t3", "dependencies", item.producer, item.artifact.Name)))
+		materialized = append(materialized, filepath.ToSlash(filepath.Join(".t3", "dependencies", item.producer, materializedName)))
 	}
 	if err := makeIngestedTreeImmutable(stageDir); err != nil {
 		return nil, fmt.Errorf("materialize dependencies: protect staged files: %w", err)

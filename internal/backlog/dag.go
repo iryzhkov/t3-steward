@@ -505,6 +505,7 @@ func cloneDAGState(state DAGState) DAGState {
 		task.DependencyInputs = cloneStringSlices(source.DependencyInputs)
 		task.Outputs = append([]domain.ArtifactDeclaration(nil), source.Outputs...)
 		task.Verification = append([]string(nil), source.Verification...)
+		task.Gate = cloneTaskGate(source.Gate)
 		task.Placement.Hosts = append([]string(nil), source.Placement.Hosts...)
 		task.Placement.Capabilities = append([]string(nil), source.Placement.Capabilities...)
 		task.Routes = append([]domain.ProviderRoute(nil), source.Routes...)

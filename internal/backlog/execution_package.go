@@ -155,7 +155,11 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
-	dependencies, err := packageDependencies(state.task, state.tasks, state.artifacts, state.run.ID)
+	dependencyArtifacts, err := gateDependencyArtifacts(state.tasks, state.artifacts, records.Attempts, state.run.ID)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	dependencies, err := packageDependencies(state.task, state.tasks, dependencyArtifacts, state.run.ID)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
 	}
@@ -170,7 +174,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			budget.Remaining -= object.Size
 		}
 	}
-	commitBundles, err := packageCommitBundles(state.task, state.tasks, state.artifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records), budget)
+	commitBundles, err := packageCommitBundles(state.task, state.tasks, dependencyArtifacts, state.run.ID, assignment.WorkerID, attemptWorkers(records), budget)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: commit bundles: %w", err)
 	}
@@ -203,6 +207,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			RequiredCredentials: append([]string(nil), environment.RequiredCredentials...),
 		},
 		Verification: append([]string(nil), state.task.Verification...),
+		Gate:         dispatchGate(state.task.Gate, b.VerificationTimeout),
 		Outputs:      append([]domain.ArtifactDeclaration(nil), state.task.Outputs...),
 		Preflight:    append([]workerproto.PreflightStep(nil), state.task.Preflight...),
 		NotBefore:    cloneTime(state.task.NotBefore),
@@ -287,6 +292,9 @@ func appendRecoverySupplementInputs(ctx context.Context, store ExecutionPackageR
 }
 
 func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context, pkg *workerproto.ExecutionPackage, reviewDeclared bool) error {
+	if pkg.Gate != nil {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityWorkerOwnedGate)
+	}
 	if len(pkg.Preflight) > 0 {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityPreflight)
 	}
@@ -334,7 +342,7 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 		// Nothing can be proven about the worker, so declared preflight is
 		// refused rather than assumed.
 		return fmt.Errorf("execution package builder: worker %q capabilities are unknown, required %q",
-			pkg.WorkerID, workerproto.PackageCapabilityPreflight)
+			pkg.WorkerID, pkg.RequiredCapabilities[0])
 	}
 	for _, capability := range pkg.RequiredCapabilities {
 
@@ -567,6 +575,45 @@ func packageArtifact(artifact domain.Artifact, path, kind string) (workerproto.A
 	}, nil
 }
 
+func gateDependencyArtifacts(tasks []domain.Task, artifacts map[string]domain.Artifact, attempts []domain.Attempt, runID string) (map[string]domain.Artifact, error) {
+	gated := map[string]bool{}
+	for _, task := range tasks {
+		if task.Gate != nil {
+			gated[task.ID] = true
+		}
+	}
+	if len(gated) == 0 {
+		return artifacts, nil
+	}
+	latest := map[string]domain.Attempt{}
+	for _, attempt := range attempts {
+		if attempt.WorkflowRunID != runID || !gated[attempt.TaskID] || attempt.IsSupervisionActivation() {
+			continue
+		}
+		previous, exists := latest[attempt.TaskID]
+		if exists && previous.Number == attempt.Number && previous.ID != attempt.ID {
+			return nil, fmt.Errorf("gate dependency task %q has ambiguous attempt number", attempt.TaskID)
+		}
+		if !exists || attempt.Number > previous.Number {
+			latest[attempt.TaskID] = attempt
+		}
+	}
+	selected := make(map[string]domain.Artifact, len(artifacts))
+	for id, artifact := range artifacts {
+		if artifact.WorkflowRunID == runID && gated[artifact.TaskID] && (artifact.Kind == domain.ArtifactGate || artifact.Kind == domain.ArtifactOutput || artifact.Kind == domain.ArtifactGitState) {
+			attempt, exists := latest[artifact.TaskID]
+			if !exists {
+				return nil, fmt.Errorf("gate dependency task %q has no authoritative attempt", artifact.TaskID)
+			}
+			if artifact.AttemptID != attempt.ID {
+				continue
+			}
+		}
+		selected[id] = artifact
+	}
+	return selected, nil
+}
+
 func packageDependencies(
 	task domain.Task,
 	tasks []domain.Task,
@@ -582,7 +629,7 @@ func packageDependencies(
 	}
 	outputs := make(map[string]domain.Artifact)
 	for _, artifact := range artifacts {
-		if artifact.WorkflowRunID != runID || artifact.Kind != domain.ArtifactOutput {
+		if artifact.WorkflowRunID != runID || (artifact.Kind != domain.ArtifactOutput && artifact.Kind != domain.ArtifactGate) {
 			continue
 		}
 		key := artifact.TaskID + "\x00" + artifact.Name
@@ -622,7 +669,7 @@ func packageDependencies(
 			}
 			object, err := packageArtifact(
 				artifact,
-				"dependencies/"+producer+"/"+filepath.ToSlash(artifact.Name),
+				"dependencies/"+producer+"/"+gateDependencyPath(artifact),
 				"dependency",
 			)
 			if err != nil {
@@ -728,7 +775,7 @@ func packageCarriedInputs(task domain.Task, artifacts map[string]domain.Artifact
 			if namespace == "" {
 				namespace = carried.Producer
 			}
-			path := "dependencies/" + namespace + "/" + filepath.ToSlash(carried.Name)
+			path := "dependencies/" + namespace + "/" + gateCarriedDependencyPath(carried)
 			if seenPaths[path] {
 				return nil, fmt.Errorf("duplicate carried input path %q", path)
 			}

@@ -152,7 +152,10 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 		slices.Sort(names)
 		delete(task.DependencyInputs, need)
 		for _, name := range names {
-			artifact, found := b.output(ancestor.ID, name)
+			artifact, found, err := b.output(ancestor, name)
+			if err != nil {
+				return err
+			}
 			if !found {
 				return fmt.Errorf(
 					"run %s has no retained output %q from %s, so the rerun would start %s without an input it declares",
@@ -163,7 +166,7 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 				return err
 			}
 			carried := domain.CarriedInput{
-				Producer: need, ProducerTaskID: ancestor.ID, Name: name, ArtifactID: referenced,
+				Producer: need, ProducerTaskID: ancestor.ID, Name: name, ArtifactID: referenced, SourceKind: artifact.Kind,
 			}
 			if artifact.AttemptID != "" {
 				// The source binding pins the exact attempt whose record is
@@ -186,14 +189,67 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 }
 
 // output finds a retained output artifact of a source task by declared name.
-func (b *rerunReferences) output(taskID, name string) (domain.Artifact, bool) {
-	for _, artifact := range b.records.Artifacts {
-		if artifact.WorkflowRunID == b.source.ID && artifact.TaskID == taskID &&
-			artifact.Kind == domain.ArtifactOutput && artifact.Name == name {
-			return artifact, true
+//
+// A gated task keeps the gate report, log and outputs of every attempt,
+// including the failed ones before a retry. Its evidence must come from the one
+// attempt the rerun reuses, so the artifact order in the store never decides
+// which attempt a consumer sees.
+func (b *rerunReferences) output(task domain.Task, name string) (domain.Artifact, bool, error) {
+	attemptID := ""
+	if task.Gate != nil {
+		var err error
+		if attemptID, err = b.authoritativeAttempt(task); err != nil {
+			return domain.Artifact{}, false, err
 		}
 	}
-	return domain.Artifact{}, false
+	var selected []domain.Artifact
+	for _, artifact := range b.records.Artifacts {
+		if artifact.WorkflowRunID == b.source.ID && artifact.TaskID == task.ID &&
+			(artifact.Kind == domain.ArtifactOutput || artifact.Kind == domain.ArtifactGate) && artifact.Name == name &&
+			(attemptID == "" || artifact.AttemptID == attemptID) {
+			if attemptID == "" {
+				return artifact, true, nil
+			}
+			selected = append(selected, artifact)
+		}
+	}
+	switch len(selected) {
+	case 0:
+		return domain.Artifact{}, false, nil
+	case 1:
+		return selected[0], true, nil
+	default:
+		return domain.Artifact{}, false, fmt.Errorf(
+			"run %s retains more than one %q from attempt %s of %s, so the rerun cannot tell which to carry",
+			b.source.ID, name, attemptID, task.Name)
+	}
+}
+
+// authoritativeAttempt is the highest-numbered attempt of a reused task, the
+// one domain.PlanRerun required to have succeeded.
+func (b *rerunReferences) authoritativeAttempt(task domain.Task) (string, error) {
+	var latest domain.Attempt
+	found, ambiguous := false, false
+	for _, attempt := range b.records.Attempts {
+		if attempt.WorkflowRunID != b.source.ID || attempt.TaskID != task.ID || attempt.IsSupervisionActivation() {
+			continue
+		}
+		switch {
+		case !found || attempt.Number > latest.Number:
+			latest, found, ambiguous = attempt, true, false
+		case attempt.Number == latest.Number && attempt.ID != latest.ID:
+			ambiguous = true
+		}
+	}
+	switch {
+	case !found:
+		return "", fmt.Errorf("run %s has no attempt of gated task %s to carry evidence from", b.source.ID, task.Name)
+	case ambiguous:
+		return "", fmt.Errorf("run %s has more than one attempt %d of gated task %s", b.source.ID, latest.Number, task.Name)
+	case latest.Progress != domain.ProgressSucceeded:
+		return "", fmt.Errorf("gated task %s's latest attempt %s is %s, so its gate evidence cannot be carried", task.Name, latest.ID, latest.Progress)
+	}
+	return latest.ID, nil
 }
 
 // reference makes a source artifact usable as an input of the new run.

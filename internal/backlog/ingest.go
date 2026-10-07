@@ -62,10 +62,13 @@ type BundleIngester struct {
 	Store             CoordinatorRecordStore
 	// Permanent, when set, refuses a permanently impossible manifest before any
 	// record is built or any file is staged.
-	Permanent  PermanentValidator
-	Now        func() time.Time
-	NewID      func() string
-	NewTypedID func(string) string
+	Permanent PermanentValidator
+	// MaxGateTimeout, when positive, is the coordinator's
+	// verification.command_timeout; a task gate timeout above it is refused.
+	MaxGateTimeout time.Duration
+	Now            func() time.Time
+	NewID          func() string
+	NewTypedID     func(string) string
 }
 
 // IngestedBundle identifies a successfully committed workflow submission.
@@ -110,6 +113,11 @@ func (i BundleIngester) Ingest(ctx context.Context, bundleDir string) (IngestedB
 	}
 	if i.Permanent != nil {
 		if err := i.Permanent.ValidatePermanent(ctx, manifest); err != nil {
+			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
+		}
+	}
+	if i.MaxGateTimeout > 0 {
+		if err := ValidateGateTimeouts(manifest, i.MaxGateTimeout); err != nil {
 			return IngestedBundle{}, fmt.Errorf("ingest workflow bundle: %w", err)
 		}
 	}
@@ -399,7 +407,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 			ID:                 taskID, RunID: runID, WorkflowID: workflowID, Name: name, Class: taskManifest.Class,
 			Needs: localNeeds, ExternalNeeds: externalNeeds, PromptArtifactID: promptArtifact.ID,
 			InputArtifactIDs: append([]string(nil), taskInputIDs...), DependencyInputs: cloneStringSlices(taskManifest.InputsFrom),
-			Context: resolvedContext, Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...),
+			Context: resolvedContext, Outputs: outputs, Verification: append([]string(nil), taskManifest.Verify...), Gate: cloneTaskGate(taskManifest.Gate),
 			Placement: domain.Placement{
 				Hosts:        append([]string(nil), taskManifest.Placement.Hosts...),
 				Capabilities: placementCapabilities(manifest, taskManifest),

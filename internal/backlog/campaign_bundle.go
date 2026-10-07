@@ -639,6 +639,9 @@ func readBundleHeader(path string) ([]bundleHead, []string, error) {
 // offered work it can only refuse.
 func placementCapabilities(manifest Manifest, task ManifestTask) []string {
 	capabilities := append([]string(nil), task.Placement.Requires...)
+	if task.Gate != nil && !slices.Contains(capabilities, workerproto.PackageCapabilityWorkerOwnedGate) {
+		capabilities = append(capabilities, workerproto.PackageCapabilityWorkerOwnedGate)
+	}
 	if ConsumesDeclaredCommit(manifest, task) && !slices.Contains(capabilities, workerproto.PackageCapabilityCommitBundle) {
 		capabilities = append(capabilities, workerproto.PackageCapabilityCommitBundle)
 	}

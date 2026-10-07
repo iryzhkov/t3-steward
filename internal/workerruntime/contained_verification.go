@@ -73,6 +73,15 @@ func (p ContainedT3) stopVerifications(ctx context.Context, pkg workerproto.Exec
 	return nil
 }
 
+// Keep existing millisecond invocation bytes stable for durable replay, while
+// preserving sub-millisecond declarations instead of rounding them to zero.
+func containedVerificationTimeout(timeout time.Duration) string {
+	if timeout%time.Millisecond != 0 {
+		return fmt.Sprintf("%.9fs", timeout.Seconds())
+	}
+	return fmt.Sprintf("%.3fs", timeout.Seconds())
+}
+
 type containedVerifier struct {
 	manager ContainedT3
 	pkg     workerproto.ExecutionPackage
@@ -90,10 +99,22 @@ func (v containedVerifier) Run(ctx context.Context, request backlog.ProcessReque
 	if !stopped.Stopped {
 		return backlog.ProcessResult{}, errors.New("provider supervisor must stop before verification")
 	}
-	if request.ID == "" || request.Dir != plan.Launch.Spec.Workspace.Registration.Path || request.Program != "/bin/sh" || len(request.Args) != 2 || request.Args[0] != "-c" {
+	// Accept only the historical shell form and the finalizer's exact umask
+	// wrapper. The command stays a separate argument in both forms.
+	plainShell := len(request.Args) == 2 && request.Args[0] == "-c"
+	umaskShell := len(request.Args) == 5 && request.Args[0] == "-c" &&
+		request.Args[1] == `umask 022 && exec "$0" "$@"` &&
+		request.Args[2] == "/bin/sh" && request.Args[3] == "-c"
+	if request.ID == "" || request.Dir != plan.Launch.Spec.Workspace.Registration.Path || request.Program != "/bin/sh" || (!plainShell && !umaskShell) {
 		return backlog.ProcessResult{}, errors.New("contained verification request does not match prepared workspace")
 	}
 	timeout := v.pkg.Limits.VerificationTimeout
+	if request.Timeout < 0 || request.Timeout > timeout {
+		return backlog.ProcessResult{}, errors.New("contained verification deadline exceeds worker limit or is negative")
+	}
+	if request.Timeout > 0 {
+		timeout = request.Timeout
+	}
 	if timeout <= 0 {
 		return backlog.ProcessResult{}, errors.New("contained verification needs a bounded deadline")
 	}
@@ -101,7 +122,7 @@ func (v containedVerifier) Run(ctx context.Context, request backlog.ProcessReque
 	spec.Control = nil
 	spec.ControlPort = 0
 	spec.ProviderHosts = nil
-	spec.Command = append([]string{"/usr/bin/timeout", "--kill-after=5s", fmt.Sprintf("%.3fs", timeout.Seconds()), request.Program}, request.Args...)
+	spec.Command = append([]string{"/usr/bin/timeout", "--kill-after=5s", containedVerificationTimeout(timeout), request.Program}, request.Args...)
 	launch := providercontainment.Launch{ExecutionID: v.pkg.Identity.ThreadID + ":" + request.ID, Spec: spec}
 	path, err := v.manager.recordPath(v.pkg)
 	if err != nil {

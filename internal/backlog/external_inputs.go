@@ -81,6 +81,10 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 				return fmt.Errorf("external input %s producer definition is unavailable", producer)
 			}
 			declared := map[string]bool{}
+			if producerTask.Gate != nil {
+				declared["gate"] = true
+				declared["gate/log.txt"] = true
+			}
 			for _, output := range producerTask.Outputs {
 				declared[output.Name] = true
 			}
@@ -92,7 +96,7 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 				var found []domain.Artifact
 				for _, artifact := range source.Artifacts {
 					if artifact.WorkflowRunID == ref.RunID && artifact.TaskID == producerTask.ID &&
-						artifact.AttemptID == observation.AttemptID && artifact.Kind == domain.ArtifactOutput &&
+						artifact.AttemptID == observation.AttemptID && (artifact.Kind == domain.ArtifactOutput || artifact.Kind == domain.ArtifactGate) &&
 						artifact.Name == name && artifact.SHA256 != "" && artifact.StoragePath != "" {
 						found = append(found, artifact)
 					}
@@ -119,7 +123,7 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 				}
 				records.Artifacts = append(records.Artifacts, reference)
 				consumer.CarriedInputs = append(consumer.CarriedInputs, domain.CarriedInput{
-					Producer: producerTask.Name, ProducerNamespace: namespace,
+					Producer: producerTask.Name, ProducerNamespace: namespace, SourceKind: found[0].Kind,
 					ProducerTaskID: producerTask.ID, SourceRunID: ref.RunID,
 					SourceAttemptID: observation.AttemptID, SourceArtifactID: found[0].ID,
 					Name: name, ArtifactID: reference.ID,

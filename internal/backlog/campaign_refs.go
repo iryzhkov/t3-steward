@@ -61,6 +61,9 @@ type PublishCommitRequest struct {
 	WorkspaceDir string
 	// Revision is resolved in that workspace; it defaults to HEAD.
 	Revision string
+	// ExpectedCommit, when set, is the only commit Revision may resolve to:
+	// the one a gate attested. Publication refuses any other.
+	ExpectedCommit string
 	// Base is the commit the workspace was pinned to before the task ran.
 	Base      string
 	CreatedAt time.Time
@@ -115,7 +118,10 @@ func (s CampaignRefStore) resolveDeclaredCommit(ctx context.Context, request Pub
 	if err := validateGitRef(revision); revision != "HEAD" && err != nil {
 		return "", fmt.Errorf("publish campaign commit revision: %w", err)
 	}
+	// The workspace is the producer's, so its hooks, fsmonitor and replace refs
+	// are not run or honoured here.
 	raw, err := runLoggedCommandOutputEnv(ctx, log, "", workspaceGitNoTransport, s.git(), "-C", request.WorkspaceDir,
+		"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
 		"rev-parse", "--verify", revision+"^{commit}")
 	if err != nil {
 		return "", fmt.Errorf("resolve declared commit %q: %w", request.Name, err)
@@ -123,6 +129,9 @@ func (s CampaignRefStore) resolveDeclaredCommit(ctx context.Context, request Pub
 	commit := strings.TrimSpace(string(raw))
 	if !validGitObjectID(commit) {
 		return "", fmt.Errorf("resolve declared commit %q: Git returned invalid commit %q", request.Name, commit)
+	}
+	if request.ExpectedCommit != "" && commit != request.ExpectedCommit {
+		return "", fmt.Errorf("declared commit %q revision %q resolves to %s, not the gated commit %s", request.Name, revision, commit, request.ExpectedCommit)
 	}
 	return commit, nil
 }
@@ -205,6 +214,13 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 	}
 	if err := s.copyCommit(ctx, gitDir, request.WorkspaceDir, commit, ref, false, log); err != nil {
 		return CommitProvenance{}, fmt.Errorf("publish campaign ref %s: %w", ref, err)
+	}
+	// Workspace configuration such as url.*.insteadOf could still redirect the
+	// push, so the store itself must now name the commit.
+	if stored, found, err := s.head(ctx, gitDir, ref, log); err != nil {
+		return CommitProvenance{}, err
+	} else if !found || stored != commit {
+		return CommitProvenance{}, fmt.Errorf("publish campaign ref %s: store names %q, want %s", ref, stored, commit)
 	}
 	createdAt := request.CreatedAt
 	if createdAt.IsZero() {
