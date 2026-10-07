@@ -788,8 +788,9 @@ func markDependencyCommitOutputs(dependencies []workerproto.DependencyInput, tas
 
 // carriedCommitDeclared reports whether an input carried from another run is
 // a declared commit output of the source task it was carried from. An input
-// without its source run predates the source binding, and a worker refuses
-// any commit record in it anyway, so it is never marked.
+// without its source run predates the source binding and is never marked; a
+// worker refuses a record of another run in it whether marked or not, because
+// no source binding vouches for that run.
 func carriedCommitDeclared(records sqlite.CoordinatorRecords, carried domain.CarriedInput) bool {
 	if carried.SourceRunID == "" {
 		return false

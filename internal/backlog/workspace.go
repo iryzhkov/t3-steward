@@ -504,11 +504,22 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		}
 		directory, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
 		producer := slices.IndexFunc(request.DependencyTasks, func(task domain.Task) bool { return task.Name == directory })
+		source, bound := request.DependencySources[directory]
 		if producer < 0 || !IsDependencyCommitRecord(relative, provenance, DeclaredCommitOutputs(request.DependencyTasks[producer])) {
-			// A record in any other file is the content of an ordinary output.
+			// A record in any other file is the content of an ordinary output,
+			// and publishes nothing. A record of another run that names its own
+			// file, in a dependency no source binding vouches for, is a commit
+			// carried before carried inputs were bound to their source, whose
+			// declaration the coordinator cannot find; it stays refused, so its
+			// consumer never runs without the commit it was handed.
+			if _, name, _ := strings.Cut(filepath.ToSlash(relative), "/"); name == provenance.Name &&
+				!bound && provenance.WorkflowRunID != request.WorkflowRunID {
+				return fmt.Errorf("dependency commit %s belongs to run %q, want %q",
+					provenance.Ref, provenance.WorkflowRunID, request.WorkflowRunID)
+			}
 			return nil
 		}
-		if source, bound := request.DependencySources[directory]; bound || provenance.WorkflowRunID != request.WorkflowRunID {
+		if bound || provenance.WorkflowRunID != request.WorkflowRunID {
 			// A record of another run arrives only as a carried input, and only
 			// the source binding of the dependency it arrived in can vouch for
 			// it: the run and the task must both be that binding's.
@@ -521,9 +532,9 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 					provenance.Ref, source.TaskID, source.WorkflowRunID, provenance.TaskID)
 			}
 		} else if owner := request.DependencyTasks[producer].ID; owner != provenance.TaskID {
-			// The declared commit output of one producer vouches only for
-			// that producer's commit, never for another task's campaign ref.
-			return fmt.Errorf("dependency commit %s is the declared output %q of task %q, but its record names task %q",
+			// The commit output of one producer vouches only for that
+			// producer's commit, never for another task's campaign ref.
+			return fmt.Errorf("dependency commit %s is in output %q of task %q, but its record names task %q",
 				provenance.Ref, provenance.Name, owner, provenance.TaskID)
 		}
 		if request.Environment.Type == EnvironmentFresh {

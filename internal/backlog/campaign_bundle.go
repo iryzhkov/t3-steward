@@ -518,11 +518,17 @@ func (s CampaignRefStore) stagedHeld(ctx context.Context, gitDir string, provena
 }
 
 // heldCommit reports whether the store already holds the declared commit. A
-// ref that names anything else is refused, never replaced.
+// ref that names anything else is refused, never replaced. A staged record is
+// the exception: the campaign ref naming another attempt's accepted commit is
+// expected, and the staging is what a judge inspects, so it is not held here
+// and Obtain goes on to the staging.
 func (s CampaignRefStore) heldCommit(ctx context.Context, gitDir string, provenance CommitProvenance, log io.Writer) (bool, error) {
 	existing, found, err := s.head(ctx, gitDir, provenance.Ref, log)
 	if err != nil || !found {
 		return false, err
+	}
+	if existing != provenance.Commit && provenance.StagedAttempt != "" {
+		return false, nil
 	}
 	if existing != provenance.Commit {
 		return false, fmt.Errorf("campaign ref %s in this worker's store names commit %s, but its provenance record names %s",

@@ -568,14 +568,22 @@ func validateAcceptedCommits(dependency DependencyInput) error {
 // validateCommitOutputs requires each declared commit output to name one of
 // the dependency's own artifacts, once.
 func validateCommitOutputs(dependency DependencyInput) error {
-	for index, name := range dependency.CommitOutputs {
-		if slices.Contains(dependency.CommitOutputs[:index], name) {
+	if len(dependency.CommitOutputs) == 0 {
+		return nil
+	}
+	artifacts := make(map[string]struct{}, len(dependency.Artifacts))
+	for _, artifact := range dependency.Artifacts {
+		if parts := strings.SplitN(artifact.Path, "/", 3); len(parts) == 3 && parts[0] == "dependencies" {
+			artifacts[parts[2]] = struct{}{}
+		}
+	}
+	seen := make(map[string]struct{}, len(dependency.CommitOutputs))
+	for _, name := range dependency.CommitOutputs {
+		if _, duplicate := seen[name]; duplicate {
 			return errors.New("execution package: duplicate dependency commit output")
 		}
-		if !slices.ContainsFunc(dependency.Artifacts, func(artifact ArtifactObject) bool {
-			parts := strings.SplitN(artifact.Path, "/", 3)
-			return len(parts) == 3 && parts[0] == "dependencies" && parts[2] == name
-		}) {
+		seen[name] = struct{}{}
+		if _, exists := artifacts[name]; !exists {
 			return errors.New("execution package: dependency commit output is not one of the dependency's artifacts")
 		}
 	}

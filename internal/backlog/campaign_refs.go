@@ -612,18 +612,24 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 			return fmt.Errorf("release campaign ref %s: %w", record.Ref, err)
 		}
 	}
+	// Staged refs are named by attempt, which the records do not repeat, so
+	// they are found under the run's staging namespace. A campaign ref whose
+	// record a crashed promotion never wrote is found under the run's
+	// campaign namespace, so it is released with the run as well.
+	namespaces := []string{"refs/campaigns/" + workflowRunID + "/"}
 	if len(staged) != 0 {
-		// Staged refs are named by attempt, which the records do not repeat,
-		// so they are found under the run's staging namespace.
+		namespaces = append(namespaces, "refs/campaign-staged/"+workflowRunID+"/")
+	}
+	for _, namespace := range namespaces {
 		names, err := runLoggedCommandOutput(ctx, log, "", s.git(), "--git-dir", gitDir,
-			"for-each-ref", "--format=%(refname)", "refs/campaign-staged/"+workflowRunID+"/")
+			"for-each-ref", "--format=%(refname)", namespace)
 		if err != nil {
-			return fmt.Errorf("list staged campaign refs: %w", err)
+			return fmt.Errorf("list campaign refs under %s: %w", namespace, err)
 		}
 		for _, name := range strings.Fields(string(names)) {
 			if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
 				"update-ref", "-d", name); err != nil {
-				return fmt.Errorf("release staged campaign ref %s: %w", name, err)
+				return fmt.Errorf("release campaign ref %s: %w", name, err)
 			}
 		}
 	}
