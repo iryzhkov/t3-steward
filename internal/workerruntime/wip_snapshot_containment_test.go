@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,12 @@ func TestSnapshotRunsNoCommandTheTaskConfigured(t *testing.T) {
 			// The attempt was contained: its package binds a directory resource.
 			registration := directoryresource.Registration{WorkerID: "worker-1", ResourceID: "snapshot-directory", Revision: "1", Path: t.TempDir(), Writable: true}
 			fd, identity, err := directoryresource.Open(registration)
+			if runtime.GOOS != "linux" {
+				if err == nil || err.Error() != "directory identity containment is unsupported on this platform" || fd != nil {
+					t.Fatalf("directoryresource.Open = %v, %+v, %v; want unsupported platform with no directory identity", fd, identity, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}

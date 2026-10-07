@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -58,9 +59,15 @@ func TestScannedCommandLinesAreRedactedBeforeTheyAreShortened(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			report, err := scanLiveCommandsIn("linux", proc, 100, workspace)
+			report, err := scanLiveCommandsIn(runtime.GOOS, proc, 100, workspace)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if runtime.GOOS != "linux" {
+				if report.Unsupported != "process inspection is unavailable on "+runtime.GOOS || len(report.Commands) != 0 {
+					t.Fatalf("report = %+v, want unsupported process inspection with no commands", report)
+				}
+				return
 			}
 			if len(report.Commands) != 1 || report.Commands[0].PID != 7 {
 				t.Fatalf("report = %+v", report)
