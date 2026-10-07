@@ -3,11 +3,41 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
+
+// recoverQuotaAdmissionSubmissionTx recognizes the durable admission receipt as
+// the authoritative acceptance decision. The files were published before that
+// records transaction, so replay must preserve them and all subsequent progress.
+func recoverQuotaAdmissionSubmissionTx(ctx context.Context, tx *sql.Tx, record domain.SubmissionRecord) (domain.SubmissionRecord, error) {
+	if record.RegisterOnly || record.RunID == "" {
+		return record, nil
+	}
+	var raw string
+	err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_workflow_runs WHERE id=? AND workflow_id=?", record.RunID, record.WorkflowID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return record, nil
+	}
+	if err != nil {
+		return record, fmt.Errorf("load admitted submission run: %w", err)
+	}
+	var run domain.WorkflowRun
+	if err := json.Unmarshal([]byte(raw), &run); err != nil {
+		return record, err
+	}
+	if run.QuotaAdmission == nil {
+		return record, nil
+	}
+	if run.QuotaAdmission.AdmittedAt.IsZero() {
+		return record, fmt.Errorf("admitted submission run has no admission time")
+	}
+	return completePendingSubmissionTx(ctx, tx, record, run.QuotaAdmission.AdmittedAt)
+}
 
 // QuotaAdmissionSnapshot is the same merged quota truth used by quota waits,
 // together with durable pending demand read in the admission transaction.
