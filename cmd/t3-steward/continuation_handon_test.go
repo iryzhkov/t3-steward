@@ -329,7 +329,7 @@ func TestTheHandOnIsNeverSettledByTheScanBound(t *testing.T) {
 // Review of the simplification, R1: uploads at the head of a worker's
 // custody that cannot be fetched never stop the passes from reaching what lies
 // behind them. Each pass takes at least one upload it can handle off the first
-// continuationHandOnRounds, so a valid snapshot past the scan bound is
+// continuationHandOnRounds, if there is one, so a valid snapshot past the scan bound is
 // imported within a bounded number of passes, and no exchange waits for it.
 func TestAnUnfetchableHeadNeverStarvesASnapshotPastTheScanBound(t *testing.T) {
 	ctx := context.Background()
@@ -372,6 +372,94 @@ func TestAnUnfetchableHeadNeverStarvesASnapshotPastTheScanBound(t *testing.T) {
 				if upload.acked {
 					t.Fatalf("unavailable upload %d was acknowledged; it must stay in custody", n)
 				}
+			}
+		})
+	}
+}
+
+// brokenStreamArtifacts fails the artifact transport itself, as a worker
+// whose send of an upload's body dies partway does, for the named uploads.
+type brokenStreamArtifacts struct {
+	queuedUploadArtifacts
+	broken map[string]bool
+}
+
+func (b brokenStreamArtifacts) RoundTripArtifactWithRetry(ctx context.Context, request workerproto.Envelope, policy workerproto.RetryPolicy, limit int64) (workerproto.Envelope, []byte, error) {
+	var download workerproto.ArtifactDownloadRequest
+	if err := json.Unmarshal(request.Payload, &download); err != nil {
+		return workerproto.Envelope{}, nil, err
+	}
+	if b.broken[download.ManifestID] {
+		return workerproto.Envelope{}, nil, errors.New("ssh transport: remote exchange: exit status 1: artifact send: short object")
+	}
+	return b.queuedUploadArtifacts.RoundTripArtifactWithRetry(ctx, request, policy, limit)
+}
+
+// Self-review of the R1 fix: a fetch that fails in the artifact transport
+// leaves that session's artifact client unusable. The scan must report it,
+// so the exchange fails and the session is replaced, and the next sessions
+// must step over that upload, so a valid snapshot behind an upload whose
+// body the worker can never send is still imported.
+func TestATransportFailureReplacesTheSessionAndIsSteppedOver(t *testing.T) {
+	ctx := context.Background()
+	for _, permanent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "transient", true: "permanent"}[permanent], func(t *testing.T) {
+			w := newHandOnWorker(t)
+			// Two uploads at the head whose bodies the worker cannot send.
+			first, _ := w.snapshot(t, 1)
+			second := w.blocker(t, 0)
+			continuation, snapshotID := w.snapshot(t, 2)
+			control := &queuedUploadControl{uploads: []*pendingUpload{first, second, continuation}}
+			broken := map[string]bool{first.upload.Manifest.ID: true, second.upload.Manifest.ID: true}
+			skips := &checkpointScanSkips{}
+			opened := 0
+			open := func() coordinatorWorkerSession {
+				opened++
+				session := w.session(t, control)
+				session.ArtifactClient = coordinatorResultClient(t, w.now, fmt.Sprintf("exchange-artifact-%d", opened), brokenStreamArtifacts{queuedUploadArtifacts: queuedUploadArtifacts{control: control}, broken: broken})
+				session.CheckpointSkips = skips
+				return session
+			}
+			// As in production: one cached session, replaced after any error.
+			session := open()
+			failures := 0
+			sessions := &coordinatorWorkerSessions{
+				workerIDs: []string{"normandy"},
+				handOn: func(ctx context.Context, _ string) (backlog.WorkerExchangeReport, error) {
+					report, err := handOnCoordinatorWorkerContinuations(ctx, session, backlog.WorkerExchangeReport{}, 1024)
+					if err != nil {
+						session = open()
+					}
+					return report, err
+				},
+				exchange: func(ctx context.Context, _ string, _ backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error) {
+					report, err := exchangeCoordinatorWorker(ctx, session, 1024, func(context.Context) (backlog.WorkerExchangeReport, error) {
+						return backlog.WorkerExchangeReport{}, nil
+					})
+					if err != nil {
+						failures++
+						session = open()
+					}
+					return report, err
+				},
+			}
+			for pass := 1; pass <= 3; pass++ {
+				sessions.Tick(ctx, backlog.QuotaBridgeReport{})
+				if pass == 1 && !permanent {
+					clear(broken)
+				}
+			}
+			if failures == 0 {
+				t.Fatal("a transport failure was never reported by the exchange, so its session was never replaced")
+			}
+			if latest := w.latest(t); latest == nil || latest.ID != snapshotID || !continuation.acked {
+				t.Fatalf("the snapshot behind uploads the worker cannot send was not imported after 3 passes: latest = %+v, acknowledged %t", latest, continuation.acked)
+			}
+			if permanent && (first.acked || second.acked) {
+				t.Fatal("an upload that was never fetched was acknowledged")
+			}
+			if !permanent && (!first.acked || !second.acked) {
+				t.Fatalf("uploads whose transport recovered were not imported: %t %t", first.acked, second.acked)
 			}
 		})
 	}

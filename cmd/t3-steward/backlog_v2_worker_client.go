@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -38,6 +40,53 @@ type coordinatorWorkerSession struct {
 	CheckpointImporter backlog.CoordinatorCheckpointImporter
 	Binding            workerruntime.WorkerBinding
 	Records            backlog.ExecutionPackageRecordStore
+	// CheckpointSkips outlives the session: it is the worker's, so the
+	// sessions that replace this one step over what broke it.
+	CheckpointSkips *checkpointScanSkips
+}
+
+// checkpointScanSkips holds the uploads of one worker whose fetch failed in
+// the artifact transport, which leaves the session that tried it unusable.
+// Every scan of that worker's custody steps over them, so one body the worker
+// cannot send costs one session and never hides what lies behind it. A scan
+// that ends without such a failure has reached everything it could, and
+// clears the list so the next scan tries them again. Nothing waits on it.
+type checkpointScanSkips struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (s *checkpointScanSkips) excluded() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.ids)
+}
+
+func (s *checkpointScanSkips) add(id string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.ids) >= continuationHandOnRounds {
+		// Never a longer poll than one scan can build; start over instead.
+		s.ids = nil
+	}
+	if !slices.Contains(s.ids, id) {
+		s.ids = append(s.ids, id)
+	}
+}
+
+func (s *checkpointScanSkips) reset() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ids = nil
 }
 
 type coordinatorWorkerTickResult struct {
@@ -103,6 +152,10 @@ func newCoordinatorWorkerSessions(
 	sort.Strings(workerIDs)
 	coordinator := backlog.FleetCoordinator{Store: store}
 	cached := map[string]coordinatorWorkerSession{}
+	skips := make(map[string]*checkpointScanSkips, len(workerIDs))
+	for _, workerID := range workerIDs {
+		skips[workerID] = &checkpointScanSkips{}
+	}
 	open := func(ctx context.Context, workerID string) (coordinatorWorkerSession, error) {
 		if session, ok := cached[workerID]; ok {
 			return session, nil
@@ -115,6 +168,7 @@ func newCoordinatorWorkerSessions(
 		if err != nil {
 			return coordinatorWorkerSession{}, err
 		}
+		session.CheckpointSkips = skips[workerID]
 		if settings.Workers[workerID].Connection != "" {
 			cached[workerID] = session
 		}
@@ -322,34 +376,48 @@ func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorW
 // scanCoordinatorWorkerCheckpoints is the one scan of a worker's checkpoint
 // custody. Checkpoints are discovered one at a time, like results. One that
 // cannot be fetched or imported yet is skipped for the rest of this scan and
-// stays in the worker's custody; it never fails the exchange or hides what
-// lies behind it. It used to fail this worker's whole exchange on every
-// boundary, so its results, commands and offers stopped too (S14), and an
-// upload that could not be fetched at the head of the queue kept every
-// snapshot past the scan bound out of reach for good.
+// stays in the worker's custody; it never hides what lies behind it. It used
+// to fail this worker's whole exchange on every boundary, so its results,
+// commands and offers stopped too (S14), and an upload that could not be
+// fetched at the head of the queue kept every snapshot past the scan bound
+// out of reach for good.
+//
+// A fetch that fails in the artifact transport is the exception: it leaves
+// the session's artifact client unusable, so the scan ends with that error,
+// the exchange fails and the session is replaced, and the upload joins the
+// worker's CheckpointSkips for the scans after it.
 //
 // The hand-on (continuationsOnly) imports every continuation.md snapshot it
 // meets and steps over every other upload. The ordinary pass imports what it
 // meets, going on past continuation.md snapshots, which arrive at every turn
 // end of every running attempt, and ending after one other checkpoint. So
 // each pass takes off the queue at least one upload it can handle among the
-// first continuationHandOnRounds, and a snapshot further back is reached
-// within a bounded number of passes.
+// first continuationHandOnRounds, if there is one, and a snapshot further back
+// is reached within a bounded number of passes. Only a head of that many
+// uploads that all keep failing hides what lies behind it.
 func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64, continuationsOnly bool) (backlog.WorkerExchangeReport, error) {
 	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
 		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
 	}
-	var excluded []string
+	excluded := session.CheckpointSkips.excluded()
 	seen := map[string]struct{}{}
-	for round := 0; round < continuationHandOnRounds; round++ {
+	for round := len(excluded); round < continuationHandOnRounds; round++ {
+		if !session.ArtifactClient.Usable() {
+			return report, errors.New("coordinator worker checkpoint import: the artifact session is unusable after an earlier transport failure")
+		}
 		upload, err := session.Client.PollArtifact(ctx, "checkpoint", excluded...)
-		if err != nil || upload == nil {
+		if err != nil {
 			return report, err
+		}
+		if upload == nil {
+			session.CheckpointSkips.reset()
+			return report, nil
 		}
 		id := upload.Manifest.ID
 		if _, again := seen[id]; again {
 			// The worker announced an upload it was told to skip or had
 			// acknowledged; going on would never end.
+			session.CheckpointSkips.reset()
 			return report, nil
 		}
 		seen[id] = struct{}{}
@@ -358,6 +426,10 @@ func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWo
 			continue
 		}
 		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
+		if err != nil && !session.ArtifactClient.Usable() {
+			session.CheckpointSkips.add(id)
+			return report, err
+		}
 		if err != nil {
 			slog.Warn("worker checkpoint not fetched", "manifest", id, "worker", upload.Manifest.WorkerID, "reason", err)
 			excluded = append(excluded, id)
@@ -382,9 +454,11 @@ func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWo
 			return report, err
 		}
 		if !continuationsOnly && imported.Name != domain.ContinuationArtifactName {
+			session.CheckpointSkips.reset()
 			return report, nil
 		}
 	}
+	session.CheckpointSkips.reset()
 	return report, nil
 }
 

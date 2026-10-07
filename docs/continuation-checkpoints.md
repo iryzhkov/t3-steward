@@ -103,7 +103,10 @@ hides what lies behind it, so every pass takes off the queue at least one
 upload it can handle among the first 256 and a snapshot further back is
 reached within a bounded number of passes. Only a queue whose first 256
 uploads all stay unfetchable or deferred keeps what lies behind them in the
-worker's custody until some of them can be handled. Nothing waits for it: no
+worker's custody until some of them can be handled. A fetch that fails in the
+artifact transport itself fails the exchange, so the worker's session is
+replaced, and the coordinator steps over that upload in the scans that
+follow until one of them finishes without such a failure. Nothing waits for it: no
 offer, re-arm or planning decision is held back for a snapshot. A worker whose session cannot be opened is not dialled a second
 time in the same pass.
 
