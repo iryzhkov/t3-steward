@@ -18,10 +18,11 @@ import (
 // intake left behind for key into the migrated database at path. The store no
 // longer creates markers; it only lists them and releases them on an operator's
 // authenticated, audited instruction, so tests of those paths seed the
-// historical row directly in the shape the retired writer stored it.
+// historical row directly in the shape the retired writer stored it. The
+// writer's submission-quarantined audit event is not seeded: nothing reads it.
 func SeedHistoricQuarantine(path, key, digest, reason string, at time.Time) error {
-	if strings.TrimSpace(key) != key || key == "" {
-		return errors.New("historic quarantine key must be trimmed and nonempty")
+	if strings.TrimSpace(key) != key || key == "" || len(sqlite.QuarantineKey(key)) > 256 {
+		return errors.New("historic quarantine key must be trimmed, nonempty and fit the 256-character record key")
 	}
 	if raw, err := hex.DecodeString(digest); err != nil || len(raw) != 32 {
 		return errors.New("historic quarantine digest must be a SHA-256 hex string")

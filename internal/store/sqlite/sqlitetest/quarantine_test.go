@@ -61,6 +61,7 @@ func TestHistoricQuarantineFixtureRefusesRowsTheStoreCannotDecode(t *testing.T) 
 	for name, seed := range map[string]func() error{
 		"empty key":     func() error { return SeedHistoricQuarantine(path, "", digest, "refused", at) },
 		"untrimmed key": func() error { return SeedHistoricQuarantine(path, " legacy", digest, "refused", at) },
+		"oversized key": func() error { return SeedHistoricQuarantine(path, strings.Repeat("k", 246), digest, "refused", at) },
 		"short digest":  func() error { return SeedHistoricQuarantine(path, "legacy", "abc", "refused", at) },
 		"no reason":     func() error { return SeedHistoricQuarantine(path, "legacy", digest, "", at) },
 		"no time":       func() error { return SeedHistoricQuarantine(path, "legacy", digest, "refused", time.Time{}) },
