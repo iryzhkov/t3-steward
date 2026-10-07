@@ -165,7 +165,8 @@ Prompts, prompt artifacts and any other free text are never read.
 
 Deltas are computed by the read command from the retained readings, not
 stored, so a later method can re-derive them. For each finish, for every
-bucket key of the route's provider instance:
+retained bucket key of the route's provider instance, including a key with
+no reading near the interval:
 
 - `before` is the latest reading at or before the start, and `after` the
   earliest at or after the finish, each from any source and within 30 minutes;

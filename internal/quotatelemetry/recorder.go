@@ -387,6 +387,14 @@ func (r *Recorder) tick(ctx context.Context, now time.Time) error {
 	result.meta[metaSkippedReadings] = strconv.FormatInt(stats.SkippedReadings, 10)
 	result.meta[metaSkippedChecks] = strconv.FormatInt(stats.SkippedChecks, 10)
 	result.meta[metaLastSuccessAt] = formatInstant(now)
+	// The stored counters are the in-memory ones as a whole: a failure whose
+	// own best-effort write could not reach the store, because it could not
+	// be opened or written, is persisted here.
+	result.meta[metaLastError] = stats.LastError
+	result.meta[metaLastErrorAt] = ""
+	if stats.LastErrorAt != nil {
+		result.meta[metaLastErrorAt] = formatInstant(*stats.LastErrorAt)
+	}
 	for index := range result.events {
 		result.events[index].SchemaVersion = SchemaVersion
 		result.events[index].RecordedAt = now
@@ -713,18 +721,75 @@ func (r *Recorder) supersededAt(ctx context.Context, work Work, current domain.A
 	return current.UpdatedAt, nil
 }
 
+// withStagedWork completes the open work read from the store with the
+// dispatch and start events this tick has staged, so open work is what the
+// store will hold once the tick commits. A finish seen in the same tick as its
+// start, or as its dispatch, is then built from them: it keeps its start time,
+// duration and deltas. Committed events take precedence over staged ones.
+func (r *Recorder) withStagedWork(ctx context.Context, open []openWork, result *tickResult) ([]openWork, error) {
+	position := make(map[string]int, len(open))
+	for index, item := range open {
+		position[item.key] = index
+	}
+	for index := range result.events {
+		event := result.events[index]
+		if (event.Kind != KindDispatch && event.Kind != KindStart) || event.Work == nil {
+			continue
+		}
+		key := event.Work.Key()
+		at, listed := position[key]
+		if !listed {
+			// Not in this tick's batch of open work: it is new, or open and
+			// outside the batch, or already finished.
+			item := openWork{key: key}
+			if _, finished, err := r.store.event(ctx, KindFinish+":"+key); err != nil {
+				return nil, err
+			} else if finished {
+				continue
+			}
+			for _, kind := range []string{KindDispatch, KindStart} {
+				stored, found, err := r.store.event(ctx, kind+":"+key)
+				if err != nil {
+					return nil, err
+				}
+				if !found || stored.Work == nil {
+					continue
+				}
+				if kind == KindDispatch {
+					item.dispatch = &stored
+				} else {
+					item.start = &stored
+				}
+			}
+			open = append(open, item)
+			at = len(open) - 1
+			position[key] = at
+		}
+		if event.Kind == KindDispatch && open[at].dispatch == nil {
+			open[at].dispatch = &event
+		} else if event.Kind == KindStart && open[at].start == nil {
+			open[at].start = &event
+		}
+	}
+	return open, nil
+}
+
 func workKey(assignmentID string, epoch int64) string {
 	return assignmentID + ":" + strconv.FormatInt(epoch, 10)
 }
 
-// collectFinishes re-reads up to openBatch open assignments by id and records
-// a finish, with its check events, for each one that has ended.
+// collectFinishes re-reads up to openBatch open assignments by id, and every
+// assignment this tick dispatched or started, and records a finish, with its
+// check events, for each one that has ended.
 func (r *Recorder) collectFinishes(ctx context.Context, now time.Time, meta Meta, result *tickResult) error {
 	open, cursor, err := r.store.openWorkAfter(ctx, meta.OpenCursor, openBatch)
 	if err != nil {
 		return err
 	}
 	result.meta[metaOpenCursor] = cursor
+	if open, err = r.withStagedWork(ctx, open, result); err != nil {
+		return err
+	}
 	for _, item := range open {
 		base := item.start
 		if base == nil {

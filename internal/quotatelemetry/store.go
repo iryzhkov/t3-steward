@@ -735,7 +735,9 @@ func (s *Store) scanEvents(ctx context.Context, query string, args ...any) ([]Ev
 
 // attachDeltas computes the deltas of every finish event among events. The
 // spans are loaded once for all of them; the readings per finish, from the
-// two 30-minute windows around its start and its finish.
+// two 30-minute windows around its start and its finish, with the newest
+// retained reading of each bucket key of its provider instance, so a key
+// with no reading near the interval still has a delta that says so.
 func (s *Store) attachDeltas(ctx context.Context, events []Event, now time.Time) error {
 	var first, last time.Time
 	for _, event := range events {
@@ -781,12 +783,24 @@ func (s *Store) attachDeltas(ctx context.Context, events []Event, now time.Time)
 		}
 		spans = append(spans, span)
 	}
+	// The newest retained reading of each bucket key, per provider instance.
+	latestByInstance := map[string][]Event{}
 	for index := range events {
 		event := &events[index]
 		if event.Kind != KindFinish || event.Work == nil || event.Work.StartedAt == nil || event.Work.FinishedAt == nil {
 			continue
 		}
 		prefix := event.Work.Route.ProviderInstanceID + "/"
+		latest, loaded := latestByInstance[prefix]
+		if !loaded {
+			latest, err = s.scanEvents(ctx, `SELECT record FROM events WHERE seq IN (
+				SELECT MAX(seq) FROM events WHERE kind = 'reading' AND substr(route, 1, ?) = ? GROUP BY route)
+				LIMIT ?`, len(prefix), prefix, maxDeltaRows)
+			if err != nil {
+				return err
+			}
+			latestByInstance[prefix] = latest
+		}
 		window := `SELECT record FROM events WHERE kind = 'reading' AND at_ns BETWEEN ? AND ? AND substr(route, 1, ?) = ? LIMIT ?`
 		start, finish := *event.Work.StartedAt, *event.Work.FinishedAt
 		before, err := s.scanEvents(ctx, window, start.Add(-deltaReadingWindow).UnixNano(), start.UnixNano(), len(prefix), prefix, maxDeltaRows)
@@ -797,7 +811,8 @@ func (s *Store) attachDeltas(ctx context.Context, events []Event, now time.Time)
 		if err != nil {
 			return err
 		}
-		event.Deltas = ComputeDeltas(*event, append(before, after...), spans, now)
+		readings := append(append(before, after...), latest...)
+		event.Deltas = ComputeDeltas(*event, readings, spans, now)
 	}
 	return nil
 }

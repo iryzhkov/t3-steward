@@ -89,34 +89,36 @@ func PoolOf(route Route) string {
 	return route.ProviderInstanceID
 }
 
-// ComputeDeltas measures every window of the finish's provider instance. For
-// each bucket key, before is the latest reading at or before the start and
-// after the earliest at or after the finish, each from any source and within
-// 30 minutes. A finish with no recorded start has no interval and no deltas.
+// ComputeDeltas measures every window of the finish's provider instance. Each
+// bucket key that any of readings names has a delta, whether or not one of
+// its readings is near the interval: before is the latest reading at or before
+// the start and after the earliest at or after the finish, each from any
+// source and within 30 minutes, and a missing one is reported as an absence.
+// A finish with no recorded start has no interval and no deltas.
 func ComputeDeltas(finish Event, readings []Event, spans []WorkSpan, now time.Time) []Delta {
 	work := finish.Work
 	if work == nil || work.StartedAt == nil || work.FinishedAt == nil {
 		return nil
 	}
 	start, end := *work.StartedAt, *work.FinishedAt
-	type ends struct{ before, after *Reading }
+	type ends struct {
+		window        string
+		before, after *Reading
+	}
 	byKey := map[string]*ends{}
 	for index := range readings {
 		reading := readings[index].Reading
 		if reading == nil || reading.ProviderInstanceID != work.Route.ProviderInstanceID {
 			continue
 		}
+		pair := byKey[reading.BucketKey]
+		if pair == nil {
+			pair = &ends{window: reading.Window}
+			byKey[reading.BucketKey] = pair
+		}
 		observed := reading.ObservedAt
 		inBefore := !observed.After(start) && !observed.Before(start.Add(-deltaReadingWindow))
 		inAfter := !observed.Before(end) && !observed.After(end.Add(deltaReadingWindow))
-		if !inBefore && !inAfter {
-			continue
-		}
-		pair := byKey[reading.BucketKey]
-		if pair == nil {
-			pair = &ends{}
-			byKey[reading.BucketKey] = pair
-		}
 		if inBefore && (pair.before == nil || observed.After(pair.before.ObservedAt)) {
 			pair.before = reading
 		}
@@ -132,7 +134,7 @@ func ComputeDeltas(finish Event, readings []Event, spans []WorkSpan, now time.Ti
 	deltas := make([]Delta, 0, len(keys))
 	for _, key := range keys {
 		pair := byKey[key]
-		delta := Delta{Method: DeltaMethod, BucketKey: key, Attribution: AttributionUnavailable, Concurrent: []string{}}
+		delta := Delta{Method: DeltaMethod, BucketKey: key, Window: pair.window, Attribution: AttributionUnavailable, Concurrent: []string{}}
 		if pair.before != nil {
 			delta.Window = pair.before.Window
 			delta.Before = deltaReading(pair.before)
