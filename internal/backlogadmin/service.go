@@ -63,6 +63,7 @@ type QuarantineReader interface {
 }
 
 type Service struct {
+	planning         *PlanningSnapshotHolder
 	enrollWorker     WorkerEnrollmentHandler
 	graphInputRoot   string
 	graphValidator   func(domain.Workflow, domain.Task) error
@@ -526,6 +527,7 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 	loaded.supervisorClientConfigured = s.supervisorClientConfigured
 	loaded.workerProviders = s.workerProviders
 	loaded.resourcePolicy = s.viabilitySettings.ResourcePolicy
+	loaded.planning = s.planning.load()
 	if loaded.supervision, err = s.supervisionSnapshots(ctx, records, workers); err != nil {
 		return view{}, err
 	}
@@ -599,6 +601,7 @@ func notFound(kind, id string) error {
 }
 
 type view struct {
+	planning        planningSnapshot
 	resourcePolicy  domain.ResourcePlacementPolicy
 	requirements    []domain.WorkerRequirement
 	enrollments     []domain.WorkerEnrollment
@@ -1214,6 +1217,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 	default:
 		explanation.Summary = fmt.Sprintf("task has %d blocker(s)", len(explanation.Blockers))
 	}
+	v.addPlanningExplanation(&explanation, attempt)
 	return explanation, true
 }
 

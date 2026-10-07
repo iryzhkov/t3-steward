@@ -234,6 +234,7 @@ type coordinatorPlanner struct {
 	// availability, which the planner cannot read from the store. See
 	// backlog.SupervisionRouteRequest.
 	supervisorClientConfigured bool
+	planningSnapshot           *backlogadmin.PlanningSnapshotHolder
 	now                        func() time.Time
 }
 
@@ -414,7 +415,7 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 		// worker or pool. Younger and disjoint ordinary work stays for the normal
 		// planning pass after activation arbitration.
 		input.Constraints = append(input.Constraints, activationOlderOrdinaryConstraint{allowed: olderOrdinary})
-		report, err := p.coordinator.PlanAndCommit(ctx, input)
+		report, err := p.planAndRecord(ctx, input, records.Attempts)
 		if err != nil {
 			return false, err
 		}
@@ -498,14 +499,14 @@ func (p coordinatorPlanner) tick(ctx context.Context, quota backlog.QuotaBridgeR
 	// either shared bottleneck get the first transactional capacity check;
 	// newer wakes yield. The normal planner then reloads after any resumption.
 	if !reconcileWakes {
-		return p.coordinator.PlanAndCommit(ctx, input)
+		return p.planAndRecord(ctx, input, records.Attempts)
 	}
 	hasReadyWakes, err := p.store.HasReadyTaskWaits(ctx)
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, fmt.Errorf("inspect settled task wakes: %w", err)
 	}
 	if !hasReadyWakes {
-		return p.coordinator.PlanAndCommit(ctx, input)
+		return p.planAndRecord(ctx, input, records.Attempts)
 	}
 	contenders, err := backlog.BuildUnreservedProposals(input)
 	if err != nil {
@@ -554,7 +555,7 @@ func (p coordinatorPlanner) tick(ctx context.Context, quota backlog.QuotaBridgeR
 		// coordinator boundary instead of recursively extending this one.
 		return p.tick(ctx, quota, false)
 	}
-	return p.coordinator.PlanAndCommit(ctx, input)
+	return p.planAndRecord(ctx, input, records.Attempts)
 }
 
 // coordinatorWorkerAuthorization reports, per worker, the provider instances
@@ -853,6 +854,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	if err != nil {
 		return err
 	}
+	planningSnapshot := backlogadmin.NewPlanningSnapshotHolder(cfg.BacklogV2.Scheduling.Interval.D())
+	service.SetPlanningSnapshotHolder(planningSnapshot)
 	cursorKey, err := store.CoordinatorUsageCursorKey(ctx)
 	if err != nil {
 		return err
@@ -1097,8 +1100,9 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		}},
 		schedules: backlog.ScheduleTimer{Store: store, CatchUpMax: cfg.BacklogV2.Scheduling.CatchUpMax},
 		planning: coordinatorPlanner{
-			settings: &cfg.BacklogV2,
-			store:    store, coordinator: backlog.FleetCoordinator{Store: store}, epoch: epoch,
+			planningSnapshot: planningSnapshot,
+			settings:         &cfg.BacklogV2,
+			store:            store, coordinator: backlog.FleetCoordinator{Store: store}, epoch: epoch,
 			maxWorkerSnapshotAge:       cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
 			maxQuotaObservationAge:     cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
 			deadlineRiskWindow:         24 * time.Hour,
