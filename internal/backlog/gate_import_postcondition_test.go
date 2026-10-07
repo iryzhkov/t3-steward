@@ -55,7 +55,7 @@ func importFinalizedGate(t *testing.T, task domain.Task, storage string, finaliz
 		objects = append(objects, resultObject(id, "results/"+name, string(artifact.Kind), media, payloads[index]))
 	}
 	manifest := resultManifest(now, assignment, objects)
-	importer := CoordinatorResultImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: store, Artifacts: CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store}, MaxArtifactBytes: 2 << 20, MaxTotalBytes: 4 << 20, Now: func() time.Time { return now.Add(time.Minute) }}
+	importer := CoordinatorResultImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: store, Artifacts: CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store}, MaxArtifactBytes: 256 << 20, MaxTotalBytes: 512 << 20, Now: func() time.Time { return now.Add(time.Minute) }}
 	response := workerproto.ArtifactUploadResponse{Manifest: manifest, Custody: resultCustody(t, manifest, "coordinator")}
 	result, err := importer.Import(ctx, response, data)
 	if err != nil {

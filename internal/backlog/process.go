@@ -24,7 +24,9 @@ type ProcessRequest struct {
 	// KillRemaining kills whatever is still running under this request's ID
 	// before the command starts and after it exits. A retried request reuses
 	// its ID, and a process the command left behind would otherwise keep the
-	// unit alive, refuse the retry and go on changing the workspace.
+	// unit alive, refuse the retry and go on changing the workspace. When the
+	// scope cannot be shown to be empty, Run fails rather than reporting the
+	// command's own result.
 	KillRemaining bool
 	// MaxOutputBytes bounds the combined standard output and standard error
 	// while they are being accumulated, rather than after the process has
@@ -109,6 +111,9 @@ type ProcessRunner interface {
 type SystemdScopeRunner struct {
 	SystemdRunBinary string
 	SystemctlBinary  string
+	// ScopeCleanupTimeout bounds how long a KillRemaining request waits for
+	// its scope to empty; zero means scopeCleanupTimeout.
+	ScopeCleanupTimeout time.Duration
 }
 
 func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (ProcessResult, error) {
@@ -138,7 +143,10 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 	fmt.Fprintf(log, "$ %s %s\n", r.systemdRun(), strings.Join(args, " "))
 
 	if request.KillRemaining {
-		r.killLeftScope(unit)
+		if err := r.clearScope(unit); err != nil {
+			fmt.Fprintf(log, "! %v\n", err)
+			return ProcessResult{}, err
+		}
 	}
 	output := boundedBuffer{limit: request.MaxOutputBytes}
 	command := exec.Command(r.systemdRun(), args...)
@@ -155,11 +163,26 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 
 	select {
 	case err := <-waited:
+		var cleanupErr error
 		if request.KillRemaining {
-			r.killLeftScope(unit)
+			cleanupErr = r.clearScope(unit)
 		}
 		_, _ = io.WriteString(log, output.String())
 		result := ProcessResult{Output: output.String(), Truncated: output.truncated}
+		if cleanupErr != nil {
+			// A process the command left behind may still be running and
+			// changing the workspace, so whatever the command reported cannot
+			// stand as a success.
+			fmt.Fprintf(log, "! %v\n", cleanupErr)
+			if err != nil {
+				cleanupErr = errors.Join(err, cleanupErr)
+			}
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) {
+				result.ExitCode = exitError.ExitCode()
+			}
+			return result, cleanupErr
+		}
 		if err == nil {
 			return result, nil
 		}
@@ -195,12 +218,55 @@ func (r SystemdScopeRunner) killScope(log io.Writer, unit string) error {
 	return nil
 }
 
-// killLeftScope kills any process still in unit. Usually the unit is gone,
-// and the refusal to kill a unit that is not loaded is expected; if a process
-// does survive, the next request under the same unit fails rather than
-// running beside it.
-func (r SystemdScopeRunner) killLeftScope(unit string) {
-	_ = exec.Command(r.systemctl(), "--user", "kill", "--kill-who=all", "--signal=KILL", unit).Run()
+// scopeCleanupTimeout is the default bound on the whole of clearScope, so a
+// user manager that stops answering fails the request instead of hanging the
+// worker.
+const scopeCleanupTimeout = 30 * time.Second
+
+// scopeCleanupPoll is how often clearScope asks whether the unit has stopped.
+const scopeCleanupPoll = 20 * time.Millisecond
+
+// clearScope kills any process still in unit and returns only once systemd
+// reports the unit inactive, which is when no process is left in it. Usually
+// the unit is already gone, and systemctl refusing to kill a unit that is not
+// loaded is expected; the state query that follows proves the absence. Any
+// other outcome, a state query that fails or a unit still active at the
+// deadline, is an error: the caller cannot rule out a process that keeps
+// changing the workspace, and must not report success.
+func (r SystemdScopeRunner) clearScope(unit string) error {
+	timeout := r.ScopeCleanupTimeout
+	if timeout <= 0 {
+		timeout = scopeCleanupTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	killOutput, killErr := exec.CommandContext(ctx, r.systemctl(), "--user", "kill", "--kill-who=all", "--signal=KILL", unit).CombinedOutput()
+	state := ""
+	for {
+		out, err := exec.CommandContext(ctx, r.systemctl(), "--user", "show", "--property=ActiveState", "--value", unit).CombinedOutput()
+		state = strings.TrimSpace(string(out))
+		if err == nil && (state == "inactive" || state == "failed") {
+			return nil
+		}
+		if err != nil {
+			// Without an answer from the user manager nothing more can be
+			// learned by waiting.
+			return scopeCleanupError(unit, fmt.Sprintf("unknown (%v: %s)", err, state), killErr, killOutput)
+		}
+		select {
+		case <-ctx.Done():
+			return scopeCleanupError(unit, state, killErr, killOutput)
+		case <-time.After(scopeCleanupPoll):
+		}
+	}
+}
+
+func scopeCleanupError(unit, state string, killErr error, killOutput []byte) error {
+	err := fmt.Errorf("process scope %s could not be cleared: state %s", unit, state)
+	if killErr != nil {
+		err = fmt.Errorf("%w; kill: %v: %s", err, killErr, strings.TrimSpace(string(killOutput)))
+	}
+	return err
 }
 
 func (r SystemdScopeRunner) systemdRun() string {

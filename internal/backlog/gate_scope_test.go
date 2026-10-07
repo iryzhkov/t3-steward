@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,27 +16,119 @@ import (
 
 // A request with KillRemaining clears its scope before it starts and after it
 // exits; an ordinary request still leaves the scope alone on a normal exit.
+// The kill of a unit that is not loaded fails, as the real systemctl does, and
+// the state query proves the unit absent.
 func TestSystemdScopeRunnerKillRemaining(t *testing.T) {
 	for _, kill := range []bool{false, true} {
 		t.Run(fmt.Sprintf("kill=%v", kill), func(t *testing.T) {
 			root := t.TempDir()
 			calls := filepath.Join(root, "calls")
 			systemdRun := writeExecutable(t, root, "systemd-run", fmt.Sprintf("#!/bin/sh\necho run >> %q\n", calls))
-			systemctl := writeExecutable(t, root, "systemctl", fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\nexit 1\n", calls))
+			systemctl := writeExecutable(t, root, "systemctl", fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\nif [ \"$2\" = show ]; then echo inactive; exit 0; fi\necho not loaded >&2\nexit 1\n", calls))
 			_, err := (SystemdScopeRunner{SystemdRunBinary: systemdRun, SystemctlBinary: systemctl}).Run(context.Background(),
 				ProcessRequest{ID: "verify-attempt-1-gate-0", Dir: root, Program: "/bin/sh", Args: []string{"-c", "true"}, KillRemaining: kill})
 			if err != nil {
 				t.Fatal(err)
 			}
-			killCall := "--user kill --kill-who=all --signal=KILL " + processScopeUnit("verify-attempt-1-gate-0")
+			unit := processScopeUnit("verify-attempt-1-gate-0")
+			clear := "--user kill --kill-who=all --signal=KILL " + unit + "\n--user show --property=ActiveState --value " + unit
 			want := "run"
 			if kill {
-				want = killCall + "\nrun\n" + killCall
+				want = clear + "\nrun\n" + clear
 			}
 			if got := strings.TrimSpace(readAbsoluteTestFile(t, calls)); got != want {
 				t.Fatalf("calls:\n%s\nwant:\n%s", got, want)
 			}
 		})
+	}
+}
+
+// When the scope cannot be shown to be empty, a process may still be running
+// in it. Before the command that refuses to start it; after the command it
+// turns even a successful exit into an error that keeps the systemctl output.
+func TestSystemdScopeRunnerRefusesUnclearedScope(t *testing.T) {
+	for _, phase := range []string{"before", "after"} {
+		t.Run(phase, func(t *testing.T) {
+			root := t.TempDir()
+			calls := filepath.Join(root, "calls")
+			ran := filepath.Join(root, "ran")
+			systemdRun := writeExecutable(t, root, "systemd-run", fmt.Sprintf("#!/bin/sh\ntouch %q\necho run >> %q\n", ran, calls))
+			// Before: every call fails. After: the user manager answers until
+			// the command has run, then fails.
+			condition := "true"
+			if phase == "after" {
+				condition = fmt.Sprintf("[ -e %q ]", ran)
+			}
+			systemctl := writeExecutable(t, root, "systemctl", fmt.Sprintf("#!/bin/sh\necho \"$*\" >> %q\nif %s; then echo simulated-user-manager-failure >&2; exit 1; fi\nif [ \"$2\" = show ]; then echo inactive; exit 0; fi\nexit 1\n", calls, condition))
+			var log strings.Builder
+			result, err := (SystemdScopeRunner{SystemdRunBinary: systemdRun, SystemctlBinary: systemctl}).Run(context.Background(),
+				ProcessRequest{ID: "verify-attempt-1-gate-0", Dir: root, Program: "/bin/sh", Args: []string{"-c", "true"}, Log: &log, KillRemaining: true})
+			if err == nil {
+				t.Fatalf("Run succeeded with an uncleared scope; calls:\n%s", readAbsoluteTestFile(t, calls))
+			}
+			var exitErr *ProcessExitError
+			if errors.As(err, &exitErr) || result.ExitCode != 0 {
+				t.Fatalf("cleanup failure reported as command exit: %v, %+v", err, result)
+			}
+			if !strings.Contains(err.Error(), "simulated-user-manager-failure") || !strings.Contains(log.String(), "simulated-user-manager-failure") {
+				t.Fatalf("cleanup evidence lost: err=%v log=%q", err, log.String())
+			}
+			if _, statErr := os.Stat(ran); (statErr == nil) != (phase == "after") {
+				t.Fatalf("phase %s: command ran = %v", phase, statErr == nil)
+			}
+		})
+	}
+}
+
+// A failed kill of a live scope is not an absent scope. A gate child survived
+// a systemctl kill that failed, waited for the worker to open one declared
+// output for hashing and rewrote another before its digest. The runner used
+// to ignore the failure, so the worker passed and the coordinator succeeded
+// the attempt with content the last gate command rejected. The scope, the
+// child and systemctl are real; only every kill after the first is made to
+// fail, so the child survives into hashing.
+func TestGateKillFailureMustNotApproveBadOutput(t *testing.T) {
+	requireUserSystemd(t)
+	if _, err := exec.LookPath("inotifywait"); err != nil {
+		t.Skip("inotifywait unavailable")
+	}
+	dir := h2GateRepository(t)
+	big := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(big, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(big, 128<<20); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, dir, "out.txt", "good")
+	storage := t.TempDir()
+	id := "attempt-1"
+	req := h2GateRequest(dir, id)
+	req.WorkerID = "worker-a"
+	systemctlPath, err := exec.LookPath("systemctl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := t.TempDir()
+	ctl := writeExecutable(t, fake, "systemctl", fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = kill ]; then\n  n=$(($(cat %[1]q 2>/dev/null || echo 0) + 1)); echo $n > %[1]q\n  if [ $n -gt 1 ]; then echo simulated-user-manager-kill-failure >&2; exit 1; fi\nfi\nexec %[2]q \"$@\"\n", filepath.Join(fake, "kills"), systemctlPath))
+	agent := `(inotifywait -qq -e open big.bin; printf 'bad\n' > out.txt) >/dev/null 2>&1 </dev/null & sleep 0.3`
+	req.Task.Gate = &domain.TaskGate{Commands: []string{agent, "grep -qx good out.txt"}, Timeout: 5 * time.Second}
+	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "big.bin"}, {Name: "out.txt"}}
+	t.Cleanup(func() {
+		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))).Run()
+	})
+	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: time.Second}}).Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupImmutable(t, result.StorageDir)
+	imported, _, _, _, _ := importFinalizedGate(t, req.Task, storage, result)
+	progress := imported.Transition[0].Attempt.Progress
+	if result.Completion.VerificationPassed || progress == domain.ProgressSucceeded {
+		t.Fatalf("failed scope cleanup approved: worker verification=%v coordinator progress=%s", result.Completion.VerificationPassed, progress)
+	}
+	if !strings.Contains(result.Completion.Failure, "could not be cleared") || !strings.Contains(result.Completion.Failure, "simulated-user-manager-kill-failure") {
+		t.Fatalf("failure does not name the uncleared scope: %q", result.Completion.Failure)
 	}
 }
 
