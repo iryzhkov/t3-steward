@@ -204,11 +204,12 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	}
 	// Enforce the transport/evidence cap here: unusual tool output must become
 	// an importable failure, never poison a run.
-	structured, marshalErr := json.Marshal(report)
+	// Measure the encoding Finalize uploads, indented with a final newline.
+	structured, marshalErr := json.MarshalIndent(report, "", "  ")
 	if marshalErr != nil {
 		return report, nil, marshalErr
 	}
-	if len(structured) > GateEvidenceMaxBytes {
+	if len(structured)+1 > GateEvidenceMaxBytes {
 		fmt.Fprintf(&log, "\n[gate metadata exceeded coordinator limit]\n%s\n", structured)
 		report.Passed = false
 		report.Failure = &GateFailure{Command: "gate metadata", ExitCode: 1, Reason: "structured gate metadata exceeds coordinator limit; see gate/log.txt"}
