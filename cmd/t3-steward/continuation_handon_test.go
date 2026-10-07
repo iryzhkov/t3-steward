@@ -1,0 +1,329 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
+	"github.com/iryzhkov/t3-steward/internal/workerruntime"
+)
+
+// handOnWorker is a failed attempt whose assignment on worker normandy was
+// released, with the uploads that worker can hold for it.
+type handOnWorker struct {
+	store      *sqlite.Store
+	now        time.Time
+	task       domain.Task
+	attempt    domain.Attempt
+	assignment domain.Assignment
+}
+
+func newHandOnWorker(t *testing.T) handOnWorker {
+	t.Helper()
+	now := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	task := domain.Task{ID: "task-1", WorkflowID: "workflow-1", Name: "task"}
+	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressFailed, Control: domain.ControlStopped, Revision: 2, AssignmentID: "assignment-1", UpdatedAt: now}
+	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "normandy", WorkerEpoch: "worker-1", State: domain.AssignmentReleased, Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveCoordinatorRecords(context.Background(), sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{{ID: attempt.WorkflowRunID, WorkflowID: task.WorkflowID}}, Tasks: []domain.Task{task}, Attempts: []domain.Attempt{attempt}, Assignments: []domain.Assignment{assignment}}); err != nil {
+		t.Fatal(err)
+	}
+	return handOnWorker{store: store, now: now, task: task, attempt: attempt, assignment: assignment}
+}
+
+func (w handOnWorker) upload(t *testing.T, id string, objects []workerproto.ArtifactObject, raw []byte) *pendingUpload {
+	t.Helper()
+	var total int64
+	for _, object := range objects {
+		total += object.Size
+	}
+	manifest := workerproto.ArtifactTransferManifest{Version: 1, ID: id, Direction: "upload", CoordinatorEpoch: 1, WorkerID: "normandy", WorkerEpoch: "worker-1", AssignmentID: w.assignment.ID, AssignmentEpoch: w.assignment.Epoch, Objects: objects, TotalBytes: total, CreatedAt: w.now.Add(time.Minute), ExpiresAt: w.now.Add(time.Hour)}
+	return &pendingUpload{upload: workerproto.ArtifactUploadResponse{Manifest: manifest, Custody: coordinatorResultCustody(t, manifest)}, raw: raw}
+}
+
+// blocker is a throttle checkpoint upload, which the hand-on leaves pending.
+func (w handOnWorker) blocker(t *testing.T, n int) *pendingUpload {
+	t.Helper()
+	raw := []byte("resume here\n")
+	id := fmt.Sprintf("checkpoint-attempt-1-%08x", n)
+	return w.upload(t, fmt.Sprintf("upload-assignment-1-checkpoint-%08x", n), []workerproto.ArtifactObject{
+		coordinatorResultObject(id, "checkpoints/"+id+".md", "checkpoint", "text/markdown", raw),
+	}, raw)
+}
+
+// snapshot is the attempt's live continuation.md snapshot of one sequence.
+func (w handOnWorker) snapshot(t *testing.T, sequence int64) (*pendingUpload, string) {
+	t.Helper()
+	body := []byte(fmt.Sprintf("step %d\n", sequence))
+	snapshotID, metadataID := domain.ContinuationLiveArtifactID(w.attempt.ID, 1, sequence), domain.ContinuationLiveMetadataArtifactID(w.attempt.ID, 1, sequence)
+	object := coordinatorResultObject(snapshotID, "checkpoints/"+snapshotID+".md", "checkpoint", "text/markdown", body)
+	metadata, err := json.Marshal(domain.ContinuationCheckpoint{AttemptID: w.attempt.ID, Sequence: sequence, Turn: fmt.Sprintf("turn-%d", sequence), Boundary: domain.ContinuationTurnEnd,
+		SHA256: object.SHA256, Size: object.Size, OriginalSize: object.Size, CapturedAt: w.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w.upload(t, fmt.Sprintf("upload-assignment-1-checkpoint-continuation-%020d-%020d", 1, sequence), []workerproto.ArtifactObject{
+		object,
+		coordinatorResultObject(metadataID, "checkpoints/"+metadataID+".json", "checkpoint", "application/json", metadata),
+	}, bytes.Join([][]byte{body, metadata}, nil)), snapshotID
+}
+
+func (w handOnWorker) session(t *testing.T, control *queuedUploadControl) coordinatorWorkerSession {
+	t.Helper()
+	return coordinatorWorkerSession{
+		Client:             coordinatorResultClient(t, w.now, "exchange-control", control),
+		ArtifactClient:     coordinatorResultClient(t, w.now, "exchange-artifact", queuedUploadArtifacts{control: control}),
+		CheckpointImporter: backlog.CoordinatorCheckpointImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: w.store, Artifacts: backlog.CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: w.store}, MaxArtifactBytes: 1024, MaxTotalBytes: 1024, Now: func() time.Time { return w.now.Add(3 * time.Minute) }},
+	}
+}
+
+func (w handOnWorker) latest(t *testing.T) *domain.Artifact {
+	t.Helper()
+	records, err := w.store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return backlog.LatestContinuationArtifact(records.Artifacts, records.Attempts, w.attempt.WorkflowRunID, w.task.ID)
+}
+
+// Review round 4, R6: the replacement is offered on a worker polled before
+// the reachable worker that holds its predecessor's snapshot. Tick imports
+// every worker's snapshots before any exchange builds an offer.
+func TestTheTickHandsOnEveryWorkersSnapshotsBeforeAnyOffer(t *testing.T) {
+	ctx := context.Background()
+	w := newHandOnWorker(t)
+	continuation, snapshotID := w.snapshot(t, 1)
+	control := &queuedUploadControl{uploads: []*pendingUpload{w.blocker(t, 0), continuation}}
+	session := w.session(t, control)
+	var order []string
+	sessions := &coordinatorWorkerSessions{
+		// The destination sorts first.
+		workerIDs: []string{"anvil", "normandy"},
+		handOn: func(ctx context.Context, workerID string) (backlog.WorkerExchangeReport, error) {
+			order = append(order, "hand-on "+workerID)
+			if workerID == "anvil" {
+				return backlog.WorkerExchangeReport{}, nil
+			}
+			return handOnCoordinatorWorkerContinuations(ctx, session, backlog.WorkerExchangeReport{}, 1024)
+		},
+		exchange: func(ctx context.Context, workerID string, _ backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error) {
+			order = append(order, "exchange "+workerID)
+			if workerID == "anvil" {
+				// The destination builds the replacement's first offer.
+				if latest := w.latest(t); latest == nil || latest.ID != snapshotID {
+					t.Errorf("the destination offered before the source's snapshot was imported: %+v", latest)
+				}
+				return backlog.WorkerExchangeReport{}, nil
+			}
+			return exchangeCoordinatorWorker(ctx, session, 1024, func(context.Context) (backlog.WorkerExchangeReport, error) {
+				return backlog.WorkerExchangeReport{}, nil
+			})
+		},
+	}
+	report := sessions.Tick(ctx, backlog.QuotaBridgeReport{})
+	for _, result := range report.Results {
+		if result.Err != nil {
+			t.Fatal(result.Err)
+		}
+	}
+	if want := []string{"hand-on anvil", "hand-on normandy", "exchange anvil", "exchange normandy"}; !slices.Equal(order, want) {
+		t.Fatalf("order = %v, want %v", order, want)
+	}
+	if !continuation.acked || len(report.Results) != 2 || len(report.Results[1].Report.Checkpoints) != 1 || report.Results[1].Report.Checkpoints[0].ID != snapshotID {
+		t.Fatalf("results = %+v, acknowledged %t", report.Results, continuation.acked)
+	}
+}
+
+// countingResolver fails every credential resolution and counts them.
+type countingResolver struct{ calls map[string]int }
+
+func (r *countingResolver) ResolveProtocol(_ context.Context, reference string) (workerruntime.ProtocolCredentials, error) {
+	r.calls[reference]++
+	return workerruntime.ProtocolCredentials{}, errors.New("host unreachable")
+}
+
+// Self-review of round 4: the hand-on phase opens each worker's session
+// before the exchanges, so a worker that cannot be opened must not be opened
+// a second time for its exchange in the same pass, and its exchange reports
+// the error.
+func TestAWorkerThatCannotBeOpenedIsTriedOncePerPass(t *testing.T) {
+	cfg := config.Default()
+	setCoordinatorTestRoots(t, &cfg)
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	resolver := &countingResolver{calls: map[string]int{}}
+	sessions, err := newCoordinatorWorkerSessions(cfg.BacklogV2, store, 7, resolver, nil, backlog.CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for pass := 1; pass <= 2; pass++ {
+		report := sessions.Tick(context.Background(), backlog.QuotaBridgeReport{})
+		if len(report.Results) == 0 {
+			t.Fatal("no workers configured")
+		}
+		for _, result := range report.Results {
+			if result.Err == nil || !strings.Contains(result.Err.Error(), "host unreachable") {
+				t.Fatalf("pass %d, worker %s: %v", pass, result.WorkerID, result.Err)
+			}
+		}
+		total := 0
+		for _, calls := range resolver.calls {
+			total += calls
+		}
+		if total != pass*len(report.Results) {
+			t.Fatalf("pass %d: %d session opens for %d workers", pass, total, len(report.Results))
+		}
+	}
+}
+
+// Review round 4, R7, under the flat contract: the scan bound and a snapshot
+// that cannot be imported yet never hold anything. A snapshot behind 32 other
+// uploads, and the latest of more than 32 snapshots, are imported before
+// offers; a snapshot past the bound, or one that cannot be fetched, is left in
+// the worker's custody, the pass goes on, and a later pass imports it and
+// makes it the task's latest.
+func TestTheHandOnIsNeverSettledByTheScanBound(t *testing.T) {
+	ctx := context.Background()
+	t.Run("snapshot behind 32 other uploads", func(t *testing.T) {
+		w := newHandOnWorker(t)
+		control := &queuedUploadControl{}
+		for n := 0; n < 32; n++ {
+			control.uploads = append(control.uploads, w.blocker(t, n))
+		}
+		continuation, snapshotID := w.snapshot(t, 1)
+		control.uploads = append(control.uploads, continuation)
+		_, err := exchangeCoordinatorWorker(ctx, w.session(t, control), 1024, func(context.Context) (backlog.WorkerExchangeReport, error) {
+			if latest := w.latest(t); latest == nil || latest.ID != snapshotID {
+				t.Errorf("offers were built before the queued snapshot was imported: %+v", latest)
+			}
+			return backlog.WorkerExchangeReport{}, nil
+		})
+		if err != nil || !continuation.acked {
+			t.Fatalf("exchange = %v, acknowledged %t", err, continuation.acked)
+		}
+	})
+	t.Run("more than 32 live snapshots", func(t *testing.T) {
+		w := newHandOnWorker(t)
+		control := &queuedUploadControl{}
+		var latestID string
+		for sequence := int64(1); sequence <= 34; sequence++ {
+			var continuation *pendingUpload
+			continuation, latestID = w.snapshot(t, sequence)
+			control.uploads = append(control.uploads, continuation)
+		}
+		_, err := exchangeCoordinatorWorker(ctx, w.session(t, control), 1024, func(context.Context) (backlog.WorkerExchangeReport, error) {
+			if latest := w.latest(t); latest == nil || latest.ID != latestID {
+				t.Errorf("offers were built from an older snapshot: %+v, want %s", latest, latestID)
+			}
+			return backlog.WorkerExchangeReport{}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	// passes runs Tick over one worker until the pass with the given number
+	// and reports the task's latest snapshot after each pass. Every exchange
+	// runs; nothing is held. The ordinary checkpoint pass after reconcile
+	// reports a fetch failure as the exchange's error, as it does on main, so
+	// tolerated names a case where that is expected.
+	passes := func(t *testing.T, w handOnWorker, control *queuedUploadControl, count int, tolerated bool) []string {
+		t.Helper()
+		session := w.session(t, control)
+		exchanged := 0
+		sessions := &coordinatorWorkerSessions{
+			workerIDs: []string{"normandy"},
+			handOn: func(ctx context.Context, _ string) (backlog.WorkerExchangeReport, error) {
+				return handOnCoordinatorWorkerContinuations(ctx, session, backlog.WorkerExchangeReport{}, 1024)
+			},
+			exchange: func(ctx context.Context, _ string, _ backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error) {
+				exchanged++
+				return exchangeCoordinatorWorker(ctx, session, 1024, func(context.Context) (backlog.WorkerExchangeReport, error) {
+					return backlog.WorkerExchangeReport{}, nil
+				})
+			},
+		}
+		var latest []string
+		for pass := 1; pass <= count; pass++ {
+			if report := sessions.Tick(ctx, backlog.QuotaBridgeReport{}); len(report.Results) != 1 || (report.Results[0].Err != nil && !tolerated) {
+				t.Fatalf("pass %d: report = %+v", pass, report)
+			}
+			if exchanged != pass {
+				t.Fatalf("pass %d: %d exchanges; the pass waited", pass, exchanged)
+			}
+			id := ""
+			if artifact := w.latest(t); artifact != nil {
+				id = artifact.ID
+			}
+			latest = append(latest, id)
+		}
+		return latest
+	}
+	t.Run("snapshot past the scan bound", func(t *testing.T) {
+		w := newHandOnWorker(t)
+		earlier, earlierID := w.snapshot(t, 1)
+		control := &queuedUploadControl{uploads: []*pendingUpload{earlier}}
+		for n := 0; n < continuationHandOnRounds; n++ {
+			control.uploads = append(control.uploads, w.blocker(t, n))
+		}
+		continuation, snapshotID := w.snapshot(t, 2)
+		control.uploads = append(control.uploads, continuation)
+		latest := passes(t, w, control, 2, false)
+		// The first pass imports the earlier snapshot and leaves the one past
+		// the bound in custody; the ordinary pass after reconcile takes one
+		// throttle checkpoint off the queue, so the next hand-on reaches it.
+		if latest[0] != earlierID {
+			t.Fatalf("after pass 1 latest = %q, want %q; the fixture no longer reaches the bound", latest[0], earlierID)
+		}
+		if latest[1] != snapshotID || !continuation.acked {
+			t.Fatalf("after pass 2 latest = %q, want %q (acknowledged %t)", latest[1], snapshotID, continuation.acked)
+		}
+	})
+	// Self-review of round 4: a queue of exactly the bound is drained in one
+	// scan, not cut short.
+	t.Run("queue of exactly the scan bound", func(t *testing.T) {
+		w := newHandOnWorker(t)
+		control := &queuedUploadControl{}
+		for n := 0; n < continuationHandOnRounds-1; n++ {
+			control.uploads = append(control.uploads, w.blocker(t, n))
+		}
+		continuation, snapshotID := w.snapshot(t, 1)
+		control.uploads = append(control.uploads, continuation)
+		report, err := handOnCoordinatorWorkerContinuations(ctx, w.session(t, control), backlog.WorkerExchangeReport{}, 1024)
+		if err != nil || len(report.Checkpoints) != 1 || report.Checkpoints[0].ID != snapshotID || !continuation.acked {
+			t.Fatalf("a queue of %d uploads: %+v, %v", continuationHandOnRounds, report.Checkpoints, err)
+		}
+	})
+	t.Run("snapshot that cannot be fetched yet", func(t *testing.T) {
+		w := newHandOnWorker(t)
+		broken, snapshotID := w.snapshot(t, 1)
+		body := broken.raw
+		broken.raw = []byte("not the announced bytes")
+		control := &queuedUploadControl{uploads: []*pendingUpload{broken}}
+		if latest := passes(t, w, control, 1, true); latest[0] != "" || broken.acked {
+			t.Fatalf("a snapshot that could not be fetched was imported: %q", latest[0])
+		}
+		broken.raw = body
+		if latest := passes(t, w, control, 1, false); latest[0] != snapshotID || !broken.acked {
+			t.Fatalf("the repaired snapshot was not imported by the next pass: %q", latest[0])
+		}
+	})
+}

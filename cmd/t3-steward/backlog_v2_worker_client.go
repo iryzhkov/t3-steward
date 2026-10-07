@@ -56,8 +56,21 @@ type coordinatorWorkerTickReport struct {
 type coordinatorWorkerSessions struct {
 	close     func() error
 	workerIDs []string
-	exchange  func(context.Context, string, backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error)
+	// handOn imports one worker's continuation.md snapshots; Tick runs it for
+	// every worker before any exchange. Nothing waits for its outcome.
+	handOn   func(context.Context, string) (backlog.WorkerExchangeReport, error)
+	exchange func(context.Context, string, backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error)
 }
+
+// coordinatorWorkerUnopened is a hand-on failure to open a worker's session.
+// Tick reports it as that worker's exchange error instead of dialling the
+// worker a second time in the same pass, so an unreachable host costs one
+// connection timeout per pass.
+type coordinatorWorkerUnopened struct{ err error }
+
+func (e coordinatorWorkerUnopened) Error() string { return e.err.Error() }
+
+func (e coordinatorWorkerUnopened) Unwrap() error { return e.err }
 
 func newCoordinatorWorkerSessions(
 	settings config.BacklogV2,
@@ -90,8 +103,42 @@ func newCoordinatorWorkerSessions(
 	sort.Strings(workerIDs)
 	coordinator := backlog.FleetCoordinator{Store: store}
 	cached := map[string]coordinatorWorkerSession{}
+	open := func(ctx context.Context, workerID string) (coordinatorWorkerSession, error) {
+		if session, ok := cached[workerID]; ok {
+			return session, nil
+		}
+		sessionID, err := newCoordinatorWorkerSessionID(settings.Coordinator.ID, workerID)
+		if err != nil {
+			return coordinatorWorkerSession{}, err
+		}
+		session, err := newCoordinatorWorkerSession(ctx, settings, store, workerID, coordinatorEpoch, sessionID, resolver, time.Now().UTC(), commandFactory, artifacts)
+		if err != nil {
+			return coordinatorWorkerSession{}, err
+		}
+		if settings.Workers[workerID].Connection != "" {
+			cached[workerID] = session
+		}
+		return session, nil
+	}
+	drop := func(workerID string, session coordinatorWorkerSession) {
+		if session.Close != nil {
+			_ = session.Close()
+			delete(cached, workerID)
+		}
+	}
 	return &coordinatorWorkerSessions{
 		workerIDs: workerIDs,
+		handOn: func(ctx context.Context, workerID string) (backlog.WorkerExchangeReport, error) {
+			session, err := open(ctx, workerID)
+			if err != nil {
+				return backlog.WorkerExchangeReport{}, coordinatorWorkerUnopened{err: err}
+			}
+			report, err := handOnCoordinatorWorkerContinuations(ctx, session, backlog.WorkerExchangeReport{}, settings.MessageLimits.MaxArtifactBytes)
+			if err != nil {
+				drop(workerID, session)
+			}
+			return report, err
+		},
 		close: func() error {
 			var errs []error
 			for id, session := range cached {
@@ -103,19 +150,9 @@ func newCoordinatorWorkerSessions(
 			return errors.Join(errs...)
 		},
 		exchange: func(ctx context.Context, workerID string, quota backlog.QuotaBridgeReport) (backlog.WorkerExchangeReport, error) {
-			sessionID, err := newCoordinatorWorkerSessionID(settings.Coordinator.ID, workerID)
+			session, err := open(ctx, workerID)
 			if err != nil {
 				return backlog.WorkerExchangeReport{}, err
-			}
-			session, ok := cached[workerID]
-			if !ok {
-				session, err = newCoordinatorWorkerSession(ctx, settings, store, workerID, coordinatorEpoch, sessionID, resolver, time.Now().UTC(), commandFactory, artifacts)
-				if err != nil {
-					return backlog.WorkerExchangeReport{}, err
-				}
-				if settings.Workers[workerID].Connection != "" {
-					cached[workerID] = session
-				}
 			}
 			report, err := exchangeCoordinatorWorker(ctx, session, settings.MessageLimits.MaxArtifactBytes, func(ctx context.Context) (backlog.WorkerExchangeReport, error) {
 				return coordinator.ReconcileWorker(
@@ -124,10 +161,7 @@ func newCoordinatorWorkerSessions(
 				)
 			})
 			if err != nil {
-				if session.Close != nil {
-					_ = session.Close()
-					delete(cached, workerID)
-				}
+				drop(workerID, session)
 				return report, err
 			}
 			return report, nil
@@ -142,8 +176,12 @@ func newCoordinatorWorkerSessions(
 // replacement's first package whenever this worker is reachable. A failure
 // of that first pass never holds back the reconcile; the snapshots stay in
 // the worker's custody and the pass after reconcile tries them again.
+//
+// Tick has already run the same import for every worker before the first of
+// these exchanges, so a replacement offered on another worker is covered too;
+// this pass picks up what arrived since.
 func exchangeCoordinatorWorker(ctx context.Context, session coordinatorWorkerSession, maxArtifactBytes int64, reconcile func(context.Context) (backlog.WorkerExchangeReport, error)) (backlog.WorkerExchangeReport, error) {
-	handedOn, handOnErr := importCoordinatorWorkerCheckpoints(ctx, session, backlog.WorkerExchangeReport{}, maxArtifactBytes, true)
+	handedOn, handOnErr := handOnCoordinatorWorkerContinuations(ctx, session, backlog.WorkerExchangeReport{}, maxArtifactBytes)
 	if handOnErr != nil {
 		slog.Warn("worker continuation snapshots not imported before offers", "error", handOnErr)
 	}
@@ -260,14 +298,69 @@ func importCoordinatorWorkerResult(ctx context.Context, session coordinatorWorke
 	return report, nil
 }
 
-func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
-	return importCoordinatorWorkerCheckpoints(ctx, session, report, maxArtifactBytes, false)
+// continuationHandOnRounds bounds one hand-on scan of a worker's custody,
+// counted in uploads handled. It is a fairness bound only: whatever lies past
+// it is imported by a later pass, and nothing waits for it.
+const continuationHandOnRounds = 256
+
+// handOnCoordinatorWorkerContinuations imports the continuation.md snapshots
+// a worker holds and leaves every other upload pending, untouched, for the
+// ordinary pass. A snapshot that cannot be fetched or imported yet stays in
+// the worker's custody for a later pass. An error means the worker could not
+// be polled or acknowledged.
+func handOnCoordinatorWorkerContinuations(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
+	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
+		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
+	}
+	var excluded []string
+	seen := map[string]struct{}{}
+	for round := 0; round < continuationHandOnRounds; round++ {
+		upload, err := session.Client.PollArtifact(ctx, "checkpoint", excluded...)
+		if err != nil || upload == nil {
+			return report, err
+		}
+		id := upload.Manifest.ID
+		if _, again := seen[id]; again {
+			// The worker announced an upload it was told to skip or had
+			// acknowledged; going on would never end.
+			return report, nil
+		}
+		seen[id] = struct{}{}
+		if !backlog.IsContinuationUpload(upload.Manifest) {
+			excluded = append(excluded, id)
+			continue
+		}
+		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
+		if err != nil {
+			slog.Warn("worker continuation snapshot not fetched", "manifest", id, "worker", upload.Manifest.WorkerID, "reason", err)
+			excluded = append(excluded, id)
+			continue
+		}
+		imported, err := session.CheckpointImporter.Import(ctx, fetched.Response, fetched)
+		if errors.Is(err, backlog.ErrCheckpointImportRejected) {
+			// Retrying cannot help; the bytes stay in the worker's custody.
+			slog.Error("worker checkpoint rejected and discarded", "manifest", id, "worker", upload.Manifest.WorkerID, "reason", err)
+			if err := session.Client.AcknowledgeArtifact(ctx, id); err != nil {
+				return report, err
+			}
+			continue
+		}
+		if err != nil {
+			slog.Warn("worker continuation snapshot import deferred", "manifest", id, "worker", upload.Manifest.WorkerID, "reason", err)
+			excluded = append(excluded, id)
+			continue
+		}
+		report.Checkpoints = append(report.Checkpoints, imported)
+		if err := session.Client.AcknowledgeArtifact(ctx, id); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
 }
 
-// importCoordinatorWorkerCheckpoints imports the worker's pending checkpoint
-// uploads. With continuationsOnly it imports only continuation.md snapshots
-// and leaves every other upload pending, untouched, for the ordinary pass.
-func importCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64, continuationsOnly bool) (backlog.WorkerExchangeReport, error) {
+// importCoordinatorWorkerCheckpoint imports the worker's pending checkpoint
+// uploads after reconcile.
+func importCoordinatorWorkerCheckpoint(ctx context.Context, session coordinatorWorkerSession, report backlog.WorkerExchangeReport, maxArtifactBytes int64) (backlog.WorkerExchangeReport, error) {
 	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
 		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
 	}
@@ -280,10 +373,6 @@ func importCoordinatorWorkerCheckpoints(ctx context.Context, session coordinator
 		upload, err := session.Client.PollArtifact(ctx, "checkpoint", deferred...)
 		if err != nil || upload == nil {
 			return report, err
-		}
-		if continuationsOnly && !backlog.IsContinuationUpload(upload.Manifest) {
-			deferred = append(deferred, upload.Manifest.ID)
-			continue
 		}
 		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
 		if err != nil {
@@ -319,9 +408,34 @@ func (s *coordinatorWorkerSessions) Tick(ctx context.Context, quota backlog.Quot
 	if s == nil || s.exchange == nil {
 		return coordinatorWorkerTickReport{}
 	}
+	// The hand-on phase: every worker's continuation.md snapshots are imported
+	// before any worker's exchange expires a lease or freezes an offer, so a
+	// replacement offered on one worker carries what its predecessor left on
+	// another, whichever order the workers are polled in. Nothing waits for
+	// it: a snapshot this phase cannot import yet is imported by a later pass
+	// and counts toward the task's latest from then on.
+	handedOn := map[string]backlog.WorkerExchangeReport{}
+	unopened := map[string]error{}
+	if s.handOn != nil {
+		for _, workerID := range s.workerIDs {
+			report, err := s.handOn(ctx, workerID)
+			handedOn[workerID] = report
+			if err != nil {
+				slog.Warn("worker continuation snapshots not imported before offers", "worker", workerID, "error", err)
+			}
+			if failed := (coordinatorWorkerUnopened{}); errors.As(err, &failed) {
+				unopened[workerID] = failed.err
+			}
+		}
+	}
 	report := coordinatorWorkerTickReport{Results: make([]coordinatorWorkerTickResult, 0, len(s.workerIDs))}
 	for _, workerID := range s.workerIDs {
-		exchange, err := s.exchange(ctx, workerID, quota)
+		var exchange backlog.WorkerExchangeReport
+		err, failed := unopened[workerID]
+		if !failed {
+			exchange, err = s.exchange(ctx, workerID, quota)
+		}
+		exchange.Checkpoints = append(handedOn[workerID].Checkpoints, exchange.Checkpoints...)
 		report.Results = append(report.Results, coordinatorWorkerTickResult{
 			WorkerID: workerID, Report: exchange, Err: err,
 		})
