@@ -14,7 +14,7 @@ import (
 )
 
 // WriteBelow writes content to relative, a slash-separated path below root,
-// and leaves it a regular file with exactly mode perm.
+// and leaves it a regular file with exactly the permission bits of perm.
 //
 // root is trusted; nothing below it is, because it may be a repository
 // checkout whose author chose its entries. Each directory on the way is opened
@@ -53,7 +53,7 @@ func WriteBelow(root, relative string, content []byte, perm os.FileMode) error {
 	} else if !errors.Is(err, unix.ENOENT) {
 		return fmt.Errorf("inspect %s: %w", relative, err)
 	}
-	staged, err := stageBelow(dir, name, content, perm)
+	staged, err := stageBelow(dir, content, perm)
 	if err != nil {
 		return fmt.Errorf("stage %s: %w", relative, err)
 	}
@@ -101,15 +101,15 @@ func requireKind(mode, want uint32, name, wanted string) error {
 	}
 }
 
-// stageBelow writes content to a new file beside name in dir and returns the
-// staged file's name. The file is created exclusively, so it cannot be
+// stageBelow writes content to a new file in dir and returns its name. The file is created exclusively, so it cannot be
 // anything a repository put there.
-func stageBelow(dir int, name string, content []byte, perm os.FileMode) (string, error) {
+func stageBelow(dir int, content []byte, perm os.FileMode) (string, error) {
 	var random [8]byte
 	if _, err := rand.Read(random[:]); err != nil {
 		return "", err
 	}
-	staged := "." + name + ".tmp-" + hex.EncodeToString(random[:])
+	// A fixed-length name is legal wherever the final name is.
+	staged := ".tmp-" + hex.EncodeToString(random[:])
 	fd, err := unix.Openat(dir, staged, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o600)
 	if err != nil {
 		return "", err

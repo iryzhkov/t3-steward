@@ -62,26 +62,48 @@ func TestWorkspaceBaseCommitIsNotWrittenThroughASymlink(t *testing.T) {
 	}
 }
 
-// A repository that tracks .t3/base-commit as a symlink to a host file, or as
-// something other than a regular file, fails preparation and leaves the host
-// file's bytes and mode alone.
-func TestWorkspacePreparerRefusesTrackedBaseCommitThatIsNotARegularFile(t *testing.T) {
-	for _, kind := range []string{"symlink", "directory"} {
-		t.Run(kind, func(t *testing.T) {
+// A repository that tracks a name the worker writes metadata at, as a symlink
+// to a host file or directory or as the wrong kind of entry, fails preparation
+// before the workspace is published and leaves the host file's bytes and mode
+// alone. Failing later, after the workspace exists, would let a retry accept
+// it with the worker's metadata half written.
+func TestWorkspacePreparerRefusesTrackedMetadataOfTheWrongKind(t *testing.T) {
+	for _, test := range []struct {
+		name, kind, want string
+	}{
+		{".t3/base-commit", "symlink", "symbolic link"},
+		{".t3/base-commit", "directory", "not a regular file"},
+		{".t3-steward/task.env", "symlink", "symbolic link"},
+		{".t3-steward/.gitignore", "symlink", "symbolic link"},
+		{".t3-steward/.gitignore", "directory", "not a regular file"},
+		{".t3/context", "directory symlink", "symbolic link"},
+		{".t3/context", "file", "not a real directory"},
+		{".t3/context/index.json", "symlink", "symbolic link"},
+	} {
+		t.Run(test.name+" "+test.kind, func(t *testing.T) {
 			target := hostSentinel(t)
+			outside := t.TempDir()
 			repository := newGitFixture(t)
-			if kind == "symlink" {
-				if err := os.MkdirAll(filepath.Join(repository, ".t3"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(target, filepath.Join(repository, ".t3", "base-commit")); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				writeGitFile(t, repository, ".t3/base-commit/tracked.txt", "tracked\n")
+			entry := filepath.Join(repository, filepath.FromSlash(test.name))
+			if err := os.MkdirAll(filepath.Dir(entry), 0o755); err != nil {
+				t.Fatal(err)
 			}
-			gitRun(t, repository, "add", ".t3")
-			gitRun(t, repository, "commit", "-m", "metadata "+kind)
+			switch test.kind {
+			case "symlink":
+				if err := os.Symlink(target, entry); err != nil {
+					t.Fatal(err)
+				}
+			case "directory symlink":
+				if err := os.Symlink(outside, entry); err != nil {
+					t.Fatal(err)
+				}
+			case "directory":
+				writeGitFile(t, repository, test.name+"/tracked.txt", "tracked\n")
+			case "file":
+				writeGitFile(t, repository, test.name, "tracked\n")
+			}
+			gitRun(t, repository, "add", "-A")
+			gitRun(t, repository, "commit", "-m", "metadata "+test.kind)
 			commit := gitOutput(t, repository, "rev-parse", "HEAD")
 
 			runsRoot := t.TempDir()
@@ -91,9 +113,14 @@ func TestWorkspacePreparerRefusesTrackedBaseCommitThatIsNotARegularFile(t *testi
 				cleanupImmutable(t, prepared.RootDir)
 			}
 			assertHostSentinelUnchanged(t, target)
-			want := map[string]string{"symlink": "symbolic link", "directory": "not a regular file"}[kind]
-			if err == nil || !strings.Contains(err.Error(), ".t3/base-commit") || !strings.Contains(err.Error(), want) {
-				t.Fatalf("prepare error = %v, want a refusal naming .t3/base-commit and %q", err, want)
+			if entries, _ := os.ReadDir(outside); len(entries) != 0 {
+				t.Fatalf("metadata landed outside the workspace: %v", entries)
+			}
+			if err == nil || !strings.Contains(err.Error(), test.name) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("prepare error = %v, want a refusal naming %s and %q", err, test.name, test.want)
+			}
+			if prepared.WorkspaceDir != "" {
+				t.Fatalf("a refused workspace was published at %s", prepared.WorkspaceDir)
 			}
 		})
 	}

@@ -95,6 +95,19 @@ func TestWriteBelowRefusesLinksAndWrongKinds(t *testing.T) {
 	}
 }
 
+// The staged name has a fixed length, so every final name the filesystem
+// accepts can be written, up to the 255-byte limit.
+func TestWriteBelowAcceptsTheLongestLegalName(t *testing.T) {
+	root := t.TempDir()
+	name := strings.Repeat("n", 255)
+	if err := WriteBelow(root, name, []byte("content"), 0o600); err != nil {
+		t.Fatalf("a 255-byte name was refused: %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(raw) != "content" {
+		t.Fatalf("content = %q, %v", raw, err)
+	}
+}
+
 func TestWriteBelowRefusesAnUncleanPath(t *testing.T) {
 	root := t.TempDir()
 	for _, relative := range []string{"", "/abs", "a//b", "../escape", "a/./b", "a/"} {

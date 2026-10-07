@@ -68,6 +68,56 @@ func TestCredentialFileRefusesGroupOrOtherAccess(t *testing.T) {
 	}
 }
 
+// A credential rotated the safe way, by renaming a new private file over the
+// old one, is read on every pass while the rotation runs: the decision rests
+// on the descriptor that was opened, not on which inode the path named first.
+func TestCredentialFileSurvivesAtomicRotation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "token")
+	if err := os.WriteFile(path, []byte("rotated-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		for index := 0; ; index++ {
+			select {
+			case <-stop:
+				done <- nil
+				return
+			default:
+			}
+			staged := filepath.Join(dir, fmt.Sprintf("staged-%d", index))
+			if err := os.WriteFile(staged, []byte("rotated-value\n"), 0o600); err != nil {
+				done <- err
+				return
+			}
+			if err := os.Rename(staged, path); err != nil {
+				done <- err
+				return
+			}
+		}
+	}()
+	lookup := environmentFrom(map[string]string{"T3_STEWARD_CREDENTIAL_GITHUB_TOKEN_FILE": path})
+	var failures int
+	var first error
+	for range 5000 {
+		if value, _, err := ResolveCredentialVariable(lookup, "T3_STEWARD_CREDENTIAL_GITHUB_TOKEN"); err != nil || value != "rotated-value" {
+			failures++
+			if first == nil {
+				first = fmt.Errorf("value %q: %v", value, err)
+			}
+		}
+	}
+	close(stop)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if failures != 0 {
+		t.Fatalf("%d of 5000 reads during rotation failed; first: %v", failures, first)
+	}
+}
+
 // A credential file another user owns is refused even when its mode is
 // owner-only, because that owner can replace the worker's signing secrets.
 func TestCredentialFileOwnedByAnotherUserIsRefused(t *testing.T) {

@@ -50,9 +50,11 @@ func ResolveCredentialVariable(lookup func(string) (string, bool), name string) 
 // readCredentialFile reads a credential file named by variable. It refuses a
 // missing file, a symbolic link, anything but a regular file, a file with any
 // group or other permission bit and a file owned by another user. The checks
-// are made on the path and again on the descriptor it opened without following
-// links, so a file swapped in between is refused too. The error names the
-// variable and the path only.
+// are made on the path, for a clear error, and again on the descriptor opened
+// without following links, which is what decides: a file swapped in between is
+// held to the same rules, and a credential rotated by renaming a new private
+// file over the old one is still read. The error names the variable and the
+// path only.
 func readCredentialFile(variable, path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -72,9 +74,6 @@ func readCredentialFile(variable, path string) (string, error) {
 	opened, err := file.Stat()
 	if err != nil {
 		return "", fmt.Errorf("%s names %s, which cannot be inspected: %w", variable, path, err)
-	}
-	if !os.SameFile(info, opened) {
-		return "", fmt.Errorf("%s names %s, which was replaced while it was being opened", variable, path)
 	}
 	if err := checkCredentialFile(variable, path, opened); err != nil {
 		return "", err

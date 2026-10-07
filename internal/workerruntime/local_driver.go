@@ -572,6 +572,12 @@ func (d *LocalDriver) writeTaskIdentity(pkg workerproto.ExecutionPackage, worksp
 	if err != nil {
 		return err
 	}
+	// The exclusion goes in first, so a record is never left in the worktree
+	// without it, whether the exclusion is refused or the worker stops between
+	// the two writes.
+	if err := excludeTaskIdentityFromGit(workspace); err != nil {
+		return err
+	}
 	// The workspace is a repository checkout and containment does not exist
 	// yet, so a tracked link at the directory or the file must not redirect
 	// this write to a host file. A resumed attempt rewrites the record, which
@@ -579,7 +585,7 @@ func (d *LocalDriver) writeTaskIdentity(pkg workerproto.ExecutionPackage, worksp
 	if err := privatefile.WriteBelow(workspace, domain.TaskIdentityFile, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write task identity: %w", err)
 	}
-	return excludeTaskIdentityFromGit(workspace)
+	return nil
 }
 
 // writeProjectContext atomically materializes the canonical package-bound index.

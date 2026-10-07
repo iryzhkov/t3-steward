@@ -61,6 +61,13 @@ func TestLocalDriverTaskIdentityRefusesRepositorySymlinks(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "symbolic link") || !strings.Contains(err.Error(), name) {
 				t.Fatalf("error = %v, want a refusal naming %s as a symbolic link", err, name)
 			}
+			// A refused exclusion leaves no record behind that git would
+			// then pick up.
+			if name == ".gitignore" {
+				if _, err := os.Lstat(filepath.Join(workspace, filepath.FromSlash(domain.TaskIdentityFile))); !os.IsNotExist(err) {
+					t.Fatalf("the identity record was written without its exclusion: %v", err)
+				}
+			}
 		})
 	}
 	t.Run("directory", func(t *testing.T) {
