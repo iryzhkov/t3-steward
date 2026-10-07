@@ -45,14 +45,15 @@ func assertHistoricalQuarantineAdvice(t *testing.T, advice string) {
 
 func TestQuarantineRetirementAdviceThroughConsumers(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
 	at := time.Date(2026, 10, 4, 8, 30, 0, 0, time.UTC)
 	const digest = "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed"
-	if _, _, err := store.QuarantineSubmission(ctx, "legacy-retained", digest, "unmapped project", at); err != nil {
+	if err := sqlitetest.SeedHistoricQuarantine(path, "legacy-retained", digest, "unmapped project", at); err != nil {
 		t.Fatal(err)
 	}
 	service, err := backlogadmin.New(store, quarantineReadAuthorizer{})
