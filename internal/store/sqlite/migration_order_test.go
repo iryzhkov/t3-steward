@@ -8,6 +8,8 @@ import (
 	"testing"
 )
 
+// The synthetic versions below are placed above the real registry (which ends
+// at V42), so that they never collide with a registered migration.
 type testMigration = struct {
 	version int
 	ddl     string
@@ -29,19 +31,19 @@ func TestMigrationGapsArrivalOrderReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	setTestMigrations(t, testMigration{40, "CREATE TABLE gap_high (id INTEGER);"}, testMigration{42, "CREATE TABLE gap_order (version INTEGER);"})
-	if err := s.migrateThroughSupported(42, 42); err != nil {
+	setTestMigrations(t, testMigration{50, "CREATE TABLE gap_high (id INTEGER);"}, testMigration{52, "CREATE TABLE gap_order (version INTEGER);"})
+	if err := s.migrateThroughSupported(52, 52); err != nil {
 		t.Fatal(err)
 	}
-	versionedMigrations = append(versionedMigrations, testMigration{41, "INSERT INTO gap_low VALUES (41); INSERT INTO gap_order VALUES (41);"}, testMigration{39, "CREATE TABLE gap_low (version INTEGER); INSERT INTO gap_order VALUES (39);"})
-	if err := s.migrateThroughSupported(38, 42); err != nil {
+	versionedMigrations = append(versionedMigrations, testMigration{51, "INSERT INTO gap_low VALUES (51); INSERT INTO gap_order VALUES (51);"}, testMigration{49, "CREATE TABLE gap_low (version INTEGER); INSERT INTO gap_order VALUES (49);"})
+	if err := s.migrateThroughSupported(48, 52); err != nil {
 		t.Fatal(err)
 	}
 	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version IN (39,41)").Scan(&count); err != nil || count != 0 {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version IN (49,51)").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("target: count=%d err=%v", count, err)
 	}
-	if err := s.migrateThroughSupported(42, 42); err != nil {
+	if err := s.migrateThroughSupported(52, 52); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := s.db.Query("SELECT version FROM gap_order ORDER BY rowid")
@@ -60,11 +62,11 @@ func TestMigrationGapsArrivalOrderReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows.Close()
-	if !reflect.DeepEqual(got, []int{39, 41}) {
+	if !reflect.DeepEqual(got, []int{49, 51}) {
 		t.Fatalf("order=%v", got)
 	}
 	before := fixtureSchemaRows(t, s)
-	if err := s.migrateThroughSupported(42, 42); err != nil {
+	if err := s.migrateThroughSupported(52, 52); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -74,13 +76,13 @@ func TestMigrationGapsArrivalOrderReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.migrateThroughSupported(42, 42); err != nil {
+	if err := s.migrateThroughSupported(52, 52); err != nil {
 		t.Fatal(err)
 	}
 	if after := fixtureSchemaRows(t, s); !reflect.DeepEqual(after, before) {
 		t.Fatal("schema changed on replay")
 	}
-	for _, v := range []int{39, 40, 41, 42} {
+	for _, v := range []int{49, 50, 51, 52} {
 		if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version=?", v).Scan(&count); err != nil || count != 1 {
 			t.Fatalf("version %d count=%d err=%v", v, count, err)
 		}
@@ -96,26 +98,26 @@ func TestMigrationGapsRollbackRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	setTestMigrations(t, testMigration{42, "CREATE TABLE gap_conflict (id INTEGER);"})
-	if err := s.migrateThroughSupported(42, 42); err != nil {
+	setTestMigrations(t, testMigration{52, "CREATE TABLE gap_conflict (id INTEGER);"})
+	if err := s.migrateThroughSupported(52, 52); err != nil {
 		t.Fatal(err)
 	}
-	versionedMigrations = append(versionedMigrations, testMigration{39, "CREATE TABLE gap_rolled_back (id INTEGER); CREATE TABLE gap_conflict (id INTEGER);"}, testMigration{41, "CREATE TABLE gap_later (id INTEGER);"})
-	err = s.migrateThroughSupported(42, 42)
-	for _, text := range []string{"39", "42", "already exists"} {
+	versionedMigrations = append(versionedMigrations, testMigration{49, "CREATE TABLE gap_rolled_back (id INTEGER); CREATE TABLE gap_conflict (id INTEGER);"}, testMigration{51, "CREATE TABLE gap_later (id INTEGER);"})
+	err = s.migrateThroughSupported(52, 52)
+	for _, text := range []string{"49", "52", "already exists"} {
 		if err == nil || !strings.Contains(err.Error(), text) {
 			t.Fatalf("error=%v want %q", err, text)
 		}
 	}
 	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version IN (39,41)").Scan(&count); err != nil || count != 0 {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version IN (49,51)").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("rows=%d err=%v", count, err)
 	}
 	if tableExists(t, s, "gap_rolled_back") || tableExists(t, s, "gap_later") {
 		t.Fatal("failed transaction or later migration applied")
 	}
 	versionedMigrations[len(versionedMigrations)-2].ddl = "CREATE TABLE gap_rolled_back (id INTEGER);"
-	if err := s.migrateThroughSupported(42, 42); err != nil {
+	if err := s.migrateThroughSupported(52, 52); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -144,13 +146,13 @@ func TestMigrationGapsLegacyAndUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.db.Exec("INSERT INTO schema_version VALUES (38)"); err != nil {
+	if _, err := s.db.Exec("INSERT INTO schema_version VALUES (48)"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Migrate(); err == nil || !strings.Contains(err.Error(), "newer than supported") {
 		t.Fatalf("newer error=%v", err)
 	}
-	if err := s.migrateThroughSupported(42, 42); err == nil || !strings.Contains(err.Error(), "38") || !strings.Contains(err.Error(), "unregistered") {
+	if err := s.migrateThroughSupported(52, 52); err == nil || !strings.Contains(err.Error(), "48") || !strings.Contains(err.Error(), "unregistered") {
 		t.Fatalf("unknown error=%v", err)
 	}
 	if other, err := OpenMigrated(path); err == nil {
@@ -207,16 +209,16 @@ func TestPendingSchemaVersionsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	setTestMigrations(t, testMigration{42, ""}, testMigration{41, ""}, testMigration{39, ""})
-	if _, err := s.db.Exec("INSERT INTO schema_version VALUES (42)"); err != nil {
+	setTestMigrations(t, testMigration{52, ""}, testMigration{51, ""}, testMigration{49, ""})
+	if _, err := s.db.Exec("INSERT INTO schema_version VALUES (52)"); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := s.PendingSchemaVersions(context.Background())
-	if err != nil || !reflect.DeepEqual(pending, []int{39, 41}) {
+	if err != nil || !reflect.DeepEqual(pending, []int{49, 51}) {
 		t.Fatalf("pending=%v err=%v", pending, err)
 	}
 	var count int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version IN (39,41)").Scan(&count); err != nil || count != 0 {
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version IN (49,51)").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("pending mutated rows: %d %v", count, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
