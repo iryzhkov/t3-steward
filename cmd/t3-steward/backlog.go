@@ -123,6 +123,8 @@ func runCoordinatorAdmin(cfg config.Config, args []string, schedules bool) error
 		quarantine:          client,
 		principal:           transport.principal,
 		stdout:              os.Stdout,
+		nodeWaits:           client.NodeWait,
+		resolveThread:       func(explicit string) (string, error) { return resolveThread(cfg, explicit) },
 	}
 	// The --json error envelope is applied once, in run(), for every command.
 	if schedules {

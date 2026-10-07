@@ -41,6 +41,7 @@ func campaignHelpPages() []helpPage {
 			Notes:    "Offline and static: it reaches no coordinator and can never promise a worker, a route or quota. The dynamic answer, once a run exists, is \"t3-steward backlog explain\".\n\n" + campaignAuthoringNote,
 			Parsers:  []parserSite{{Func: "parseCampaignArgs"}},
 		},
+		campaignCompileHelpPage(),
 		{
 			Path:    "campaign check",
 			Purpose: "ask the coordinator whether a campaign could run now, creating nothing.",
@@ -115,7 +116,7 @@ func campaignHelpPages() []helpPage {
 		{Path: "campaign supervision", Body: campaignSupervisionUsage, Parsers: []parserSite{{Func: "parseCampaignSupervisionArgs"}}},
 		func() helpPage {
 			page := campaignAliasPage("campaign list", "the campaign runs the coordinator holds, filtered.",
-				"t3-steward campaign list [--project P] [--state open|terminal|--progress STATES] [--class CLASS] [--limit N] [--since DURATION] [--json]",
+				"t3-steward campaign list [--project P] [--state open|terminal|--progress STATES] [--class CLASS] [--limit N] [--since DURATION] [--thread current|ID] [--json]",
 				"backlog list")
 			// The window flags are the ones an agent misreads: 0 is not "none".
 			for _, reference := range backlogHelpPages() {
@@ -127,7 +128,7 @@ func campaignHelpPages() []helpPage {
 			page.JSONKeys = []string{"schemaVersion", "version", "kind", "generatedAt", "workflows"}
 			page.JSONNote = "schemaVersion 1; workflows is always an array, including when empty. See docs/cli-output.md."
 			page.Notes += " --limit 0 prints every run; unset, the text form prints the newest 50 and --json every one. " +
-				"--since takes a Go duration or a whole number of days, such as 24h or 7d."
+				"--since takes a Go duration or a whole number of days, such as 24h or 7d. " + listThreadNote
 			return page
 		}(),
 		campaignAliasPage("campaign status", "alias of campaign show: one run with its tasks and supervision.",
