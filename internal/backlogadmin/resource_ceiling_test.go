@@ -15,8 +15,10 @@ func TestResourceViabilityReportsBuildLoadCeilingAsTemporary(t *testing.T) {
 	settings.Projects[0].Type = "fresh"
 	settings.ResourcePolicy = domain.DefaultResourcePlacementPolicy()
 	v := viabilityView(t, nil)
-	cpus, load, memory := 4, 20.0, int64(32000)
-	v.workers[0].Inventory.Telemetry = &domain.WorkerTelemetry{ObservedAt: viabilityNow, CPUCount: &cpus, Load1: &load, Load5: &load, MemoryAvailableMB: &memory}
+	// The ceiling acts only on complete telemetry, so every field is reported.
+	cpus, load, memory, swap, free, running := 4, 20.0, int64(32000), int64(0), int64(100000), 0
+	v.workers[0].Inventory.Telemetry = &domain.WorkerTelemetry{ObservedAt: viabilityNow, CPUCount: &cpus, Load1: &load, Load5: &load, MemoryAvailableMB: &memory,
+		SwapUsedMB: &swap, WorkspaceFreeMB: &free, TempFreeMB: &free, RunningAttempts: &running}
 	task := viabilityTaskRequest()
 	task.Type = "fresh"
 	task.ResourcePreset = "build"
