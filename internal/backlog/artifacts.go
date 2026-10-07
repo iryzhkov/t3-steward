@@ -135,6 +135,9 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		}
 	}
 
+	// gatedCommit pins publication to the commit the gate attested, so a
+	// declared revision that moves afterwards cannot publish an ungated tree.
+	gatedCommit := ""
 	if request.Task.Gate != nil && len(failures) == 0 {
 		report, log, gateErr := f.runGate(ctx, request)
 		if gateErr != nil {
@@ -147,7 +150,12 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		request.Extra = append(request.Extra,
 			FinalizationArtifact{ID: "gate-" + request.Attempt.ID, Name: "gate", Kind: domain.ArtifactGate, MediaType: "application/json", Producer: "gate", Content: append(raw, '\n')},
 			FinalizationArtifact{ID: "gate-log-" + request.Attempt.ID, Name: "gate/log.txt", Kind: domain.ArtifactGate, MediaType: "text/plain", Producer: "gate", Content: log})
-		if !report.Passed {
+		if report.Passed {
+			gatedCommit = report.attestedCommit
+			if gatedCommit == "" {
+				return FinalizedAttempt{}, errors.New("finalize gate: passing report names no attested commit")
+			}
+		} else {
 			failures = append(failures, fmt.Sprintf("gate command failed (%d): %s: %s", report.Failure.ExitCode, report.Failure.Command, report.Failure.Reason))
 		}
 	}
@@ -292,7 +300,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			WorkflowRunID: request.Attempt.WorkflowRunID, TaskID: request.Task.ID,
 			Name: declaration.Name, Repository: request.Repository,
 			WorkspaceDir: request.WorkspaceDir, Revision: declaration.Commit.Revision,
-			Base: request.BaseCommit, CreatedAt: now,
+			ExpectedCommit: gatedCommit, Base: request.BaseCommit, CreatedAt: now,
 		}, nil)
 		if publishErr != nil {
 			// The task promised a commit and the promise could not be kept.

@@ -60,6 +60,9 @@ type PublishCommitRequest struct {
 	WorkspaceDir string
 	// Revision is resolved in that workspace; it defaults to HEAD.
 	Revision string
+	// ExpectedCommit, when set, is the only commit Revision may resolve to:
+	// the one a gate attested. Publication refuses any other.
+	ExpectedCommit string
 	// Base is the commit the workspace was pinned to before the task ran.
 	Base      string
 	CreatedAt time.Time
@@ -128,6 +131,9 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 	commit := strings.TrimSpace(string(raw))
 	if !validGitObjectID(commit) {
 		return CommitProvenance{}, fmt.Errorf("resolve declared commit %q: Git returned invalid commit %q", request.Name, commit)
+	}
+	if request.ExpectedCommit != "" && commit != request.ExpectedCommit {
+		return CommitProvenance{}, fmt.Errorf("declared commit %q revision %q resolves to %s, not the gated commit %s", request.Name, revision, commit, request.ExpectedCommit)
 	}
 	ref := CampaignRef(request.WorkflowRunID, request.TaskID, request.Name)
 	if existing, found, err := s.head(ctx, gitDir, ref, log); err != nil {

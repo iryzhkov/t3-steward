@@ -37,6 +37,11 @@ type GateReport struct {
 	LogTruncated     bool                `json:"logTruncated"`
 	LogArtifact      string              `json:"logArtifact"`
 	OutputLimitation string              `json:"outputLimitation,omitempty"`
+	// attestedCommit is this attempt's HEAD commit, whose tree the gate
+	// attests. It is not evidence, since a cached report may come from another
+	// commit with the same tree. Finalize publishes a declared commit only if
+	// it still resolves to this one.
+	attestedCommit string
 }
 type GateCommandResult struct {
 	Command     string        `json:"command"`
@@ -96,11 +101,13 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	if _, err = hex.DecodeString(report.TreeHash); err != nil || (len(report.TreeHash) != 40 && len(report.TreeHash) != 64) {
 		return fail("git rev-parse HEAD^{tree}", 1, "invalid commit tree hash")
 	}
-	if reason, err := gateDeclaredCommitsAtHead(ctx, req); err != nil {
+	head, reason, err := gateDeclaredCommitsAtHead(ctx, req)
+	if err != nil {
 		return fail("git rev-parse", 1, err.Error())
 	} else if reason != "" {
 		return fail("git rev-parse", 1, reason)
 	}
+	report.attestedCommit = head
 	clean, err := gateCleanTree(ctx, req)
 	if err != nil {
 		return fail("git status", 1, err.Error())
@@ -145,9 +152,11 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 			// waited while the workspace was changed.
 			clean, err = gateCleanTree(ctx, req)
 			current, treeErr := gateGit(ctx, req.WorkspaceDir, "rev-parse", "HEAD^{tree}")
-			if err == nil && treeErr == nil && clean && strings.TrimSpace(current) == report.TreeHash {
+			currentHead, moved, headErr := gateDeclaredCommitsAtHead(ctx, req)
+			if err == nil && treeErr == nil && headErr == nil && clean && moved == "" && currentHead == head && strings.TrimSpace(current) == report.TreeHash {
 				cached.Report.Cached = true
 				cached.Report.Worker = report.Worker
+				cached.Report.attestedCommit = head
 				return cached.Report, cached.Log, nil
 			}
 			return fail("git status", 1, "workspace changed while waiting for gate cache")
@@ -209,9 +218,19 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	if report.Failure == nil {
 		clean, err = gateCleanTree(ctx, req)
 		finalTree, treeErr := gateGit(ctx, req.WorkspaceDir, "rev-parse", "HEAD^{tree}")
-		if err != nil || treeErr != nil || !clean || strings.TrimSpace(finalTree) != report.TreeHash {
+		finalHead, moved, headErr := gateDeclaredCommitsAtHead(ctx, req)
+		switch {
+		case err != nil || treeErr != nil || !clean || strings.TrimSpace(finalTree) != report.TreeHash:
 			report.Failure = &GateFailure{Command: "git status", ExitCode: 1, Reason: "gate changed the committed tree or workspace"}
-		} else {
+		case headErr != nil || moved != "" || finalHead != head:
+			// A command that moves HEAD or a declared revision would otherwise
+			// have an ungated commit published under this passing report.
+			reason := "HEAD or a declared commit revision moved during the gate"
+			if moved != "" {
+				reason += ": " + moved
+			}
+			report.Failure = &GateFailure{Command: "git rev-parse", ExitCode: 1, Reason: reason}
+		default:
 			report.Passed = true
 		}
 	}
@@ -268,10 +287,14 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 }
 
 // gateDeclaredCommitsAtHead requires every declared commit to be HEAD, the
-// commit whose tree the gate attests. Otherwise a task could gate one commit
-// and publish another under the declared revision.
-func gateDeclaredCommitsAtHead(ctx context.Context, req AttemptFinalization) (string, error) {
-	head := ""
+// commit whose tree the gate attests, and returns HEAD's commit. Otherwise a
+// task could gate one commit and publish another under the declared revision.
+func gateDeclaredCommitsAtHead(ctx context.Context, req AttemptFinalization) (string, string, error) {
+	resolved, err := gateGit(ctx, req.WorkspaceDir, "rev-parse", "--verify", "HEAD^{commit}")
+	if err != nil {
+		return "", "", err
+	}
+	head := strings.TrimSpace(resolved)
 	for _, output := range req.Task.Outputs {
 		if output.Commit == nil {
 			continue
@@ -281,24 +304,17 @@ func gateDeclaredCommitsAtHead(ctx context.Context, req AttemptFinalization) (st
 			revision = "HEAD"
 		}
 		if strings.HasPrefix(revision, "-") {
-			return fmt.Sprintf("declared commit %q has an invalid revision", output.Name), nil
-		}
-		if head == "" {
-			resolved, err := gateGit(ctx, req.WorkspaceDir, "rev-parse", "--verify", "HEAD^{commit}")
-			if err != nil {
-				return "", err
-			}
-			head = strings.TrimSpace(resolved)
+			return head, fmt.Sprintf("declared commit %q has an invalid revision", output.Name), nil
 		}
 		resolved, err := gateGit(ctx, req.WorkspaceDir, "rev-parse", "--verify", revision+"^{commit}")
 		if err != nil {
-			return fmt.Sprintf("declared commit %q revision %q does not resolve", output.Name, revision), nil
+			return head, fmt.Sprintf("declared commit %q revision %q does not resolve", output.Name, revision), nil
 		}
 		if strings.TrimSpace(resolved) != head {
-			return fmt.Sprintf("gate attests HEAD, but declared commit %q revision %q is a different commit", output.Name, revision), nil
+			return head, fmt.Sprintf("gate attests HEAD, but declared commit %q revision %q is a different commit", output.Name, revision), nil
 		}
 	}
-	return "", nil
+	return head, "", nil
 }
 
 func gateStructuredReason(reason string) string {
