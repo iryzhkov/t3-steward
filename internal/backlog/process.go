@@ -112,7 +112,8 @@ type SystemdScopeRunner struct {
 	SystemdRunBinary string
 	SystemctlBinary  string
 	// ScopeCleanupTimeout bounds how long a KillRemaining request waits for
-	// its scope to empty; zero means scopeCleanupTimeout.
+	// its scope to empty, and how long a cancelled run spends killing its
+	// scope and reaping its launcher; zero means scopeCleanupTimeout.
 	ScopeCleanupTimeout time.Duration
 }
 
@@ -194,9 +195,25 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 		}
 		return result, err
 	case <-ctx.Done():
-		killErr := r.killScope(log, unit)
+		// The task's context is already done, so cleanup gets a bound of its
+		// own. The launcher is killed first, so the command stops even when
+		// the user manager does not answer.
 		_ = command.Process.Kill()
-		<-waited
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), r.cleanupTimeout())
+		defer cancelCleanup()
+		killErr := r.killScope(cleanupCtx, log, unit)
+		select {
+		case <-waited:
+		case <-cleanupCtx.Done():
+			// A process outside the launcher still holds its output open
+			// after the scope kill: the scope is not shown to be empty, and
+			// the output cannot be read while it is still being written.
+			if killErr == nil {
+				killErr = errors.New("launcher output still held open after the cleanup deadline")
+			}
+			fmt.Fprintf(log, "! %v\n", killErr)
+			return ProcessResult{}, errors.Join(ctx.Err(), fmt.Errorf("kill process scope %s: %w", unit, killErr))
+		}
 		_, _ = io.WriteString(log, output.String())
 		if killErr != nil {
 			return ProcessResult{Output: output.String(), Truncated: output.truncated}, errors.Join(ctx.Err(), fmt.Errorf("kill process scope %s: %w", unit, killErr))
@@ -205,12 +222,13 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 	}
 }
 
-func (r SystemdScopeRunner) killScope(log io.Writer, unit string) error {
+func (r SystemdScopeRunner) killScope(ctx context.Context, log io.Writer, unit string) error {
 	args := []string{"--user", "kill", "--kill-who=all", "--signal=KILL", unit}
 	fmt.Fprintf(log, "$ %s %s\n", r.systemctl(), strings.Join(args, " "))
-	command := exec.Command(r.systemctl(), args...)
+	command := exec.CommandContext(ctx, r.systemctl(), args...)
 	command.Stdout = log
 	command.Stderr = log
+	command.WaitDelay = scopeCleanupPoll
 	if err := command.Run(); err != nil {
 		fmt.Fprintf(log, "! %v\n", err)
 		return err
@@ -234,11 +252,7 @@ const scopeCleanupPoll = 20 * time.Millisecond
 // deadline, is an error: the caller cannot rule out a process that keeps
 // changing the workspace, and must not report success.
 func (r SystemdScopeRunner) clearScope(unit string) error {
-	timeout := r.ScopeCleanupTimeout
-	if timeout <= 0 {
-		timeout = scopeCleanupTimeout
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), r.cleanupTimeout())
 	defer cancel()
 	killOutput, killErr := exec.CommandContext(ctx, r.systemctl(), "--user", "kill", "--kill-who=all", "--signal=KILL", unit).CombinedOutput()
 	// observed is the last state the user manager answered with. The deadline
@@ -287,6 +301,15 @@ func scopeCleanupError(unit, state string, killErr error, killOutput []byte) err
 		detail += fmt.Sprintf("; kill: %v: %s", killErr, strings.TrimSpace(string(killOutput)))
 	}
 	return &ScopeCleanupError{Unit: unit, Detail: detail}
+}
+
+// cleanupTimeout bounds scope cleanup, both clearScope and the kill after a
+// cancellation.
+func (r SystemdScopeRunner) cleanupTimeout() time.Duration {
+	if r.ScopeCleanupTimeout > 0 {
+		return r.ScopeCleanupTimeout
+	}
+	return scopeCleanupTimeout
 }
 
 func (r SystemdScopeRunner) systemdRun() string {

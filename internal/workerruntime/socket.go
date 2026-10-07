@@ -79,13 +79,39 @@ func ServeWorkerListener(ctx context.Context, listener net.Listener, limit int64
 
 // BridgeWorkerStream carries bounded opaque frames to the local worker daemon.
 // It neither reads credentials nor interprets an envelope as an admin command.
+//
+// The bridge owns conn, and input and output when they are io.Closers: on
+// cancellation it closes all three, which is what releases a read or write
+// blocked on them, and returns ctx.Err() once the closing is done. A stream
+// whose Close does not interrupt a blocked call, such as an inherited
+// blocking descriptor, must first be made interruptible with
+// InterruptibleFile.
 func BridgeWorkerStream(ctx context.Context, input io.Reader, output io.Writer, conn net.Conn, limit int64, timeout time.Duration) error {
 	if conn == nil || timeout <= 0 {
 		return errors.New("worker bridge requires connection and timeout")
 	}
 	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.Close() })
-	defer stop()
+	closed := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(closed)
+		conn.Close()
+		if closer, ok := input.(io.Closer); ok {
+			closer.Close()
+		}
+		if closer, ok := output.(io.Closer); ok {
+			closer.Close()
+		}
+	})
+	err := forwardWorkerFrames(input, output, conn, limit, timeout)
+	if !stop() {
+		// Cancellation won the race: join the closing before reporting it.
+		<-closed
+		return ctx.Err()
+	}
+	return err
+}
+
+func forwardWorkerFrames(input io.Reader, output io.Writer, conn net.Conn, limit int64, timeout time.Duration) error {
 	codec := workerproto.FrameCodec{MaxBytes: limit}
 	for {
 		raw, err := codec.Read(input)

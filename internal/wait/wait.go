@@ -6,7 +6,6 @@
 package wait
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/procgroup"
 )
 
 // Status of a wait.
@@ -234,7 +234,17 @@ func New(store Store, control Control, logger *slog.Logger) *Runner {
 // SetClock replaces the clock, for tests.
 func (r *Runner) SetClock(now func() time.Time) { r.now = now }
 
-// execCommand runs the wait's command with its run timeout.
+// commandOutputLimit bounds the output a command wait keeps while its command
+// runs; only its tail is ever stored.
+const commandOutputLimit = 64 << 10
+
+// commandWaitDelay bounds how long a timed-out command's output pipes may be
+// held open by a process that left its process group.
+const commandWaitDelay = time.Second
+
+// execCommand runs the wait's command with its run timeout. The command runs
+// in a process group of its own, so a timeout kills whatever it started and
+// returns promptly, and only the tail of its output is kept.
 func execCommand(ctx context.Context, w Wait) (string, int, error) {
 	timeout := w.RunTimeout
 	if timeout <= 0 {
@@ -242,9 +252,9 @@ func execCommand(ctx context.Context, w Wait) (string, int, error) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, w.Command[0], w.Command[1:]...)
+	cmd := procgroup.CommandContext(cctx, commandWaitDelay, w.Command[0], w.Command[1:]...)
 	cmd.Dir = w.Dir
-	var out bytes.Buffer
+	out := procgroup.TailBuffer{Limit: commandOutputLimit}
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err := cmd.Run()
