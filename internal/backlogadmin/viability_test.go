@@ -259,6 +259,12 @@ func TestViabilityFindings(t *testing.T) {
 		},
 		{
 			name: "an exhausted worker is temporary",
+			// The worker declares cpu units, so a demand beyond them is a
+			// capacity refusal; a worker that declares none would count the
+			// demand as one slot.
+			mutate: func(v *view) {
+				v.workers[0].Inventory.Allocatable = domain.AllocatableCapacity{ExecutorSlots: 4, CPUUnits: 8}
+			},
 			task: func(task *ViabilityTask) {
 				task.Resources = domain.ResourceDemand{CPUUnits: 64}
 			},
