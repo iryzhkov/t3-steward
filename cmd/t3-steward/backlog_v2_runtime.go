@@ -984,7 +984,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		MaxFiles:          cfg.BacklogV2.MessageLimits.MaxFiles,
 		QuotaAdmission: &backlog.SubmissionQuotaAdmission{Bridge: backlog.QuotaBridge{
 			Store: store, Pools: coordinatorQuotaPoolBindings(cfg), Disabled: !cfg.QuotaChecksEnabled(),
-			MaxObservationAge:       modelsStaleAfter(cfg),
+			MaxObservationAge:       cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
 			SafetyMargin:            cfg.Backlog.SafetyMargin,
 			FallbackForecastPerHour: cfg.Backlog.FallbackPerHour,
 			LongWindowCap:           cfg.Backlog.LongWindowCap,

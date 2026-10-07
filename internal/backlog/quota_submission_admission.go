@@ -61,7 +61,11 @@ func (a SubmissionQuotaAdmission) evaluate(records sqlite.CoordinatorRecords, sn
 		age = domain.DefaultQuotaStaleAfter
 	}
 	bridge := a.Bridge
-	bridge.MaxObservationAge = age
+	// The planner forecast horizon is independent of telemetry freshness.
+	// Keep its configured budget horizon; only default it for direct callers.
+	if bridge.MaxObservationAge <= 0 {
+		bridge.MaxObservationAge = age
+	}
 	receipt := &domain.QuotaAdmissionReceipt{AdmittedAt: now}
 	pools := map[string]domain.QuotaPool{}
 	owners := map[string]string{}

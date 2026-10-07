@@ -36,6 +36,30 @@ func TestSubmissionQuotaFuturePendingDemandDoesNotReserveHeadroom(t *testing.T) 
 	}
 }
 
+func TestSubmissionQuotaForecastParityWithIndependentFreshness(t *testing.T) {
+	admission, snapshot, records := quotaSubmissionFixture()
+	admission.Bridge.MaxObservationAge = 15 * time.Minute
+	admission.Bridge.FallbackForecastPerHour = 20
+	// Missing reset uses the planner bridge horizon (15m), while quota truth
+	// has an independently configured 1h freshness limit from the store.
+	snapshot.StaleAfter = time.Hour
+	expected, err := deriveQuotaPlanningWindows(admission.Now(), snapshot.Records.QuotaPools, snapshot.States, map[string]string{"codex": "pool"}, admission.Bridge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := quotaAvailable(expected[0])
+	if want != 20 {
+		t.Fatalf("fixture planner headroom: %g", want)
+	}
+	receipt, err := admission.evaluate(records, snapshot)
+	if err != nil {
+		t.Fatalf("admission drifted from planner headroom: %v", err)
+	}
+	if receipt.Pools[0].Windows[0].AvailableHeadroom != want {
+		t.Fatalf("headroom = %g, planner = %g", receipt.Pools[0].Windows[0].AvailableHeadroom, want)
+	}
+}
+
 func TestSubmissionQuotaSharedHeadroomAndTruth(t *testing.T) {
 	for _, mode := range []string{"demand", "stale", "missing", "exhausted"} {
 		t.Run(mode, func(t *testing.T) {
