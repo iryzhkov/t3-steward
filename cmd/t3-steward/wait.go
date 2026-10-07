@@ -244,6 +244,11 @@ func cmdWait(g globalFlags, args []string) error {
 	if args[0] == "add" && currentTaskWaitArgs(args[1:]) {
 		return cmdTaskWaitAdd(context.Background(), cfg, args[1:])
 	}
+	// Before the native routing: a node wait's id would otherwise send this
+	// read-only verb to the coordinator as an operation it does not know.
+	if args[0] == "summary" {
+		return cmdWaitSummary(context.Background(), cfg, args[1:], os.Stdout)
+	}
 	if nativeWaitArgs(args) {
 		return cmdNodeWait(context.Background(), cfg, args)
 	}

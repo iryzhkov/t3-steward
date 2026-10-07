@@ -827,6 +827,7 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store) 
 		}
 	}
 	configureNodeWaitTransport(waits, cfg, logger)
+	waits.NodeSummary = newNodeSummarySource(cfg)
 	// What this daemon is doing about node wakes, written where a command that
 	// registers one can read it. Without it no command can establish that the
 	// daemon which has to deliver the wake is running at all.

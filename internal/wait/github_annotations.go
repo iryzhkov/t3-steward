@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // Bounds apply to transport as well as enumeration, including injected runners.
@@ -24,8 +26,12 @@ const (
 	gitHubAnnotationPages   = 3
 	gitHubAnnotationChecks  = 20
 	gitHubAnnotationRecords = 150
-	gitHubAnnotationInline  = 10
 	gitHubAnnotationOutput  = 4000
+	// Distinct non-failure groups shown; every distinct failure is shown.
+	gitHubAnnotationOthers = 8
+	// Message clips: a failure is what the reader acts on, so it gets more.
+	gitHubFailureMessage = 1000
+	gitHubOtherMessage   = 240
 )
 
 var errGitHubResponseCap = errors.New("github response-cap")
@@ -101,11 +107,27 @@ type annotationCollection struct {
 	dir, repo             string
 	calls, bytes, records int
 	problems              []string
-	lines                 []string
 	links                 []string
-	counts                map[string]int
-	checks                int
-	invalid               bool
+	// found are the well-formed records collected, in collection order, and
+	// checkNames the bound checks they came from.
+	found      []annotationFound
+	checkNames []annotationCheckName
+	counts     map[string]int
+	checks     int
+	invalid    bool
+}
+
+// annotationFound is one collected record and the check it was read from.
+type annotationFound struct {
+	check  int64
+	name   string
+	record annotationRecord
+}
+
+// annotationCheckName is one bound check.
+type annotationCheckName struct {
+	id   int64
+	name string
 }
 
 func (c *annotationCollection) problem(s string) {
@@ -407,6 +429,7 @@ func (c *annotationCollection) collect(ch annotationCheck) {
 	c.checks++
 	link := c.checkLink(ch)
 	c.links = append(c.links, fmt.Sprintf("> check %d %s: %s", ch.ID, annotationQuote(ch.Name, 100), annotationQuote(link, 512)))
+	c.checkNames = append(c.checkNames, annotationCheckName{id: ch.ID, name: ch.Name})
 	expected := *ch.Output.Count
 	observed := 0
 	for page := 1; observed < expected && page <= gitHubAnnotationPages; page++ {
@@ -442,10 +465,7 @@ func (c *annotationCollection) collect(ch annotationCheck) {
 				c.counts["unknown"]++
 				c.problem("unknown-severity")
 			}
-			if len(c.lines) < gitHubAnnotationInline {
-				c.lines = append(c.lines, fmt.Sprintf("> check %d %s | %s | %s:%d-%d | %s %s",
-					ch.ID, annotationQuote(ch.Name, 80), annotationQuote(a.Level, 30), annotationQuote(a.Path, 120), a.Start, a.End, annotationQuote(a.Title, 80), annotationQuote(a.Message, 240)))
-			}
+			c.found = append(c.found, annotationFound{check: ch.ID, name: ch.Name, record: a})
 		}
 		if observed < expected && len(records) < 50 {
 			c.problem("annotation-count-mismatch")
@@ -486,13 +506,15 @@ func annotationOutput(s string) string {
 	return annotationClip(s, gitHubAnnotationOutput-len(caveat)) + caveat
 }
 
-func (r *Runner) gitHubAnnotations(ctx context.Context, t GitHubTarget, dir string, reading GitHubReading) (output string) {
+func (r *Runner) gitHubAnnotations(ctx context.Context, t GitHubTarget, dir string, reading GitHubReading) (output string, summary WakeSummary) {
 	// All complete, partial and unavailable exits share the final ceiling.
 	// Remote fields are quoted before this UTF8-safe display cap.
 	defer func() { output = annotationOutput(output) }()
 	provenance := ""
-	unavailable := func(category string) string {
-		return annotationQuote(reading.Reason, 400) + "\nAnnotations unavailable (" + annotationQuote(category, 240) + "); " + provenance + "; no clean result inferred."
+	unavailable := func(category string) (string, WakeSummary) {
+		empty := annotationCollection{counts: map[string]int{}}
+		return annotationQuote(reading.Reason, 400) + "\nAnnotations unavailable (" + annotationQuote(category, 240) + "); " + provenance + "; no clean result inferred.",
+			empty.summary(t, reading.Fields, "unavailable")
 	}
 	var snapshot annotationSnapshot
 	if len(reading.observation) > gitHubResponseBytes || json.Unmarshal(reading.observation, &snapshot) != nil {
@@ -581,22 +603,296 @@ func (r *Runner) gitHubAnnotations(ctx context.Context, t GitHubTarget, dir stri
 	} else if c.records == 0 {
 		header += " No annotations."
 	}
-	// Links and the completeness statement precede details so output clipping
-	// never hides the access/cap caveat. Full URLs survive for the inline checks.
+	return c.detail(header, snapshot.URL), c.summary(t, reading.Fields, state)
+}
+
+// annotationNoise are the known-noise classes: warnings and notices every run
+// of these workflows repeats and nobody acts on. A failure is never noise,
+// whatever its message says. Suppression changes the display only; the
+// counts and the completeness state are computed before it.
+var annotationNoise = []struct {
+	class string
+	match func(lower string) bool
+}{
+	{"Node.js 20 deprecation", func(m string) bool { return strings.Contains(m, "node.js 20") && strings.Contains(m, "deprecat") }},
+	{"cache restore", func(m string) bool {
+		return strings.Contains(m, "failed to restore") || strings.Contains(m, "cache not found for input keys") || strings.Contains(m, "cache restore failed")
+	}},
+}
+
+// annotationNoiseClass is the known-noise class of a record, or empty.
+func annotationNoiseClass(r annotationRecord) string {
+	if r.Level != "warning" && r.Level != "notice" {
+		return ""
+	}
+	message := strings.ToLower(r.Message)
+	for _, noise := range annotationNoise {
+		if noise.match(message) {
+			return noise.class
+		}
+	}
+	return ""
+}
+
+// annotationGroup is every collected record with one (level, path, start,
+// end, title, message), and the checks it came from.
+type annotationGroup struct {
+	record annotationRecord
+	count  int
+	checks []string
+	seen   map[int64]bool
+}
+
+func (g *annotationGroup) add(f annotationFound) {
+	g.count++
+	if !g.seen[f.check] {
+		g.seen[f.check] = true
+		g.checks = append(g.checks, f.name)
+	}
+}
+
+// line renders one group: level, count, the first three checks, location,
+// title and message, every remote field quoted.
+func (g *annotationGroup) line(messageClip int) string {
+	level := annotationLevel(g.record.Level)
+	names := make([]string, 0, 3)
+	for i, name := range g.checks {
+		if i == 3 {
+			break
+		}
+		names = append(names, annotationQuote(name, 80))
+	}
+	checks := strings.Join(names, ", ")
+	if more := len(g.checks) - len(names); more > 0 {
+		checks += fmt.Sprintf(" +%d more", more)
+	}
+	return fmt.Sprintf("> %s x%d %s | %s:%d-%d | %s %s", level, g.count, checks,
+		annotationQuote(g.record.Path, 120), g.record.Start, g.record.End, annotationQuote(g.record.Title, 80), annotationQuote(g.record.Message, messageClip))
+}
+
+// annotationLevel prints a level: a known one as is, anything else quoted.
+func annotationLevel(level string) string {
+	if level != "failure" && level != "warning" && level != "notice" {
+		return annotationQuote(level, 30)
+	}
+	return level
+}
+
+// annotationNoiseTally is one known-noise class at one level.
+type annotationNoiseTally struct {
+	level, class string
+	count        int
+	checks       map[int64]bool
+}
+
+// grouped aggregates every collected record: distinct failures, other
+// distinct groups, and known noise, each in first-seen order.
+func (c *annotationCollection) grouped() (failures, others []*annotationGroup, noise []*annotationNoiseTally) {
+	groups := map[annotationRecord]*annotationGroup{}
+	tallies := map[[2]string]*annotationNoiseTally{}
+	for _, f := range c.found {
+		if class := annotationNoiseClass(f.record); class != "" {
+			key := [2]string{f.record.Level, class}
+			tally := tallies[key]
+			if tally == nil {
+				tally = &annotationNoiseTally{level: f.record.Level, class: class, checks: map[int64]bool{}}
+				tallies[key] = tally
+				noise = append(noise, tally)
+			}
+			tally.count++
+			tally.checks[f.check] = true
+			continue
+		}
+		group := groups[f.record]
+		if group == nil {
+			group = &annotationGroup{record: f.record, seen: map[int64]bool{}}
+			groups[f.record] = group
+			if f.record.Level == "failure" {
+				failures = append(failures, group)
+			} else {
+				others = append(others, group)
+			}
+		}
+		group.add(f)
+	}
+	return failures, others, noise
+}
+
+// noiseLines are one line per level, each naming every class at that level.
+func noiseLines(noise []*annotationNoiseTally) []string {
+	var lines []string
+	for _, level := range []string{"warning", "notice"} {
+		var parts []string
+		for _, tally := range noise {
+			if tally.level != level {
+				continue
+			}
+			checks := fmt.Sprintf("%d checks", len(tally.checks))
+			if len(tally.checks) == 1 {
+				checks = "1 check"
+			}
+			parts = append(parts, fmt.Sprintf("%d x %s (%s)", tally.count, tally.class, checks))
+		}
+		if len(parts) != 0 {
+			lines = append(lines, "Known noise ("+level+"): "+strings.Join(parts, ", ")+".")
+		}
+	}
+	return lines
+}
+
+// checksLine is the per-check links collapsed into one line, keeping the run
+// or pull request URL.
+func (c *annotationCollection) checksLine(targetURL string) string {
+	// Bounded by quoted length, which escaping can make several times the
+	// name's, so the line always fits and always ends with the URL.
+	const limit = 1200
+	links := " (links: " + annotationQuote(targetURL, 512) + ")"
+	line := "Checks: "
+	shown := 0
+	for _, check := range c.checkNames {
+		part := fmt.Sprintf("%s %d", annotationQuote(check.name, 40), check.id)
+		if shown > 0 {
+			part = ", " + part
+		}
+		if len(line)+len(part) > limit {
+			break
+		}
+		line += part
+		shown++
+	}
+	if more := len(c.checkNames) - shown; more > 0 {
+		line += fmt.Sprintf(" +%d more", more)
+	}
+	return line + links
+}
+
+// detail is the header followed by the links and the aggregated detail
+// section. Links and the completeness statement precede details so output
+// clipping never hides the access/cap caveat. Every distinct failure comes
+// before any warning, so a warning never displaces one; known noise is one
+// line; other groups are capped, with a count of the rest.
+func (c *annotationCollection) detail(header, targetURL string) string {
+	// The closing lines (the count of groups not shown and the count of lines
+	// omitted) are written into the margin above the budget, so they always fit
+	// under the output ceiling.
+	budget := gitHubAnnotationOutput - 300
+	// Room kept for the closing count of groups not shown.
+	const reserve = 120
+	failures, others, noise := c.grouped()
+	var fixed []string
+	for _, group := range failures {
+		fixed = append(fixed, group.line(gitHubFailureMessage))
+	}
+	fixed = append(fixed, noiseLines(noise)...)
+	var rest []string
+	for i, group := range others {
+		if i == gitHubAnnotationOthers {
+			break
+		}
+		rest = append(rest, group.line(gitHubOtherMessage))
+	}
+	links := c.links
+	total := len(header)
+	for _, line := range append(append(append([]string(nil), links...), fixed...), rest...) {
+		total += len(line) + 1
+	}
+	if total > budget-reserve && len(c.checkNames) != 0 {
+		links = []string{c.checksLine(targetURL)}
+	}
 	var b strings.Builder
 	b.WriteString(header)
 	omitted := 0
-	for _, line := range append(append([]string(nil), c.links...), c.lines...) {
-		if b.Len()+len(line)+1 > gitHubAnnotationOutput-150 {
+	for _, line := range append(append([]string(nil), links...), fixed...) {
+		if b.Len()+len(line)+1 > budget {
 			omitted++
 			continue
 		}
 		b.WriteByte('\n')
 		b.WriteString(line)
 	}
-	additional := c.records - len(c.lines)
-	if omitted > 0 || additional > 0 {
-		fmt.Fprintf(&b, "\nAdditional/capped display: %d records beyond inline limit; %d summary lines omitted. See check/target links.", additional, omitted)
+	shown := 0
+	for _, line := range rest {
+		if b.Len()+len(line)+1 > budget-reserve {
+			break
+		}
+		b.WriteByte('\n')
+		b.WriteString(line)
+		shown++
+	}
+	if more := len(others) - shown; more > 0 {
+		fmt.Fprintf(&b, "\nand %d more distinct warnings. Additional/capped display; see check/target links.", more)
+	}
+	if len(failures) == 0 && len(others) == 0 && len(noise) != 0 {
+		fmt.Fprintf(&b, "\nNo other annotations among the %d collected records.", c.records)
+	}
+	if omitted > 0 {
+		fmt.Fprintf(&b, "\nAdditional/capped display: %d summary lines omitted. See check/target links.", omitted)
 	}
 	return b.String()
+}
+
+var (
+	summaryTargetID   = regexp.MustCompile(`^[0-9]{1,20}$`)
+	summaryConclusion = regexp.MustCompile(`^[a-z_]{1,32}$`)
+)
+
+// summary is the collection as a wake summary: the counts exactly as the
+// header states them, every non-noise group and the noise tallies.
+func (c *annotationCollection) summary(t GitHubTarget, fields map[string]string, state string) WakeSummary {
+	s := WakeSummary{Schema: WakeSummarySchema, Kind: string(domain.WaitKindGitHub), Target: summaryText(t.Ref(), 200), State: state, Counts: &WakeSummaryCounts{}}
+	if summaryConclusion.MatchString(fields["conclusion"]) {
+		s.Conclusion = fields["conclusion"]
+	}
+	count := func(level string) *int {
+		if state == "unavailable" || state != "complete" && c.counts[level] == 0 {
+			return nil
+		}
+		n := c.counts[level]
+		return &n
+	}
+	s.Counts.Failure, s.Counts.Warning, s.Counts.Notice, s.Counts.Unknown = count("failure"), count("warning"), count("notice"), count("unknown")
+	failures, others, noise := c.grouped()
+	for _, group := range append(failures, others...) {
+		checks := make([]string, 0, len(group.checks))
+		for _, name := range group.checks {
+			checks = append(checks, summaryText(name, 100))
+		}
+		level := group.record.Level
+		if level != "failure" && level != "warning" && level != "notice" {
+			level = "unknown"
+		}
+		s.Groups = append(s.Groups, WakeSummaryGroup{
+			Level: level, Count: group.count, Path: summaryText(group.record.Path, 120),
+			Start: group.record.Start, End: group.record.End, Title: summaryText(group.record.Title, 80),
+			Message: summaryText(group.record.Message, gitHubFailureMessage), Checks: checks,
+		})
+	}
+	for _, tally := range noise {
+		s.Noise = append(s.Noise, WakeSummaryNoise{Class: tally.class, Level: tally.level, Count: tally.count, Checks: len(tally.checks)})
+	}
+	label := ""
+	if summaryTargetID.MatchString(t.ID) {
+		switch t.Kind {
+		case "run":
+			label = "run " + t.ID
+		case "pr":
+			label = "PR " + t.ID
+		}
+	}
+	shown := func(n *int) string {
+		if n == nil {
+			return "unknown"
+		}
+		return strconv.Itoa(*n)
+	}
+	var segments []string
+	if first := strings.TrimSpace(label + " " + s.Conclusion); first != "" {
+		segments = append(segments, first)
+	}
+	segments = append(segments,
+		"failures "+shown(s.Counts.Failure),
+		fmt.Sprintf("warnings %s (%d known noise)", shown(s.Counts.Warning), s.noiseWarnings()),
+		"annotations "+state)
+	s.Headline = strings.Join(segments, " | ")
+	return s
 }
