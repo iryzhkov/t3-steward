@@ -523,62 +523,68 @@ func (b *summaryBudget) summarizeTask(ctx context.Context, source NodeSummarySou
 		}
 		return parse(read), true
 	}
+	// firstAnswer consults an ordered source list and returns the first value
+	// a source yields, with that source's label. A source that is declared but
+	// missing, unreadable or malformed does not end the list: its "?" stands,
+	// labelled with the first such source, only when no later source answers.
+	firstAnswer := func(sources []summarySource) (value, label string) {
+		for _, source := range sources {
+			found, ok := cell(source.name, source.mode, source.parse)
+			if !ok {
+				continue
+			}
+			if found != "" && found != cellUnreadable {
+				return found, source.label
+			}
+			if label == "" {
+				value, label = cellUnreadable, source.label
+			}
+		}
+		return value, label
+	}
 	// The verdict source list, in order. The rc.116 structured verdict (H1:
 	// review_output and Task.ReviewVerdict) is not on this base; at
 	// integration it goes first in this list, ahead of these fallbacks.
-	for _, candidate := range []struct {
-		name  string
-		parse func(summaryBytes) string
-	}{
-		{"review.md", func(r summaryBytes) string { return parseVerdictLine(r.data) }},
-		{"verdict.json", func(r summaryBytes) string {
+	row.Verdict, row.VerdictSource = firstAnswer([]summarySource{
+		{name: "review.md", label: "review.md", mode: readHead, parse: func(r summaryBytes) string { return parseVerdictLine(r.data) }},
+		{name: "verdict.json", label: "verdict.json", mode: readHead, parse: func(r summaryBytes) string {
 			if r.truncated {
 				return verdictUnrecognized
 			}
 			return parseVerdictJSON(r.data)
 		}},
-	} {
-		if verdict, found := cell(candidate.name, readHead, candidate.parse); found {
-			row.Verdict, row.VerdictSource = verdict, candidate.name
-			break
-		}
-	}
+	})
 	if gate, found := cell("gate.log", readTail, func(r summaryBytes) string { return parseGateTail(r.data, r.truncated) }); found {
 		row.Gate = gate
 	}
-	// The head: a declared campaign commit first, then a retained bundle.
+	// The head source list: the first declared campaign commit, then the
+	// retained bundles.
+	var heads []summarySource
 	for _, output := range t.Outputs {
-		if output.Commit == nil {
-			continue
-		}
-		head, found := cell(output.Name, readHead, func(r summaryBytes) string {
-			if r.truncated {
-				return ""
-			}
-			return parseCommitRecord(r.data)
-		})
-		if found {
-			row.Head, row.HeadSource = orUnreadable(head), "commit "+summaryDisplayOutput(output.Name)
-		}
-		break
-	}
-	if row.HeadSource == "" {
-		for _, name := range summaryBundleNames(t) {
-			head, found := cell(name, readBundle, func(r summaryBytes) string { return parseBundleHead(r.data) })
-			if found {
-				row.Head, row.HeadSource = orUnreadable(head), summaryDisplayOutput(path.Base(name))
-				break
-			}
+		if output.Commit != nil {
+			heads = append(heads, summarySource{name: output.Name, label: "commit " + summaryDisplayOutput(output.Name), mode: readHead, parse: func(r summaryBytes) string {
+				if r.truncated {
+					return ""
+				}
+				return parseCommitRecord(r.data)
+			}})
+			break
 		}
 	}
+	for _, name := range summaryBundleNames(t) {
+		heads = append(heads, summarySource{name: name, label: summaryDisplayOutput(path.Base(name)), mode: readBundle, parse: func(r summaryBytes) string { return parseBundleHead(r.data) }})
+	}
+	row.Head, row.HeadSource = firstAnswer(heads)
 	return row
 }
 
-func orUnreadable(value string) string {
-	if value == "" {
-		return cellUnreadable
-	}
-	return value
+// summarySource is one entry of an ordered source list for a cell: the output
+// it reads, the label shown as the cell's source, and how it is read and
+// parsed. A parse that yields "" or "?" has not answered.
+type summarySource struct {
+	name, label string
+	mode        summaryRead
+	parse       func(summaryBytes) string
 }
 
 // summaryBundleNames are the task's bundle outputs: declared ones in manifest
