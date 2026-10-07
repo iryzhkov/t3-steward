@@ -25,8 +25,12 @@ accepted, current, clean round at the limit passes.
 
 Explain and task result show the persisted gate. Triage lists an action item
 `review-round-limit` for each latest failed task attempt with that code,
-including settled runs, with the concrete rerun command. No automatic retry,
-ask, or new notification type is introduced.
+including settled runs, with the concrete rerun command. Once any run's
+recorded `Graph.RerunOf` names that exact source run and task, triage clears
+the source action. The rerun's current state does not reopen the old action;
+an exhausted task in the rerun can have its own action. Other tasks in the
+source run remain actionable. No automatic retry, ask, or new notification
+type is introduced.
 
 ## Cancellation and recovery
 

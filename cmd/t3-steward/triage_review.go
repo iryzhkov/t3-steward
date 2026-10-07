@@ -12,6 +12,17 @@ import (
 // Read settled runs too: exhaustion ends the task, so a failed run remains
 // actionable until the lead starts a new run with a fresh review budget.
 func triageReviewRoundLimits(ctx context.Context, report *triageReport, sources triageSources, runs []backlogadmin.WorkflowSummary) {
+	// The source run is immutable after a rerun. Its persisted provenance,
+	// rather than the source attempt's unchanged failure, records the remedy.
+	// Build this index before reading details so summary order does not matter.
+	type runTask struct{ run, task string }
+	rerunSources := make(map[runTask]bool)
+	for _, summary := range runs {
+		if graph := summary.Run.Graph; graph != nil && graph.RerunOf != nil {
+			source := graph.RerunOf
+			rerunSources[runTask{source.SourceRunID, source.SourceTaskID}] = true
+		}
+	}
 	for _, summary := range runs {
 		if summary.Progress.Failed == 0 && summary.Run.Progress != domain.ProgressFailed {
 			continue
@@ -27,6 +38,9 @@ func triageReviewRoundLimits(ctx context.Context, report *triageReport, sources 
 			continue
 		}
 		for _, task := range response.Workflow.Tasks {
+			if rerunSources[runTask{runID, task.Task.ID}] {
+				continue
+			}
 			attempt := task.Attempt
 			if attempt == nil || attempt.Progress != domain.ProgressFailed || attempt.ReviewGate == nil {
 				continue
