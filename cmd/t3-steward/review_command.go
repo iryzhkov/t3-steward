@@ -26,7 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const reviewUsage = `Usage: t3-steward review [--plan FILE]... [--diff BASE..HEAD | --diff-file FILE]
+const reviewUsage = `Usage: t3-steward review [--plan FILE]... [--commit REF [--base REF] | --bundle FILE | --diff BASE..HEAD | --diff-file FILE]
  [--criteria FILE] [--project P] [--reviewer INSTANCE/MODEL]...
  [--independent INSTANCE/MODEL] [--model INSTANCE/MODEL] [--judge INSTANCE/MODEL]
  [--swarm LENS,...] [--swarm-model INSTANCE/MODEL]... [--risk routine|risky]
@@ -34,6 +34,11 @@ const reviewUsage = `Usage: t3-steward review [--plan FILE]... [--diff BASE..HEA
  t3-steward review result <round> [--wait] [--gate] [--json]
  t3-steward review --task current [--checkpoint ID] [--json]
 
+--commit, --bundle, --diff and --diff-file are mutually exclusive. --base requires --commit.
+--commit checks out a pushed commit; --base also snapshots its diff. Push the commit
+or use --bundle for local work. --bundle verifies and snapshots one head (1 MiB limit)
+and tells reviewers how to fetch and check it out. Candidate modes require a catalog
+git project matching the current checkout.
 Inputs are snapshotted as files. --diff requires a catalog git project matching
 the current checkout; refs are resolved once and reviewers receive HEAD plus diff.
 Explicit routes require catalog provider_family and tier metadata. At least one
@@ -80,6 +85,7 @@ type reviewArgs struct {
 	efforts                                                             map[string]string
 	plans, reviewers, swarmModels                                       []string
 	diff, diffFile, criteria, project, judge, swarm, risk, notifyThread string
+	commit, bundle, base                                                string
 	deadline                                                            time.Duration
 	wait, noNotify, gate, asJSON                                        bool
 }
@@ -100,6 +106,9 @@ func parseReviewArgs(args []string) (reviewArgs, error) {
 	f.Var((*reviewStrings)(&a.reviewers), "model", "")
 	f.Var((*reviewStrings)(&a.reviewers), "independent", "")
 	f.Var((*reviewStrings)(&a.swarmModels), "swarm-model", "")
+	f.StringVar(&a.commit, "commit", "", "")
+	f.StringVar(&a.bundle, "bundle", "", "")
+	f.StringVar(&a.base, "base", "", "")
 	f.StringVar(&a.diff, "diff", "", "")
 	f.StringVar(&a.diffFile, "diff-file", "", "")
 	f.StringVar(&a.criteria, "criteria", "", "")
@@ -131,6 +140,21 @@ func parseReviewArgs(args []string) (reviewArgs, error) {
 	}
 	if a.risk != "routine" && a.risk != "risky" {
 		return a, errors.New("--risk must be routine or risky")
+	}
+	candidateModes := 0
+	for _, value := range []string{a.commit, a.bundle, a.diff, a.diffFile} {
+		if value != "" {
+			candidateModes++
+		}
+	}
+	if candidateModes > 1 {
+		return a, errors.New("--commit, --bundle, --diff and --diff-file are mutually exclusive")
+	}
+	if a.base != "" && a.commit == "" {
+		return a, errors.New("--base requires --commit")
+	}
+	if (a.commit != "" || a.bundle != "") && a.project == "" {
+		return a, errors.New("--commit and --bundle require --project")
 	}
 	if a.diff != "" && (a.diffFile != "" || a.project == "") {
 		return a, errors.New("--diff requires --project and excludes --diff-file")
@@ -286,8 +310,13 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 	if a.criteria != "" {
 		files = append(files, a.criteria)
 	}
+	candidate, cleanupCandidate, err := prepareReviewCandidate(a, project, &round, &files)
+	if err != nil {
+		return "", err
+	}
+	defer cleanupCandidate()
 	generated := ""
-	if a.diff != "" {
+	if a.diff != "" || a.base != "" {
 		if project.Type == "fresh" || project.Repository == "" {
 			return "", errors.New("--diff requires a catalog git project")
 		}
@@ -298,21 +327,23 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 		if normalizeRepository(checkout.Remote) != normalizeRepository(project.Repository) {
 			return "", errors.New("--diff checkout remote does not match --project repository")
 		}
-		base, head, ok := strings.Cut(a.diff, "..")
-		if !ok || base == "" || head == "" || strings.Contains(head, "..") {
-			return "", errors.New("--diff must be BASE..HEAD")
-		}
-		resolve := func(ref string) (string, error) {
-			raw, err := exec.Command("git", "rev-parse", "--verify", "--end-of-options", ref+"^{commit}").Output()
-			return strings.TrimSpace(string(raw)), err
-		}
-		round.BaseCommit, err = resolve(base)
-		if err != nil {
-			return "", fmt.Errorf("resolve diff base: %w", err)
-		}
-		round.HeadCommit, err = resolve(head)
-		if err != nil {
-			return "", fmt.Errorf("resolve diff head: %w", err)
+		if a.diff != "" {
+			base, head, ok := strings.Cut(a.diff, "..")
+			if !ok || base == "" || head == "" || strings.Contains(head, "..") {
+				return "", errors.New("--diff must be BASE..HEAD")
+			}
+			resolve := func(ref string) (string, error) {
+				raw, err := exec.Command("git", "rev-parse", "--verify", "--end-of-options", ref+"^{commit}").Output()
+				return strings.TrimSpace(string(raw)), err
+			}
+			round.BaseCommit, err = resolve(base)
+			if err != nil {
+				return "", fmt.Errorf("resolve diff base: %w", err)
+			}
+			round.HeadCommit, err = resolve(head)
+			if err != nil {
+				return "", fmt.Errorf("resolve diff head: %w", err)
+			}
 		}
 		generated, err = os.MkdirTemp("", "t3-review-diff-")
 		if err != nil {
@@ -364,6 +395,9 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 	if project.Type != "fresh" {
 		manifest.Environment.Type = backlog.EnvironmentGit
 		manifest.Environment.Ref = round.HeadCommit
+		if candidate.environmentRef != "" {
+			manifest.Environment.Ref = candidate.environmentRef
+		}
 		if manifest.Environment.Ref == "" {
 			manifest.Environment.Ref = project.DefaultRef
 		}
@@ -394,6 +428,7 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 		if err != nil {
 			return "", err
 		}
+		prompt += candidate.prompt()
 		composed := backlog.FirstTurnPrompt(prompt, t.OutputDeclarations())
 		if compat.TurnInputLength(composed) > compat.MaxTurnInputLength {
 			return "", errors.New("composed reviewer prompt exceeds the M7b turn input limit; reduce input manifest size")
@@ -488,6 +523,11 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 	}
 	if supported, known := releaseAtLeast(release, "0.11.0-rc.104"); !known || !supported {
 		return errors.New("coordinator does not support review rounds (needs 0.11.0-rc.104 or later)")
+	}
+	if a.commit != "" || a.bundle != "" {
+		if supported, known := releaseAtLeast(release, "0.11.0-rc.117"); !known || !supported {
+			return errors.New("coordinator does not support commit/bundle review candidates (needs 0.11.0-rc.117 or later)")
+		}
 	}
 	thread := ""
 	if !a.wait && !a.noNotify {
