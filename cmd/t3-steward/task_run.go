@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
@@ -57,6 +58,8 @@ Derived, each printed in the record:
            and do change what is submitted, so a start that differs only in
            those is refused as the same key with different content
   name     --name, else the prompt's first line, as a manifest-legal slug
+
+Role candidates use route-ranking/v1; explicit --model pins keep policy order.
 
 Flags:
   --project NAME        --ref REF              --fresh
@@ -194,14 +197,15 @@ type gitCheckout struct {
 // seams carry the check, the submission and the notification, query answers
 // the projects view, and checkout answers for the working directory.
 type taskRunCLI struct {
-	policyPath   string
-	campaign     campaignCLI
-	query        func(context.Context, backlogadmin.Query) (backlogadmin.Response, error)
-	checkout     func() (gitCheckout, error)
-	defaultModel string
-	stdin        io.Reader
-	stdout       io.Writer
-	stderr       io.Writer
+	policyPath      string
+	quotaStaleAfter time.Duration
+	campaign        campaignCLI
+	query           func(context.Context, backlogadmin.Query) (backlogadmin.Response, error)
+	checkout        func() (gitCheckout, error)
+	defaultModel    string
+	stdin           io.Reader
+	stdout          io.Writer
+	stderr          io.Writer
 }
 
 // newTaskRunCLI wires the real transports. It reuses the campaign CLI whole,
@@ -209,12 +213,13 @@ type taskRunCLI struct {
 // not become a second implementation of check, submit or notify.
 func newTaskRunCLI(cfg config.Config) taskRunCLI {
 	cli := taskRunCLI{
-		campaign:     campaignCLIFor(cfg),
-		defaultModel: strings.TrimSpace(cfg.BacklogV2.CoordinatorClient.Defaults.Model),
-		checkout:     readGitCheckout,
-		stdout:       os.Stdout,
-		stderr:       os.Stderr,
-		stdin:        promptStdin(),
+		campaign:        campaignCLIFor(cfg),
+		quotaStaleAfter: modelsStaleAfter(cfg),
+		defaultModel:    strings.TrimSpace(cfg.BacklogV2.CoordinatorClient.Defaults.Model),
+		checkout:        readGitCheckout,
+		stdout:          os.Stdout,
+		stderr:          os.Stderr,
+		stdin:           promptStdin(),
 	}
 	cli.query = func(ctx context.Context, query backlogadmin.Query) (backlogadmin.Response, error) {
 		transport, err := newCoordinatorTransport(cfg)
@@ -430,6 +435,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	// is what lets the single-task start work unchanged during a mixed-release
 	// window. The query is still sent, a few lines below, for the route's
 	// quota pool alone, and its refusal is swallowed there.
+	var policyWorkers []backlogadmin.Worker
 	project, route, explicit := explicitTaskRunRoute(parsed, c.defaultModel)
 	p, err := c.loadPolicy(ctx, parsed.policyFile, parsed.role)
 	if err != nil {
@@ -438,8 +444,10 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if parsed.role != "" {
 		explicit = false
 		if parsed.model == "" {
-			if err := c.validateLoadedPolicy(ctx, p); err != nil {
-				return err
+			var catalogErr error
+			policyWorkers, catalogErr = c.policyCatalogWorkers(ctx, p)
+			if catalogErr != nil {
+				return catalogErr
 			}
 		}
 	}
@@ -461,7 +469,11 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		}
 	}
 	if parsed.role != "" {
-		selection, selectErr := selectPolicyRoute(p, parsed.role, parsed.model, parsed.effort, parsed.worker, project, nil)
+		view := routeRankView{}
+		if parsed.model == "" {
+			view = c.routeRankingView(ctx, policyWorkers)
+		}
+		selection, selectErr := selectPolicyRouteRanked(p, parsed.role, parsed.model, parsed.effort, parsed.worker, project, nil, view)
 		if selectErr != nil {
 			return selectErr
 		}
@@ -610,7 +622,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		return encodeCampaignJSON(c.stdout, record)
 	}
 	if record.Selection != nil {
-		fmt.Fprintf(c.stdout, "role %s\npolicy %s\nreason %s\neffort %s\n", record.Selection.Role, record.Selection.PolicyDigest, record.Selection.Reason, record.Selection.Effort)
+		renderPolicySelection(c.stdout, *record.Selection)
 	}
 	return renderTaskRunRecord(c.stdout, record)
 }
