@@ -138,6 +138,10 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 	// gatedCommit pins publication to the commit the gate attested, so a
 	// declared revision that moves afterwards cannot publish an ungated tree.
 	gatedCommit := ""
+	// gateReport and gateExtra let a passing report be amended when a declared
+	// output no longer matches the gated commit at capture.
+	var gateReport GateReport
+	gateExtra := -1
 	if request.Task.Gate != nil && len(failures) == 0 {
 		report, log, gateErr := f.runGate(ctx, request)
 		if gateErr != nil {
@@ -147,7 +151,8 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if marshalErr != nil {
 			return FinalizedAttempt{}, marshalErr
 		}
-		request.Extra = append(request.Extra,
+		gateReport, gateExtra = report, len(request.Extra)
+		request.Extra = append(slices.Clone(request.Extra),
 			FinalizationArtifact{ID: "gate-" + request.Attempt.ID, Name: "gate", Kind: domain.ArtifactGate, MediaType: "application/json", Producer: "gate", Content: append(raw, '\n')},
 			FinalizationArtifact{ID: "gate-log-" + request.Attempt.ID, Name: "gate/log.txt", Kind: domain.ArtifactGate, MediaType: "text/plain", Producer: "gate", Content: log})
 		if report.Passed {
@@ -214,6 +219,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 
 	now := f.now()
 	artifacts := make([]domain.Artifact, 0, len(outputs)+len(reports))
+	var changedOutputs []string
 	for _, output := range outputs {
 		artifactName := filepath.ToSlash(output.declaration.Name)
 		storagePath := filepath.ToSlash(filepath.Join(
@@ -238,7 +244,9 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 				filepath.Join(stageDir, "artifacts", "outputs", output.declaration.Name)); checkErr != nil {
 				return FinalizedAttempt{}, fmt.Errorf("finalize attempt output %q: %w", output.declaration.Name, checkErr)
 			} else if reason != "" {
-				failures = append(failures, fmt.Sprintf("declared output %q %s", output.declaration.Name, reason))
+				changed := fmt.Sprintf("declared output %q %s", output.declaration.Name, reason)
+				failures = append(failures, changed)
+				changedOutputs = append(changedOutputs, changed)
 			}
 		}
 		media := output.declaration.MediaType
@@ -252,6 +260,16 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 			Size: file.size, SHA256: file.sha256, StoragePath: file.storagePath,
 			Producer: request.Task.Name, CreatedAt: now,
 		})
+	}
+	if len(changedOutputs) != 0 {
+		// The coordinator decides the attempt from the uploaded evidence, not
+		// from this completion, so the gate report itself must fail. The log is
+		// kept as the gate wrote it.
+		raw, amendErr := amendGateForChangedOutputs(gateReport, request.Attempt.ID, changedOutputs)
+		if amendErr != nil {
+			return FinalizedAttempt{}, fmt.Errorf("finalize gate: %w", amendErr)
+		}
+		request.Extra[gateExtra].Content = raw
 	}
 	for index, report := range reports {
 		name := fmt.Sprintf("verification/%03d.json", index+1)

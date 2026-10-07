@@ -112,7 +112,14 @@ func validateGateReport(task domain.Task, report GateReport) error {
 		report.LogArtifact != "gate/log.txt" || len(report.OutputLimitation) > 4096 || len(report.OriginalAttempt) > 256 {
 		return invalid("identity or timing mismatch")
 	}
-	if report.Cached && (report.OriginalAttempt == "" || !report.Passed) {
+	// A postcondition failure follows commands that all passed: the gate
+	// changed the tree (git status) or moved a declared revision (git
+	// rev-parse), or a declared output changed after it (gateCaptureCommand).
+	// Only the last can follow a cached report, since it is checked at capture.
+	postcondition := report.Failure != nil && report.Failure.ExitCode == 1 && strings.TrimSpace(report.Failure.Reason) != "" &&
+		len(report.Failure.Reason) <= gateFailureReasonMax &&
+		(report.Failure.Command == gateCaptureCommand || (!report.Cached && (report.Failure.Command == "git status" || report.Failure.Command == "git rev-parse")))
+	if report.Cached && (report.OriginalAttempt == "" || (!report.Passed && !postcondition)) {
 		return invalid("cache provenance mismatch")
 	}
 	// Preparation failures still carry a report and a log. They cannot have a
@@ -157,8 +164,7 @@ func validateGateReport(task domain.Task, report GateReport) error {
 			return invalid("success verdict mismatch")
 		}
 	} else {
-		if failed < 0 && report.Failure != nil && len(report.Commands) == len(task.Gate.Commands) &&
-			report.Failure.Command == "git status" && report.Failure.ExitCode == 1 && report.Failure.Reason != "" && len(report.Failure.Reason) <= 16384 {
+		if failed < 0 && postcondition && len(report.Commands) == len(task.Gate.Commands) {
 			return nil
 		}
 		if failed < 0 || report.Failure == nil || report.Failure.Command != report.Commands[failed].Command ||

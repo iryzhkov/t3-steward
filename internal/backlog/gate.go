@@ -312,6 +312,43 @@ func gatedOutputMatches(ctx context.Context, workspace, commit, relative, captur
 	return "", nil
 }
 
+// gateCaptureCommand names the post-capture check in a gate report failed
+// because a declared output changed after the gate.
+const gateCaptureCommand = "git hash-object"
+
+// gateFailureReasonMax is the longest failure reason the coordinator accepts.
+const gateFailureReasonMax = 16384
+
+// amendGateForChangedOutputs turns a passing gate report into a failed one
+// for declared outputs that changed after the gate, so that the coordinator,
+// which decides from the uploaded evidence, fails the attempt as well. The
+// result stays within the coordinator's evidence limit; if the report cannot,
+// it becomes a preparation-style failure for this attempt, as runGate does.
+func amendGateForChangedOutputs(report GateReport, attemptID string, changed []string) ([]byte, error) {
+	reason := strings.Join(changed, "; ")
+	if len(reason) > gateFailureReasonMax {
+		const suffix = " [truncated]"
+		reason = strings.ToValidUTF8(reason[:gateFailureReasonMax-len(suffix)], "") + suffix
+	}
+	report.Passed = false
+	report.Failure = &GateFailure{Command: gateCaptureCommand, ExitCode: 1, Reason: reason}
+	raw, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	if len(raw)+1 > GateEvidenceMaxBytes {
+		report.Commands = nil
+		report.ToolVersions = map[string]string{}
+		report.CacheKey = ""
+		report.Cached = false
+		report.OriginalAttempt = attemptID
+		if raw, err = json.MarshalIndent(report, "", "  "); err != nil {
+			return nil, err
+		}
+	}
+	return append(raw, '\n'), nil
+}
+
 func gateDeclaresCommit(req AttemptFinalization) bool {
 	return slices.ContainsFunc(req.Task.Outputs, func(output domain.ArtifactDeclaration) bool { return output.Commit != nil })
 }
