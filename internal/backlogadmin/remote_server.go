@@ -183,9 +183,9 @@ func (s *RemoteServer) Serve(ctx context.Context, pinned string, in io.Reader, o
 // which does set Replay on a repeat, is never asked, so the first answer's
 // "replay": false was returned verbatim.
 //
-// The five answers named below are every one this carrier can return that
+// The six answers named below are every one this carrier can return that
 // carries such a flag: a submission, a schedule definition, a graph amendment,
-// a supervision decision and an unknown-assignment recovery. A mutation answer
+// a supervision decision, an unknown-assignment recovery and an ownership lease. A mutation answer
 // and a quarantine release have no flag to set, and a quarantine release has no
 // stable request id either, so neither is ever served from this cache.
 //
