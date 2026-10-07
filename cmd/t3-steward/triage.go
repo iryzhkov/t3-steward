@@ -29,7 +29,7 @@ What it lists, items needing action first:
                         notifications.worker_down_after (default 10m)
   worker-disconnected   one inside that grace period (a note)
   worker-maintenance    one drained with accept_backlog: false (a note)
-  supervision-reassess  an overseer ended its activation without deciding,
+  review-round-limit    a task whose latest attempt failed after spending\n                        every review round, with a campaign rerun command\n  supervision-reassess  an overseer ended its activation without deciding,
                         and the run waits for "supervision reassess"
   supervision-incident  an escalated review incident, with one resolve
                         command per outcome it permits
@@ -310,6 +310,7 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 		report.Sources = append(report.Sources, "runs")
 		triageStalledRuns(&report, workflows.Workflows, now, options.staleAfter)
 		triageSupervision(ctx, &report, sources, workflows.Workflows)
+		triageReviewRoundLimits(ctx, &report, sources, workflows.Workflows)
 	}
 	triageWaits(ctx, &report, sources, now)
 	if quarantine, err := sources.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryQuarantine}); err != nil {
@@ -791,7 +792,7 @@ func triageAsk(report *triageReport, w domain.TaskWait, task string, showRun tri
 // triageKindOrder orders items of one severity: workers first, because a
 // worker that is down explains much of what follows it.
 var triageKindOrder = []string{
-	"worker-down", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
+	"worker-down", "review-round-limit", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
 	"ask-unanswered", "wake-overdue", "wake-undeliverable", "supervision-hold", "supervision-dispatch", "quota-held",
 	"intake-quarantined", "run-stalled", "worker-disconnected", "worker-maintenance", "legacy-intake-disabled",
 }
