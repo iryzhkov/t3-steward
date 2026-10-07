@@ -164,6 +164,10 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if err != nil {
 		return report, err
 	}
+	failedRecords, missingOutputs, err := failedCommitResultRecords(task, attempt, artifacts, payloads, missingOutputs)
+	if err != nil {
+		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
+	}
 	verificationPassed, failure, summary, err := evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, missingOutputs)
 	if err != nil {
 		return report, err
@@ -172,6 +176,9 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if reviewErr != nil {
 		verificationPassed = false
 		failure = strings.TrimPrefix(failure+"; review_output verification failed: "+reviewErr.Error(), "; ")
+	}
+	if err := validateFailedCommitResultOutcome(failedRecords, verificationPassed, failure); err != nil {
+		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
 	}
 	for index, artifact := range artifacts {
 		published, err := i.Artifacts.Publish(ctx, domain.ArtifactPublication{
@@ -398,7 +405,9 @@ func resultArtifact(object workerproto.ArtifactObject, manifest workerproto.Arti
 		// declared, which is how that commit reaches a consumer on another
 		// worker, or the work-in-progress bundle of a failed attempt whose
 		// commands were still running when its turn ended.
-		if !(IsCommitBundleOf(task, name) || isWorkInProgressBundleOf(task, attempt.ID, object.ID, name)) || object.MediaType != CommitBundleMediaType {
+		failedRecord := isFailedCommitArtifactOf(task, name) && object.MediaType == "application/json"
+		bundle := (IsCommitBundleOf(task, name) || isWorkInProgressBundleOf(task, attempt.ID, object.ID, name)) && object.MediaType == CommitBundleMediaType
+		if !failedRecord && !bundle {
 			return domain.Artifact{}, fmt.Errorf("result import object %q is not the bundle of a commit the task declares", object.ID)
 		}
 	default:

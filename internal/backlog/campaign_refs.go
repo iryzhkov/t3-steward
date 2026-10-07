@@ -37,8 +37,9 @@ type CommitProvenance struct {
 	// It is absent for a commit equal to its base, which needs no bundle, for a
 	// producer whose build could not make one, and when BundleOmitted says why
 	// none was retained.
-	Bundle        *CommitBundleRecord `json:"bundle,omitempty"`
-	BundleOmitted string              `json:"bundleOmitted,omitempty"`
+	Bundle        *CommitBundleRecord  `json:"bundle,omitempty"`
+	BundleOmitted string               `json:"bundleOmitted,omitempty"`
+	FailedAttempt *FailedCommitAttempt `json:"failedAttempt,omitempty"`
 }
 
 // Report renders the provenance for an operator or a log line.
@@ -61,8 +62,9 @@ type PublishCommitRequest struct {
 	// Revision is resolved in that workspace; it defaults to HEAD.
 	Revision string
 	// Base is the commit the workspace was pinned to before the task ran.
-	Base      string
-	CreatedAt time.Time
+	Base          string
+	CreatedAt     time.Time
+	FailedAttempt *FailedCommitAttempt
 }
 
 // CampaignRefStore keeps campaign-scoped commits reachable for the campaign's
@@ -130,6 +132,12 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 		return CommitProvenance{}, fmt.Errorf("resolve declared commit %q: Git returned invalid commit %q", request.Name, commit)
 	}
 	ref := CampaignRef(request.WorkflowRunID, request.TaskID, request.Name)
+	if request.FailedAttempt != nil {
+		if err := validateFailedCommitAttempt(request.FailedAttempt); err != nil {
+			return CommitProvenance{}, err
+		}
+		ref = FailedCampaignRef(request.WorkflowRunID, request.TaskID, request.FailedAttempt.ID, request.Name)
+	}
 	if existing, found, err := s.head(ctx, gitDir, ref, log); err != nil {
 		return CommitProvenance{}, err
 	} else if found && existing != commit {
@@ -146,7 +154,7 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 	provenance := CommitProvenance{
 		Version: CampaignCommitRecordVersion, WorkflowRunID: request.WorkflowRunID,
 		TaskID: request.TaskID, Name: request.Name, Repository: request.Repository,
-		Base: request.Base, Commit: commit, Ref: ref, CreatedAt: createdAt.UTC(),
+		Base: request.Base, Commit: commit, Ref: ref, CreatedAt: createdAt.UTC(), FailedAttempt: request.FailedAttempt,
 	}
 	if err := s.writeProvenance(provenance); err != nil {
 		return CommitProvenance{}, err
@@ -175,15 +183,12 @@ func (s CampaignRefStore) FetchInto(ctx context.Context, workspaceDir string, pr
 	if workspaceDir == "" {
 		return errors.New("fetch campaign commit: consuming workspace is required")
 	}
-	if err := validateCommitTarget(provenance.WorkflowRunID, provenance.TaskID, provenance.Name); err != nil {
+	if err := ValidateCommitProvenance(provenance); err != nil {
 		return err
 	}
-	if !validGitObjectID(provenance.Commit) {
-		return fmt.Errorf("fetch campaign commit: %q is not a commit ID", provenance.Commit)
-	}
 	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
-	if provenance.Ref != "" && provenance.Ref != ref {
-		return fmt.Errorf("campaign commit record names ref %q, want %q", provenance.Ref, ref)
+	if provenance.FailedAttempt != nil {
+		ref = FailedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.FailedAttempt.ID, provenance.Name)
 	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {
@@ -382,6 +387,9 @@ func (s CampaignRefStore) provenancePath(workflowRunID, taskID, name string) str
 
 func (s CampaignRefStore) writeProvenance(provenance CommitProvenance) error {
 	path := s.provenancePath(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
+	if provenance.FailedAttempt != nil {
+		path = filepath.Join(s.Root, "provenance", provenance.WorkflowRunID, provenance.TaskID, "failed", provenance.FailedAttempt.ID, provenance.Name+".json")
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create campaign commit record directory: %w", err)
 	}
@@ -430,14 +438,8 @@ func ParseCommitProvenance(raw []byte) (CommitProvenance, error) {
 	if provenance.Version != CampaignCommitRecordVersion {
 		return CommitProvenance{}, fmt.Errorf("campaign commit record version %q is not supported", provenance.Version)
 	}
-	if err := validateCommitTarget(provenance.WorkflowRunID, provenance.TaskID, provenance.Name); err != nil {
+	if err := ValidateCommitProvenance(provenance); err != nil {
 		return CommitProvenance{}, err
-	}
-	if !validGitObjectID(provenance.Commit) || !validGitObjectID(provenance.Base) {
-		return CommitProvenance{}, errors.New("campaign commit record needs a commit and a base")
-	}
-	if provenance.Repository == "" {
-		return CommitProvenance{}, errors.New("campaign commit record needs its repository")
 	}
 	return provenance, nil
 }

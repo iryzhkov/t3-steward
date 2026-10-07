@@ -127,6 +127,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		}
 	}
 
+	verificationFailures := slices.Clone(failures)
 	workspaceRoot, err := os.OpenRoot(request.WorkspaceDir)
 	if err != nil {
 		return FinalizedAttempt{}, fmt.Errorf("finalize attempt: open workspace: %w", err)
@@ -239,12 +240,11 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		})
 	}
 
-	// A commit is published only for an attempt that is otherwise a success.
-	// Publishing one for an attempt that has already failed makes the task
-	// permanently unrunnable: the retry produces a different commit, the ref
-	// already names the first one, and the refusal to redefine it replaces the
-	// real cause with a complaint about a ref.
-	if len(commits) != 0 && len(failures) != 0 {
+	// Failed verification retains a candidate under its attempt's quarantine
+	// ref, while ordinary publication still requires success. Other failures
+	// withhold the commit entirely; a retry can always publish its normal ref.
+	retainFailed := len(verificationFailures) != 0 && len(failures) == len(verificationFailures)
+	if len(commits) != 0 && len(failures) != 0 && !retainFailed {
 		names := make([]string, 0, len(commits))
 		for _, declaration := range commits {
 			names = append(names, fmt.Sprintf("%q", declaration.Name))
@@ -264,11 +264,15 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if f.CampaignRefs.Root == "" {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: campaign ref store is required", declaration.Name)
 		}
+		var failedAttempt *FailedCommitAttempt
+		if retainFailed {
+			failedAttempt = &FailedCommitAttempt{ID: request.Attempt.ID, VerificationFailures: slices.Clone(verificationFailures)}
+		}
 		provenance, publishErr := f.CampaignRefs.Publish(ctx, PublishCommitRequest{
 			WorkflowRunID: request.Attempt.WorkflowRunID, TaskID: request.Task.ID,
 			Name: declaration.Name, Repository: request.Repository,
 			WorkspaceDir: request.WorkspaceDir, Revision: declaration.Commit.Revision,
-			Base: request.BaseCommit, CreatedAt: now,
+			Base: request.BaseCommit, CreatedAt: now, FailedAttempt: failedAttempt,
 		}, nil)
 		if publishErr != nil {
 			// The task promised a commit and the promise could not be kept.
@@ -289,6 +293,18 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		published = append(published, entry)
 	}
 
+	// A failed candidate is reusable only when every declared promise apart
+	// from verification was kept. A resolution or bundle failure must not
+	// expose the other candidates as verification-only evidence.
+	if retainFailed && len(failures) != len(verificationFailures) {
+		for _, commit := range published {
+			commit.bundle.discard()
+		}
+		if err := f.CampaignRefs.discardFailedAttempt(ctx, request.Attempt.WorkflowRunID, request.Task.ID, request.Attempt.ID); err != nil {
+			return FinalizedAttempt{}, fmt.Errorf("discard invalid failed candidates: %w", err)
+		}
+		published = nil
+	}
 	// Every artifact still to be captured has its identity now, so that the
 	// result admitted below is exactly the result captured.
 	for index := range published {
@@ -323,8 +339,9 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 				if err != nil {
 					return nil, err
 				}
+				kind, name := failedCommitRecordName(commit.provenance)
 				result = append(result, domain.Artifact{
-					ID: commit.recordID, Kind: domain.ArtifactOutput, Name: filepath.ToSlash(commit.declaration.Name),
+					ID: commit.recordID, Kind: kind, Name: filepath.ToSlash(name),
 					MediaType: "application/json", Size: int64(len(record)), SHA256: fmt.Sprintf("%x", sha256.Sum256(record)),
 				})
 			}
@@ -353,14 +370,15 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		if marshalErr != nil {
 			return FinalizedAttempt{}, fmt.Errorf("finalize attempt commit %q: %w", declaration.Name, marshalErr)
 		}
+		kind, name := failedCommitRecordName(provenance)
 		storagePath := filepath.ToSlash(filepath.Join(
 			"runs", request.Attempt.WorkflowRunID, request.Task.ID, request.Attempt.ID,
-			"artifacts", "outputs", declaration.Name,
+			"artifacts", "outputs", name,
 		))
 		file, writeErr := writeIngestedFile(
 			bytes.NewReader(record),
-			filepath.Join(stageDir, "artifacts", "outputs", declaration.Name),
-			declaration.Name,
+			filepath.Join(stageDir, "artifacts", "outputs", name),
+			name,
 			storagePath,
 		)
 		if writeErr != nil {
@@ -369,7 +387,7 @@ func (f AttemptFinalizer) Finalize(ctx context.Context, request AttemptFinalizat
 		artifacts = append(artifacts, domain.Artifact{
 			ID: commit.recordID, WorkflowRunID: request.Attempt.WorkflowRunID,
 			TaskID: request.Task.ID, AttemptID: request.Attempt.ID,
-			Kind: domain.ArtifactOutput, Name: filepath.ToSlash(declaration.Name),
+			Kind: kind, Name: filepath.ToSlash(name),
 			MediaType: "application/json",
 			Size:      file.size, SHA256: file.sha256, StoragePath: file.storagePath,
 			Producer: request.Task.Name, CreatedAt: now,

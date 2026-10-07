@@ -49,11 +49,11 @@ func TestNoCommitIsPublishedForAnAttemptThatAlreadyFailed(t *testing.T) {
 	if !strings.HasPrefix(failed.Completion.Failure, "verification command failed (3): exit 3") {
 		t.Fatalf("failure = %q", failed.Completion.Failure)
 	}
-	if !strings.Contains(failed.Completion.Failure, `declared commit "handoff" not published`) {
-		t.Fatalf("failure does not say the commit waited: %q", failed.Completion.Failure)
+	if _, err := refs.Resolve("run-1", "task-implement", "handoff"); err == nil {
+		t.Fatal("a failed attempt published the ordinary commit")
 	}
-	if runs, err := refs.Runs(); err != nil || len(runs) != 0 {
-		t.Fatalf("a failed attempt published %v, %v", runs, err)
+	if records, err := refs.List("run-1"); err != nil || len(records) != 1 || records[0].FailedAttempt == nil || records[0].FailedAttempt.ID != attempt.ID {
+		t.Fatalf("failed candidate was not retained separately: %+v, %v", records, err)
 	}
 
 	// The retry commits something different, as a retry does, and is accepted:
