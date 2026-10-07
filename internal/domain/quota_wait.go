@@ -290,10 +290,15 @@ func MergeQuotaObservations(local []BucketState, workers []WorkerSnapshot) []Buc
 				LimitName: observed.LimitName, ModelSelector: observed.ModelSelector,
 				UsedPercent: observed.UsedPercent, ResetsAt: observed.ResetsAt,
 				ObservedAt: observed.ObservedAt, Healthy: observed.Healthy, UpdatedAt: observed.ObservedAt,
-				RatePerMinute: observed.RatePerMinute, DrainsAt: observed.DrainsAt,
-				DrainDeadline: observed.DrainDeadline,
+				DrainsAt: observed.DrainsAt, DrainDeadline: observed.DrainDeadline,
 			}
-			if observed.DrainPercent > 0 {
+			// Runway metadata is advisory. A value no host can report is
+			// dropped, so one bad worker reading behaves like an older
+			// worker's instead of failing planning for every pool.
+			if observed.RatePerMinute > 0 && observed.RatePerMinute <= 100 {
+				state.RatePerMinute = observed.RatePerMinute
+			}
+			if observed.DrainPercent > 0 && observed.DrainPercent <= 100 {
 				state.AppliedThresholds = &ThresholdSet{DrainPercent: observed.DrainPercent}
 			}
 			if state.Epoch == "" {

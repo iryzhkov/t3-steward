@@ -23,8 +23,9 @@ import (
 // Ownership read from the journal is bounded by freshness. The journal is
 // advanced only by a live worker process. An owning record remains evidence
 // while its assignment lease is valid or a reconcile pass has refreshed
-// worker liveness within OwnershipLivenessGrace. A crashed worker eventually
-// hands its threads back to the watchdog. A record without a lease expiry is
+// worker liveness within OwnershipLivenessGrace, for at most OwnershipMaxAge
+// past the lease. A crashed worker eventually hands its threads back to the
+// watchdog, and so does a live one whose lease is no longer renewed. A record without a lease expiry is
 // bounded by OwnershipMaxAge since its last update instead.
 type JournalThreadOwnership struct {
 	// Home is the worker's home directory, where its bootstrap and retained
@@ -137,6 +138,12 @@ func (o *JournalThreadOwnership) noteStale(stale []string) {
 func ownershipStale(record AttemptRecord, now, lastSeen time.Time) string {
 	if lease := record.Assignment.LeaseExpiresAt; !lease.IsZero() {
 		if !lease.After(now) {
+			// Liveness bridges a lapse in renewal, not an abandoned
+			// assignment: past OwnershipMaxAge after the lease the thread
+			// is the watchdog's even while the worker runs.
+			if now.Sub(lease) > OwnershipMaxAge {
+				return fmt.Sprintf("assignment lease expired at %s, more than %s ago", lease.UTC().Format(time.RFC3339), OwnershipMaxAge)
+			}
 			if !lastSeen.IsZero() && !lastSeen.After(now) && now.Sub(lastSeen) <= OwnershipLivenessGrace {
 				return ""
 			}

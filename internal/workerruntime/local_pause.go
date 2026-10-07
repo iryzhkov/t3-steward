@@ -45,12 +45,15 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		return nil
 	}
 	now := r.now()
+	// Escalation needs an intent from an earlier pass: the first contact
+	// always gets a notice attempt and the next pass to retry it.
+	retrying := record.LocalThrottle != nil
 	kind := domain.ThrottleCommandDrain
 	if pause.Phase == domain.PhaseStopped {
 		kind = domain.ThrottleCommandHardStop
 	}
 	if record.LocalThrottle != nil && record.LocalThrottle.Kind == domain.ThrottleCommandDrain {
-		if !record.LocalThrottle.DrainNoticeSent {
+		if !record.LocalThrottle.drainNoticeDelivered() {
 			// A crash or send failure left only the intent. Retry the notice
 			// before deciding whether an unanswered drain needs escalation.
 			kind = domain.ThrottleCommandDrain
@@ -64,7 +67,7 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		if record.LocalThrottle.DrainNoticeSentAt != nil {
 			noticeAt = *record.LocalThrottle.DrainNoticeSentAt
 		}
-		if elapsed := now.Sub(noticeAt); record.LocalThrottle.DrainNoticeSent && elapsed < r.config.PauseEscalation {
+		if elapsed := now.Sub(noticeAt); record.LocalThrottle.drainNoticeDelivered() && elapsed < r.config.PauseEscalation {
 			// The bucket is stopped, but the notice is still within the
 			// window the daemon gives a stop to take effect.
 			r.log.Debug("drain notice stands; the stop follows if the thread keeps working",
@@ -86,6 +89,9 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		Kind: kind, Bucket: pause.Bucket, Phase: pause.Phase, UsedPercent: pause.UsedPercent,
 		LimitName: pause.LimitName, ResetsAt: pause.ResetsAt, ObservedAt: pause.ObservedAt,
 		Reason: pause.Summary(), RequestedAt: now,
+		// Only this build writes the marker, so a drain request without it
+		// is one the previous binary already sent through Checkpoint.
+		DrainNoticePending: kind == domain.ThrottleCommandDrain,
 	}
 	if record.LocalThrottle != nil {
 		// A hard stop after a drain request keeps the earlier request time,
@@ -113,32 +119,55 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 	command := r.localThrottleCommand(*record, request)
 	r.log.Warn("quota watchdog pauses an owned attempt", "assignment", id, "thread", pkg.Identity.ThreadID,
 		"kind", string(kind), "bucket", pause.Bucket.String(), "phase", string(pause.Phase), "used", fmt.Sprintf("%.0f%%", pause.UsedPercent), "reason", request.Reason)
-	switch kind {
-	case domain.ThrottleCommandDrain:
-		if err := r.driver.RequestQuotaDrain(ctx, pkg, command); err != nil {
+	if kind == domain.ThrottleCommandDrain {
+		err := r.driver.RequestQuotaDrain(ctx, pkg, command)
+		if err == nil {
+			return r.journal.update(func(state *journalState) error {
+				current := state.Attempts[id]
+				if current.LocalThrottle != nil {
+					request := *current.LocalThrottle
+					request.DrainNoticeSent = true
+					request.DrainNoticePending = false
+					sentAt := r.now()
+					request.DrainNoticeSentAt = &sentAt
+					current.LocalThrottle = &request
+					state.Attempts[id] = current
+					state.Sequence++
+				}
+				return nil
+			})
+		}
+		// A retry that lands gets its full window from the send. A stopped
+		// bucket whose notice still cannot be delivered once the escalation
+		// window since the request has passed is stopped instead, as when the
+		// notice failed inside Checkpoint.
+		if !retrying || pause.Phase != domain.PhaseStopped || now.Sub(request.RequestedAt) < r.config.PauseEscalation {
 			r.log.Warn("quota drain notice failed; retrying next reconcile", "assignment", id, "error", err)
 			return nil
 		}
-		return r.journal.update(func(state *journalState) error {
-			current := state.Attempts[id]
-			if current.LocalThrottle != nil {
-				request := *current.LocalThrottle
-				request.DrainNoticeSent = true
-				sentAt := r.now()
-				request.DrainNoticeSentAt = &sentAt
-				current.LocalThrottle = &request
-				state.Attempts[id] = current
-				state.Sequence++
+		r.log.Warn("quota drain notice undeliverable past the escalation window; escalating to the stop", "assignment", id,
+			"thread", pkg.Identity.ThreadID, "request_age", now.Sub(request.RequestedAt).Round(time.Second), "error", err)
+		request.Kind = domain.ThrottleCommandHardStop
+		request.DrainNoticePending = false
+		if err := r.journal.update(func(state *journalState) error {
+			current, ok := state.Attempts[id]
+			if !ok {
+				return fmt.Errorf("worker journal: unknown assignment %q", id)
 			}
+			current.LocalThrottle = &request
+			state.Attempts[id] = current
+			state.Sequence++
 			return nil
-		})
-	default:
-		if err := r.driver.StopThread(ctx, pkg); err != nil {
-			r.log.Warn("quota stop outcome is unproven; retrying next reconcile", "assignment", id, "error", err)
-			return nil
+		}); err != nil {
+			return err
 		}
-		return r.markLocalPauseStopped(ctx, id, nil)
+		record.LocalThrottle = &request
 	}
+	if err := r.driver.StopThread(ctx, pkg); err != nil {
+		r.log.Warn("quota stop outcome is unproven; retrying next reconcile", "assignment", id, "error", err)
+		return nil
+	}
+	return r.markLocalPauseStopped(ctx, id, nil)
 }
 
 // parkStoppedForQuota captures a stop that the watchdog may have caused before

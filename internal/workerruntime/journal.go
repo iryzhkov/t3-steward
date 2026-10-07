@@ -63,6 +63,10 @@ type LocalThrottleRequest struct {
 	// DrainNoticeSentAt starts escalation after successful delivery, independently
 	// of RequestedAt, which preserves the original intent for recovery.
 	DrainNoticeSentAt *time.Time `json:"drain_notice_sent_at,omitempty"`
+	// DrainNoticePending marks a drain intent recorded before its notice was
+	// sent. Only builds with the non-blocking drain write it; a drain request
+	// from an older binary lacks it and was already sent through Checkpoint.
+	DrainNoticePending bool `json:"drain_notice_pending,omitempty"`
 	// StoppedAt is when the thread was observed stopped after the request.
 	StoppedAt     *time.Time                 `json:"stoppedAt,omitempty"`
 	StoppedTurnID string                     `json:"stoppedTurnId,omitempty"`
@@ -236,6 +240,13 @@ func journalStateAtRoot(root string) (journalState, error) {
 // refreshing on each pass would add a synced write per exchange; once a
 // minute stays well inside OwnershipLivenessGrace.
 const LivenessRefreshInterval = time.Minute
+
+// drainNoticeDelivered reports whether the drain notice of this request
+// reached T3: confirmed by a send, or written by an older binary whose
+// blocking Checkpoint sent the notice before recording anything else.
+func (r LocalThrottleRequest) drainNoticeDelivered() bool {
+	return r.DrainNoticeSent || !r.DrainNoticePending
+}
 
 func (j *Journal) recordLiveness(now time.Time) error {
 	return j.update(func(state *journalState) error {

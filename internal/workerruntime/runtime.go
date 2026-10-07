@@ -565,8 +565,9 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 // synced write never spends the budget the pass runs under.
 func (r *Runtime) Reconcile(ctx context.Context) error {
 	err := r.reconcilePass(ctx)
-	if livenessErr := r.journal.recordLiveness(r.now()); err == nil {
-		err = livenessErr
+	if livenessErr := r.journal.recordLiveness(r.now()); livenessErr != nil {
+		// Liveness is advisory: the watchdog falls back to the lease.
+		r.log.Warn("worker liveness not recorded", "error", livenessErr)
 	}
 	return err
 }
