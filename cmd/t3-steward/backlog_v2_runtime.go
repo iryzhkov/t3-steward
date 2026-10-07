@@ -982,6 +982,14 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		Store:             store,
 		MaxBytes:          cfg.BacklogV2.MessageLimits.MaxBytes,
 		MaxFiles:          cfg.BacklogV2.MessageLimits.MaxFiles,
+		QuotaAdmission: &backlog.SubmissionQuotaAdmission{Bridge: backlog.QuotaBridge{
+			Store: store, Pools: coordinatorQuotaPoolBindings(cfg), Disabled: !cfg.QuotaChecksEnabled(),
+			MaxObservationAge:       modelsStaleAfter(cfg),
+			SafetyMargin:            cfg.Backlog.SafetyMargin,
+			FallbackForecastPerHour: cfg.Backlog.FallbackPerHour,
+			LongWindowCap:           cfg.Backlog.LongWindowCap,
+			SurplusHorizon:          24 * time.Hour,
+		}},
 		// The permanent part of the readiness check is repeated here, so a
 		// client that skipped it, or a fleet that changed after the client
 		// checked, still cannot create an impossible run.
