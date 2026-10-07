@@ -38,22 +38,34 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		r.log.Warn("host quota state unavailable; attempt keeps running", "assignment", id, "error", err)
 		return nil
 	}
+	now := r.now()
 	if !required {
 		// A queued notice can still end this turn after quota recovers. Keep
 		// the durable intent until a stopped observation and completion check;
 		// even a failed send may have reached T3 before its reply was lost.
-		return nil
+		// It is marked recovered, so a later episode does not inherit it.
+		return r.markLocalPauseRecovered(id, record, now)
 	}
-	now := r.now()
+	// The intent of an episode that has since recovered, or of a bucket that
+	// no longer governs, still owns a late stop of its turn, but its notice
+	// says nothing about this episode: the pause starts over from first
+	// contact, with its own notice and its own escalation window.
+	prior := record.LocalThrottle
+	if prior != nil && (prior.RecoveredAt != nil || prior.Bucket != pause.Bucket) {
+		r.log.Info("new quota episode for an attempt with an earlier drain intent; the pause starts over", "assignment", id,
+			"thread", record.Package.Package.Identity.ThreadID, "bucket", pause.Bucket.String(), "earlier_bucket", prior.Bucket.String(),
+			"recovered", prior.RecoveredAt != nil)
+		prior = nil
+	}
 	// Escalation needs an intent from an earlier pass: the first contact
 	// always gets a notice attempt and the next pass to retry it.
-	retrying := record.LocalThrottle != nil
+	retrying := prior != nil
 	kind := domain.ThrottleCommandDrain
 	if pause.Phase == domain.PhaseStopped {
 		kind = domain.ThrottleCommandHardStop
 	}
-	if record.LocalThrottle != nil && record.LocalThrottle.Kind == domain.ThrottleCommandDrain {
-		if !record.LocalThrottle.drainNoticeDelivered() {
+	if prior != nil && prior.Kind == domain.ThrottleCommandDrain {
+		if !prior.drainNoticeDelivered() {
 			// A crash or send failure left only the intent. Retry the notice
 			// before deciding whether an unanswered drain needs escalation.
 			kind = domain.ThrottleCommandDrain
@@ -63,11 +75,11 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 			// would spam the session, so the running branch just observes.
 			return nil
 		}
-		noticeAt := record.LocalThrottle.RequestedAt // legacy journals lack a send timestamp
-		if record.LocalThrottle.DrainNoticeSentAt != nil {
-			noticeAt = *record.LocalThrottle.DrainNoticeSentAt
+		noticeAt := prior.RequestedAt // legacy journals lack a send timestamp
+		if prior.DrainNoticeSentAt != nil {
+			noticeAt = *prior.DrainNoticeSentAt
 		}
-		if elapsed := now.Sub(noticeAt); record.LocalThrottle.drainNoticeDelivered() && elapsed < r.config.PauseEscalation {
+		if elapsed := now.Sub(noticeAt); prior.drainNoticeDelivered() && elapsed < r.config.PauseEscalation {
 			// The bucket is stopped, but the notice is still within the
 			// window the daemon gives a stop to take effect.
 			r.log.Debug("drain notice stands; the stop follows if the thread keeps working",
@@ -78,7 +90,7 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 			r.log.Warn("drain notice not honoured in time; escalating to the stop", "assignment", id,
 				"thread", record.Package.Package.Identity.ThreadID, "notice_age", now.Sub(noticeAt).Round(time.Second))
 		}
-	} else if kind == domain.ThrottleCommandHardStop && record.LocalThrottle == nil {
+	} else if kind == domain.ThrottleCommandHardStop && prior == nil {
 		// First contact with a stopped bucket while the thread is mid-work:
 		// the drain form goes first, the stop only after the escalation
 		// window. The request keeps the bucket's stopped phase so the notice
@@ -93,11 +105,11 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		// is one the previous binary already sent through Checkpoint.
 		DrainNoticePending: kind == domain.ThrottleCommandDrain,
 	}
-	if record.LocalThrottle != nil {
+	if prior != nil {
 		// A hard stop after a drain request keeps the earlier request time,
 		// as the watchdog keeps the earliest stop time on its intents.
-		request.RequestedAt = record.LocalThrottle.RequestedAt
-		request.DrainNoticeSentAt = record.LocalThrottle.DrainNoticeSentAt
+		request.RequestedAt = prior.RequestedAt
+		request.DrainNoticeSentAt = prior.DrainNoticeSentAt
 	}
 	// The intent is durable before the effect, so a worker that restarts
 	// inside the driver call comes back knowing the stop was its own.
@@ -168,6 +180,32 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		return nil
 	}
 	return r.markLocalPauseStopped(ctx, id, nil)
+}
+
+// markLocalPauseRecovered records, once, that the bucket of a drain intent
+// still in force recovered while the thread kept working.
+func (r *Runtime) markLocalPauseRecovered(id string, record *AttemptRecord, now time.Time) error {
+	if record.LocalThrottle == nil || record.LocalThrottle.RecoveredAt != nil {
+		return nil
+	}
+	if err := r.journal.update(func(state *journalState) error {
+		current, ok := state.Attempts[id]
+		if !ok || current.LocalThrottle == nil {
+			return nil
+		}
+		request := *current.LocalThrottle
+		request.RecoveredAt = &now
+		current.LocalThrottle = &request
+		state.Attempts[id] = current
+		state.Sequence++
+		return nil
+	}); err != nil {
+		return err
+	}
+	request := *record.LocalThrottle
+	request.RecoveredAt = &now
+	record.LocalThrottle = &request
+	return nil
 }
 
 // parkStoppedForQuota captures a stop that the watchdog may have caused before

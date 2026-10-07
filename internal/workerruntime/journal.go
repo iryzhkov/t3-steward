@@ -67,6 +67,11 @@ type LocalThrottleRequest struct {
 	// sent. Only builds with the non-blocking drain write it; a drain request
 	// from an older binary lacks it and was already sent through Checkpoint.
 	DrainNoticePending bool `json:"drain_notice_pending,omitempty"`
+	// RecoveredAt marks an intent kept after its bucket recovered while the
+	// thread was still working. The intent still claims a late stop of the
+	// drained turn as this pause, but its notice is no evidence for a later
+	// quota episode, which records and sends its own.
+	RecoveredAt *time.Time `json:"recovered_at,omitempty"`
 	// StoppedAt is when the thread was observed stopped after the request.
 	StoppedAt     *time.Time                 `json:"stoppedAt,omitempty"`
 	StoppedTurnID string                     `json:"stoppedTurnId,omitempty"`
