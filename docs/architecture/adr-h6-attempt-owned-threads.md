@@ -34,11 +34,15 @@ writes. The two run in different processes on the same host (`t3-steward run` an
 `t3-steward worker serve`), so the journal on disk, not memory, is the seam. A host without a
 worker bootstrap owns nothing.
 
-Ownership read from the journal is bounded by freshness. The worker records liveness at the
-start of every reconcile pass, including passes that change no attempts. A leased record owns
+Ownership read from the journal is bounded by freshness. The worker records liveness after
+every reconcile pass, including passes that change no attempts and passes that fail, at most
+once per `LivenessRefreshInterval` (one minute) so that an exchange does not pay a synced
+journal write each time; a failed liveness write is logged, not returned. A leased record owns
 its thread while its lease is valid or that worker liveness is within `OwnershipLivenessGrace`
 (ten minutes), so a brief lease lapse during a host drain does not hand a live campaign thread
-to the watchdog (`ownershipStale` in `internal/workerruntime/ownership.go`). A record without a
+to the watchdog (`ownershipStale` in `internal/workerruntime/ownership.go`). Liveness bridges an
+expired lease for at most `OwnershipMaxAge` (one hour) past its expiry, so a worker that keeps
+running but no longer renews an assignment does not hold its thread forever. A record without a
 lease expiry keeps the `OwnershipMaxAge` (one hour) bound since its last update. A crashed
 worker's leased threads return to the watchdog once both the lease and liveness grace expire.
 Older workers that omit the liveness timestamp keep the lease-only bound. The watchdog logs
@@ -75,7 +79,10 @@ Must:
    notice without waiting for the turn to stop, so reconciliation and lease exchanges continue.
    A later pass observes the stop and reads optional checkpoint evidence; a missing checkpoint
    file still records the pause. A queued notice's intent survives quota recovery while the
-   turn remains active; its later stop is still a pause. Missing or failed stopped-turn identity
+   turn remains active; its later stop is still a pause. The kept intent is marked recovered,
+   and its notice is no evidence for a later episode: when the bucket drains again, or a
+   different bucket governs the route, the pause starts over with its own notice and its own
+   escalation window. Missing or failed stopped-turn identity
    lookups defer completion and resume until the worker can fence the stopped turn.
    If a thread ended during a host drain before the worker recorded
    a request, it is parked with reason `turn ended during a host quota drain`. An explicit
@@ -103,17 +110,19 @@ Must:
    earliest of the projected crossing of the drain threshold, the drain deadline and
    exhaustion bounds the runway. The coordinator decodes optional burn rate, drain threshold,
    projected drain crossing and drain deadline fields on worker observations, and absent
-   fields preserve today's behavior, but workers do not send them yet (see below).
+   fields preserve today's behavior. Workers send them only when asked (see below).
    The wire version is unchanged: an older worker is never asked and never sends, an older
    coordinator never asks, so neither meets the field. The pause reason and thread state in the
    journal excerpt of each assignment observation are gated by the same ask: both sides decode
    snapshots strictly, so any field added to the snapshot is sent only to a coordinator that
-   asked for `quota-observations-v1` on that exchange. The runway fields would need their own
-   ask: an rc.115 coordinator asks for `quota-observations-v1` and rejects any unknown field
-   through its strict decoder, so a worker that sent them would have every snapshot refused.
-   Workers therefore leave them unset until a coordinator opt-in (a snapshot request flag
-   and worker capability) exists; until then the projected crossing bounds the runway only
-   for buckets the coordinator observes itself.
+   asked for `quota-observations-v1` on that exchange. The runway fields have their own ask:
+   an rc.115 coordinator asks for `quota-observations-v1` and rejects any unknown field
+   through its strict decoder, so a worker that sent them unasked would have every snapshot
+   refused. A worker advertises `quota-runway-v1` (`workerproto.CapabilityQuotaRunway`), a
+   coordinator that sees it sets `quotaRunwayWanted` on the snapshot request, and only then
+   does the worker add the runway fields (`HostQuotaGuard.RunwayObservations`). With an older
+   coordinator or an older worker the projected crossing bounds the runway only for buckets
+   the coordinator observes itself.
 5. `t3-steward thread stop <thread-id> [--session]` dispatches `thread.turn.interrupt` and, with
    `--session`, `thread.session.stop` through the local T3 control client and prints what it
    sent. `t3-steward backlog rewake <run>/<task> --reason TEXT` resumes an attempt that is

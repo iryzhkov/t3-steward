@@ -309,10 +309,9 @@ type WorkerQuotaObservation struct {
 	ModelSelector string     `json:"modelSelector,omitempty"`
 	// Runway metadata is optional so observations from older workers retain
 	// their existing admission behaviour. DrainsAt crosses the host ladder,
-	// while DrainDeadline is the grace deadline after draining begins. Workers
-	// do not send these fields yet: an rc.115 coordinator decodes snapshots
-	// strictly and would reject them, so sending needs a coordinator opt-in.
-	// A coordinator running this build already decodes them.
+	// while DrainDeadline is the grace deadline after draining begins. An rc.115
+	// coordinator decodes snapshots strictly and would reject them, so a worker
+	// sends them only to a coordinator that asked through quota-runway-v1.
 	RatePerMinute float64    `json:"ratePerMinute,omitempty"`
 	DrainPercent  float64    `json:"drainPercent,omitempty"`
 	DrainsAt      *time.Time `json:"drainsAt,omitempty"`

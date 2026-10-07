@@ -106,6 +106,8 @@ type Runtime struct {
 	// on its last snapshot request. It is not durable: the coordinator asks
 	// again on every exchange.
 	reportQuota bool
+	// reportQuotaRunway records that it also asked for the runway fields.
+	reportQuotaRunway bool
 	// titleFailures holds, per assignment, the session title whose last update
 	// failed, so it is retried at the next state change rather than on every
 	// exchange. It is not durable on purpose; see titleFailed.
@@ -178,6 +180,9 @@ func AdvertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilityQuotaObservations) {
 		merged = append(merged, workerproto.CapabilityQuotaObservations)
 	}
+	if !slices.Contains(merged, workerproto.CapabilityQuotaRunway) {
+		merged = append(merged, workerproto.CapabilityQuotaRunway)
+	}
 	if !slices.Contains(merged, workerproto.CapabilitySessionTitles) {
 		merged = append(merged, workerproto.CapabilitySessionTitles)
 	}
@@ -210,7 +215,7 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 	now := r.now()
 	var quota []domain.WorkerQuotaObservation
 	if r.reportQuota && r.config.Quota != nil {
-		observed, err := r.config.Quota.Observations(ctx)
+		observed, err := quotaObservations(ctx, r.config.Quota, r.reportQuotaRunway)
 		if err != nil {
 			r.log.Warn("host quota observations unavailable; snapshot carries none", "error", err)
 		} else {

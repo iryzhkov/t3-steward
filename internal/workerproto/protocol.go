@@ -164,6 +164,13 @@ const CapabilityCampaignSupervision = "campaign-supervision-v1"
 // the snapshot must be gated this way.
 const CapabilityQuotaObservations = "quota-observations-v1"
 
+// CapabilityQuotaRunway advertises that this worker build can add the dispatch
+// runway (burn rate, drain threshold, projected drain crossing and drain
+// deadline) to its quota observations when asked. It is gated separately from
+// CapabilityQuotaObservations because a coordinator that already asks for
+// observations decodes them strictly and would refuse the new fields.
+const CapabilityQuotaRunway = "quota-runway-v1"
+
 type SnapshotRequest struct {
 	// ObservedWorkerEpoch and ObservedSequence acknowledge a durable snapshot
 	// read before the coordinator builds this parked-assignment statement.
@@ -196,6 +203,10 @@ type SnapshotRequest struct {
 	// progress for this worker's current executions, which the worker shows in
 	// their thread titles. It is descriptive and never authority.
 	SessionStates []AssignmentSessionState `json:"sessionStates,omitempty"`
+	// QuotaRunwayWanted asks the worker to add the dispatch runway fields to
+	// the quota observations QuotaObservationsWanted asks for. It is sent only
+	// to a worker advertising CapabilityQuotaRunway.
+	QuotaRunwayWanted bool `json:"quotaRunwayWanted,omitempty"`
 }
 
 const MaxUsageDelivery = 128

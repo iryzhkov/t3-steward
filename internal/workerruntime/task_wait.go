@@ -35,6 +35,7 @@ func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) er
 	// The coordinator asks for host quota observations on the same exchange;
 	// the answer is built by the Snapshot that follows.
 	r.reportQuota = request.QuotaObservationsWanted
+	r.reportQuotaRunway = request.QuotaObservationsWanted && request.QuotaRunwayWanted
 	// Session states ride the same statement and are applied whether or not it
 	// reports parked assignments; the titles they drive are updated after the
 	// reconcile that Snapshot performs.

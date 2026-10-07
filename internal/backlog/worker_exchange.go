@@ -238,6 +238,8 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			// advertises them, so an older worker never meets the field.
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaObservations) {
 				request.QuotaObservationsWanted = true
+				// The runway fields likewise go only to a build that sends them.
+				request.QuotaRunwayWanted = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaRunway)
 			}
 			// Session states likewise go only to a build that decodes them.
 			sessionTitles = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilitySessionTitles)
