@@ -19,6 +19,7 @@ func init() {
 		backlogHelpPages(),
 		campaignHelpPages(),
 		fleetHelpPages(),
+		quotaHelpPages(),
 	} {
 		for _, page := range list {
 			if _, duplicate := helpPages[page.Path]; duplicate {
