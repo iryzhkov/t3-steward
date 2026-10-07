@@ -21,7 +21,7 @@ func TestCampaignRerunUseCommitRequestsAndReportsFailedCommit(t *testing.T) {
 		var out bytes.Buffer
 		var sent domain.GraphAmendment
 		cli := campaignRerunCLI(&out, &sent, result, nil)
-		cli.release = func(context.Context) (string, error) { return "0.11.0-rc.117", nil }
+		cli.release = func(context.Context) (string, error) { return "0.11.0-rc.118", nil }
 		args := []string{"rerun", "run-1", "--from", "review", "--use-commit", "--idempotency-key", "reuse-1"}
 		if asJSON {
 			args = append(args, "--json")
@@ -49,7 +49,7 @@ func TestCampaignRerunUseCommitRequestsAndReportsFailedCommit(t *testing.T) {
 }
 
 func TestCampaignRerunUseCommitHelp(t *testing.T) {
-	for _, fragment := range []string{"--use-commit", "failed attempt", "verification failure", "0.11.0-rc.117"} {
+	for _, fragment := range []string{"--use-commit", "failed attempt", "verification failure", "0.11.0-rc.118"} {
 		if !strings.Contains(campaign.RerunHelp, fragment) {
 			t.Fatalf("rerun help missing %q", fragment)
 		}
@@ -64,11 +64,12 @@ func TestCampaignRerunUseCommitDuplicateAndOldCoordinator(t *testing.T) {
 	if _, err := parseCampaignRerunArgs(append(base, "--use-commit")); err == nil || !strings.Contains(err.Error(), "only once") {
 		t.Fatalf("duplicate: %v", err)
 	}
-	for _, release := range []string{"0.11.0-rc.116", "unknown", ""} {
+	// rc.117 shipped without A3, so it is refused like any older coordinator.
+	for _, release := range []string{"0.11.0-rc.116", "0.11.0-rc.117", "unknown", ""} {
 		var sent domain.GraphAmendment
 		cli := campaignRerunCLI(&bytes.Buffer{}, &sent, campaignRerunResult(), nil)
 		cli.release = func(context.Context) (string, error) { return release, nil }
-		if err := cli.run(context.Background(), append([]string{"rerun"}, base...)); err == nil || !strings.Contains(err.Error(), "0.11.0-rc.117") {
+		if err := cli.run(context.Background(), append([]string{"rerun"}, base...)); err == nil || !strings.Contains(err.Error(), "0.11.0-rc.118") {
 			t.Fatalf("old coordinator %q: %v", release, err)
 		}
 		if sent.ID != "" {

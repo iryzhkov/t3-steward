@@ -534,8 +534,8 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 		return errors.New("coordinator does not support review rounds (needs 0.11.0-rc.104 or later)")
 	}
 	if a.commit != "" || a.bundle != "" {
-		if supported, known := releaseAtLeast(release, "0.11.0-rc.117"); !known || !supported {
-			return errors.New("coordinator does not support commit/bundle review candidates (needs 0.11.0-rc.117 or later)")
+		if supported, known := releaseAtLeast(release, "0.11.0-rc.118"); !known || !supported {
+			return errors.New("coordinator does not support commit/bundle review candidates (needs 0.11.0-rc.118 or later)")
 		}
 	}
 	thread := ""

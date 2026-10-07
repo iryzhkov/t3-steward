@@ -82,18 +82,21 @@ func TestReviewCandidateBundlePrerequisiteWithoutDefault(t *testing.T) {
 	}
 }
 func TestReviewCandidateOlderCoordinatorRefusal(t *testing.T) {
-	h := newTaskRunHarness()
-	h.projects = reviewCatalog()
-	h.release = "0.11.0-rc.116"
-	cli := reviewCLI{task: h.cli()}
-	for _, flag := range []string{"--commit", "--bundle"} {
-		a, err := parseReviewArgs([]string{"--project", "scratch", flag, "candidate", "--reviewer", "a/full", "--reviewer", "b/full", "--no-notify"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		err = cli.run(context.Background(), a)
-		if err == nil || !strings.Contains(err.Error(), "0.11.0-rc.117") {
-			t.Fatalf("old coordinator %s: %v", flag, err)
+	// rc.117 shipped without A3, so it is refused like rc.116.
+	for _, release := range []string{"0.11.0-rc.116", "0.11.0-rc.117"} {
+		h := newTaskRunHarness()
+		h.projects = reviewCatalog()
+		h.release = release
+		cli := reviewCLI{task: h.cli()}
+		for _, flag := range []string{"--commit", "--bundle"} {
+			a, err := parseReviewArgs([]string{"--project", "scratch", flag, "candidate", "--reviewer", "a/full", "--reviewer", "b/full", "--no-notify"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = cli.run(context.Background(), a)
+			if err == nil || !strings.Contains(err.Error(), "0.11.0-rc.118") {
+				t.Fatalf("old coordinator %s %s: %v", release, flag, err)
+			}
 		}
 	}
 }

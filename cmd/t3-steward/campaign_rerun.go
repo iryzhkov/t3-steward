@@ -117,14 +117,14 @@ func (c campaignCLI) runRerun(ctx context.Context, args []string) error {
 	}
 	if parsed.useCommit {
 		if c.release == nil {
-			return errors.New("coordinator support for --use-commit is unavailable (needs 0.11.0-rc.117 or later)")
+			return errors.New("coordinator support for --use-commit is unavailable (needs 0.11.0-rc.118 or later)")
 		}
 		release, err := c.release(ctx)
 		if err != nil {
 			return err
 		}
-		if supported, known := releaseAtLeast(release, "0.11.0-rc.117"); !known || !supported {
-			return errors.New("coordinator does not support --use-commit (needs 0.11.0-rc.117 or later)")
+		if supported, known := releaseAtLeast(release, "0.11.0-rc.118"); !known || !supported {
+			return errors.New("coordinator does not support --use-commit (needs 0.11.0-rc.118 or later)")
 		}
 	}
 	// The source run is read before the amendment so the request can name the

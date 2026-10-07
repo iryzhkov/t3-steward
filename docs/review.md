@@ -88,7 +88,7 @@ base (or the project default ref for a self-contained bundle), then receive exac
 fetch and detached-checkout commands for the pinned candidate. Bundle bytes keep
 the same 1 MiB per-file limit as other inputs. These candidate modes require a
 catalog git project whose repository matches the current checkout's origin and a
-coordinator at 0.11.0-rc.117 or later.
+coordinator at 0.11.0-rc.118 or later.
 `--commit`, `--bundle`, `--diff` and `--diff-file` are mutually exclusive;
 `--base` requires `--commit`. Task mode refuses `--commit`, `--bundle` and
 `--base`, like all other submission flags. Each input is at

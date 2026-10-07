@@ -63,7 +63,7 @@ With `--use-commit`, a review can explicitly reuse a declared commit from an anc
 whose latest attempt failed only verification. The commit must have a retained
 quarantined record and bundle, separate from ordinary published outputs. Missing
 commit records or required file outputs refuse with their names. Non-verification
-failures remain ineligible. The option requires coordinator 0.11.0-rc.117 or newer.
+failures remain ineligible. The option requires coordinator 0.11.0-rc.118 or newer.
 
 ```sh
 t3-steward campaign rerun run-abc --from review --use-commit \

@@ -467,7 +467,7 @@ because a run that pretends it did not fail is a run nobody can learn from.
 
 --use-commit explicitly reuses an ancestor's retained commit from a failed attempt
 whose only failures were verification failures. It requires coordinator
-0.11.0-rc.117 or newer. A missing quarantined commit or required file output refuses
+0.11.0-rc.118 or newer. A missing quarantined commit or required file output refuses
 with its name; other failures remain ineligible. Receipts, consumer provenance and
 campaign explain name the commit, failed attempt and first verification failure.
 Without this option, only successful ancestors can provide ordinary inputs.
