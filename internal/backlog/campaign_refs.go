@@ -345,7 +345,14 @@ func (s CampaignRefStore) fetchInto(ctx context.Context, workspaceDir string, pr
 		return err
 	}
 	source := ref
-	if accepted {
+	if provenance.FailedAttempt != nil {
+		// A retained failed candidate lives only under its attempt's
+		// quarantine ref. It is never staged and never promoted to the
+		// task's campaign output, whatever the consumer's acceptance says.
+		if provenance.StagedAttempt != "" {
+			return fmt.Errorf("campaign commit record %s names both a failed attempt and a staging", ref)
+		}
+	} else if accepted {
 		if err := s.promote(ctx, gitDir, provenance, log); err != nil {
 			return err
 		}

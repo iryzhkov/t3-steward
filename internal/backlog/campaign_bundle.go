@@ -398,6 +398,17 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 // staging, so whoever imports it knows it as staged work of that attempt and
 // never as the task's campaign output.
 func bundleRef(provenance CommitProvenance) (string, error) {
+	if provenance.FailedAttempt != nil {
+		// A retained failed candidate is bundled from, and named by, its
+		// attempt's quarantine ref; it is never staged.
+		if provenance.StagedAttempt != "" {
+			return "", errors.New("campaign commit record names both a failed attempt and a staging")
+		}
+		if err := validateFailedCommitAttempt(provenance.FailedAttempt); err != nil {
+			return "", err
+		}
+		return FailedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.FailedAttempt.ID, provenance.Name), nil
+	}
 	if provenance.StagedAttempt == "" {
 		return CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name), nil
 	}
@@ -457,8 +468,12 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 	// staged ref. The fetch that follows publishes it for an accepted
 	// consumer or reads it from staging for inspection; importing a bundle
 	// here would publish it without the coordinator's acceptance.
-	if staged, err := s.stagedHeld(ctx, gitDir, provenance, log); err != nil || staged {
-		return err
+	// A failed candidate is held only under its quarantine ref, so another
+	// attempt's staging of the same commit does not satisfy it.
+	if provenance.FailedAttempt == nil {
+		if staged, err := s.stagedHeld(ctx, gitDir, provenance, log); err != nil || staged {
+			return err
+		}
 	}
 	if !s.hasCommit(ctx, workspaceDir, provenance.Base, log) {
 		return fmt.Errorf("campaign commit %s: missing prerequisite: its base %s is not present in this worker's repository cache for %s, "+
