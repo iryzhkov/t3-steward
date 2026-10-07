@@ -531,7 +531,7 @@ func (c LocalClient) Describe() TransportDescription {
 }
 
 func (c LocalClient) Query(ctx context.Context, query Query) (Response, error) {
-	return queryIntakeStatus(ctx, query, c.queryOnce)
+	return queryExtended(ctx, query, c.queryOnce)
 }
 
 func (c LocalClient) queryOnce(ctx context.Context, query Query) (Response, error) {

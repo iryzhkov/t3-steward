@@ -272,7 +272,8 @@ func (s *Service) RecoverUnknown(ctx context.Context, principal Principal, reque
 
 func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	if query.Version != Version && !intakeStatus {
+	extendedExplanation := query.Version == ExplanationPlacementVersion && query.Kind == QueryExplanation
+	if query.Version != Version && !intakeStatus && !extendedExplanation {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}
 	if query.ProgressMirror != nil && query.Kind != QueryWorkflows {
@@ -348,6 +349,10 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		explanation, ok := view.explanation(query.WorkflowRunID, query.TaskID)
 		if !ok {
 			return Response{}, notFound("task", query.WorkflowRunID+"/"+query.TaskID)
+		}
+		if !extendedExplanation {
+			// A strict older client rejects the fields it does not declare.
+			explanation.ReviewVerdict, explanation.Placement = nil, nil
 		}
 		response.Explanation = &explanation
 	case QueryEvents:

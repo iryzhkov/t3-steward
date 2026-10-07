@@ -15,6 +15,11 @@ const Version = "backlog.admin/v1"
 // v1 status keeps its frozen shape for strict older local clients.
 const StatusIntakeVersion = "backlog.admin/v1-status-intake"
 
+// ExplanationPlacementVersion opts an explanation read into the review
+// verdict and placement decision fields. A v1 explanation keeps its frozen
+// shape for strict older local clients.
+const ExplanationPlacementVersion = "backlog.admin/v1-explanation-placement"
+
 type QueryKind string
 
 const (
