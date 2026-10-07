@@ -175,8 +175,14 @@ func (c leaseCLI) run(ctx context.Context, args []string) error {
 		}
 	} else if response.Lease != nil {
 		l := response.Lease
-		if _, err := fmt.Fprintf(c.stdout, "lease %s held by thread %s token %d until %s\n", l.Name, l.OwnerThread, l.Token, l.ExpiresAt.UTC().Format(time.RFC3339)); err != nil {
-			return err
+		var outputErr error
+		if l.Released {
+			_, outputErr = fmt.Fprintf(c.stdout, "lease %s released token %d\n", l.Name, l.Token)
+		} else {
+			_, outputErr = fmt.Fprintf(c.stdout, "lease %s held by thread %s token %d until %s\n", l.Name, l.OwnerThread, l.Token, l.ExpiresAt.UTC().Format(time.RFC3339))
+		}
+		if outputErr != nil {
+			return outputErr
 		}
 	} else {
 		for _, l := range response.Leases {
