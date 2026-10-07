@@ -216,7 +216,12 @@ unresolved occurrence is suppressed as `role-unresolved` and tries again at the
 next occurrence. Older coordinators must be upgraded to support `role:`;
 workers still receive ordinary concrete routes.
 
-Coordinator role selection uses policy order and the review diversity
-preference, not the quota ranking described above; planner adoption of the
-ranking remains M17-2b. The selected concrete route still passes the
-coordinator's quota admission at submission like any explicit route.
+Until M17-2b, campaign and schedule role resolution uses policy order, with
+the review diversity preference above, and not the quota ranking
+(`route-ranking/v1`) described above that `task run --role` and `review --role`
+use; planner adoption of the ranking remains M17-2b. The selected concrete
+route still passes the coordinator's quota admission at submission like any
+explicit route. When the first eligible candidate's quota pool is exhausted or
+gated, that route is still selected, and quota admission refuses the
+submission rather than falling through to a later candidate. Name an explicit
+route to use another pool.

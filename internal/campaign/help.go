@@ -82,6 +82,13 @@ fallback reason. Unknown producer families do not apply the preference.
 Explicit routes always stay as written. This preference is also applied to
 schedule occurrences and never grants eligibility or review authority.
 
+Until M17-2b, campaign and schedule role resolution uses policy order, with
+the review diversity preference above, and not the quota ranking
+(route-ranking/v1) that task run --role and review --role use. When the first
+eligible candidate's quota pool is exhausted or gated, that route is still
+selected, and quota admission refuses the submission rather than falling
+through to a later candidate. Name an explicit route to use another pool.
+
 
 Multi-task work is authored as a static version 2 DAG. Every task declared in
 workflow.yaml becomes a task the Steward schedules: it is admitted against quota
@@ -697,6 +704,13 @@ If none qualifies, the first eligible candidate is used with a diversity
 fallback reason. Unknown producer families do not apply the preference.
 Explicit routes always stay as written. This preference is also applied to
 schedule occurrences and never grants eligibility or review authority.
+
+Until M17-2b, campaign and schedule role resolution uses policy order, with
+the review diversity preference above, and not the quota ranking
+(route-ranking/v1) that task run --role and review --role use. When the first
+eligible candidate's quota pool is exhausted or gated, that route is still
+selected, and quota admission refuses the submission rather than falling
+through to a later candidate. Name an explicit route to use another pool.
 
 
 
