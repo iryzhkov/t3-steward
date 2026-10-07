@@ -16,6 +16,11 @@ import (
 )
 
 const leaseUsage = `Usage: t3-steward lease <acquire|renew|release|check|show|list> [NAME] [options]
+
+Hold named, expiring, fenced ownership leases on repository main branches and
+release manifests, so two coordinating threads cannot integrate or release the
+same repository at once.
+
   NAME: repo:<project>/<branch> or release:<name>; case is preserved.
   --config PATH        Client configuration.
   --owner-thread ID    Holder thread, default current; resolves the calling T3 thread.
@@ -26,6 +31,7 @@ const leaseUsage = `Usage: t3-steward lease <acquire|renew|release|check|show|li
   --force              Release another holder's lease, audited by thread/principal.
   --request-id KEY     Mutation replay key; generated if omitted, reuse on retry.
   --json               Print one JSON response, including a refusal.
+
 Acquire a lease before integrating or releasing; check immediately before pushing
 main or upkeeper push, and release afterward. Same-holder acquire returns the
 existing token without extending expiry. A fresh acquire increments the token.

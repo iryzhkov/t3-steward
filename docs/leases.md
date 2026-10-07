@@ -5,6 +5,9 @@ Lease shared integration and release resources before changing them:
 `release:<name>` for a release manifest, such as `release:upkeeper/manifest`.
 Names preserve case, accept ASCII letters, digits and `._/:-`, and are limited
 to 128 characters. `deploy:` is reserved for a later deployment-window feature.
+Because case is preserved, `repo:Steward/main` and `repo:steward/main` are
+different leases and do not exclude each other: always spell the project exactly
+as the catalog does.
 
 1. Acquire before integrating or running `upkeeper push`:
    `t3-steward lease acquire repo:t3-steward-github/main --plan jocasta:PLAN@REV --reason "integrate release" --ttl 2h --json`.
