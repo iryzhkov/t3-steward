@@ -30,7 +30,9 @@ func queryRoleSelections(ctx context.Context, admin roleReadinessQuery, request 
 	if admin == nil {
 		return nil, fmt.Errorf("%w: coordinator role readiness unavailable", backlog.ErrValidationUnavailable)
 	}
-	response, err := admin.Query(ctx, backlogadmin.Query{Version: backlogadmin.ExtendedReadVersion, Kind: backlogadmin.QueryViability, Principal: backlogadmin.Principal{ID: "coordinator", Roles: []string{backlogadmin.LocalAdminRole}}, Viability: &request})
+	// The coordinator asks itself, so it reads every field of this release:
+	// an older read version would project the role selection away.
+	response, err := admin.Query(ctx, backlogadmin.Query{Version: backlogadmin.CurrentReadVersion, Kind: backlogadmin.QueryViability, Principal: backlogadmin.Principal{ID: "coordinator", Roles: []string{backlogadmin.LocalAdminRole}}, Viability: &request})
 	if err != nil {
 		return nil, err
 	}
