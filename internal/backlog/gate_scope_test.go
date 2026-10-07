@@ -80,6 +80,27 @@ func TestSystemdScopeRunnerRefusesUnclearedScope(t *testing.T) {
 	}
 }
 
+// Waiting for a scope that stays active can outlast the gate command's own
+// timeout. The failure used to be recorded as a gate command timeout, and
+// the reason naming the uncleared scope was lost.
+func TestGateScopeCleanupFailureIsNotReportedAsTimeout(t *testing.T) {
+	dir := h2GateRepository(t)
+	fake := t.TempDir()
+	ran := filepath.Join(fake, "ran")
+	run := writeExecutable(t, fake, "systemd-run", fmt.Sprintf("#!/bin/sh\ntouch %q\n", ran))
+	ctl := writeExecutable(t, fake, "systemctl", fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = show ]; then if [ -e %q ]; then echo active; else echo inactive; fi; fi\n", ran))
+	req := h2GateRequest(dir, "attempt-1")
+	req.Task.Gate = &domain.TaskGate{Commands: []string{"true"}, Timeout: 500 * time.Millisecond}
+	result, err := (AttemptFinalizer{StorageRoot: t.TempDir(), Processes: SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: 1500 * time.Millisecond}}).Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupImmutable(t, result.StorageDir)
+	if result.Completion.VerificationPassed || !strings.Contains(result.Completion.Failure, "could not be cleared: state active") {
+		t.Fatalf("scope cleanup failure reported as %q (passed=%v)", result.Completion.Failure, result.Completion.VerificationPassed)
+	}
+}
+
 // A failed kill of a live scope is not an absent scope. A gate child survived
 // a systemctl kill that failed, waited for the worker to open one declared
 // output for hashing and rewrote another before its digest. The runner used

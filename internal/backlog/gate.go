@@ -150,7 +150,13 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 				return report, []byte(log.String()), ctx.Err()
 			}
 			var exitErr *ProcessExitError
+			var cleanupErr *ScopeCleanupError
 			switch {
+			case errors.As(runErr, &cleanupErr):
+				// Checked first: waiting for the scope can run past the
+				// command's deadline, and the reason must name the scope.
+				code = 1
+				reason = runErr.Error()
 			case errors.Is(deadlineErr, context.DeadlineExceeded):
 				code = 124
 				reason = "gate command timeout"

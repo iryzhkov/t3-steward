@@ -261,12 +261,24 @@ func (r SystemdScopeRunner) clearScope(unit string) error {
 	}
 }
 
+// ScopeCleanupError reports that a KillRemaining request could not show its
+// scope to be empty. Callers check for it before any deadline of their own,
+// because the wait for the scope can outlast the command's deadline.
+type ScopeCleanupError struct {
+	Unit   string
+	Detail string
+}
+
+func (e *ScopeCleanupError) Error() string {
+	return fmt.Sprintf("process scope %s could not be cleared: %s", e.Unit, e.Detail)
+}
+
 func scopeCleanupError(unit, state string, killErr error, killOutput []byte) error {
-	err := fmt.Errorf("process scope %s could not be cleared: state %s", unit, state)
+	detail := "state " + state
 	if killErr != nil {
-		err = fmt.Errorf("%w; kill: %v: %s", err, killErr, strings.TrimSpace(string(killOutput)))
+		detail += fmt.Sprintf("; kill: %v: %s", killErr, strings.TrimSpace(string(killOutput)))
 	}
-	return err
+	return &ScopeCleanupError{Unit: unit, Detail: detail}
 }
 
 func (r SystemdScopeRunner) systemdRun() string {
