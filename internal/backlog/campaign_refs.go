@@ -577,7 +577,66 @@ func (s CampaignRefStore) Runs() ([]string, error) {
 			}
 		}
 	}
+	// A run whose first publication crashed between its ref and its record
+	// has no directory at all, and only its refs say that it holds a commit.
+	pinned, err := s.refRuns(context.Background(), "")
+	if err != nil {
+		return nil, fmt.Errorf("list campaign commit runs: %w", err)
+	}
+	for _, run := range pinned {
+		if !slices.Contains(runs, run) {
+			runs = append(runs, run)
+		}
+	}
 	sort.Strings(runs)
+	return runs, nil
+}
+
+// campaignRefNamespaces are the ref namespaces in which a run pins commits:
+// published, quarantined and staged. Each one names the run first.
+var campaignRefNamespaces = []string{"refs/campaigns/", "refs/campaigns-quarantine/", "refs/campaign-staged/"}
+
+// refRuns reports the workflow runs that hold a ref in this store, or whether
+// one run does when workflowRunID is set, read from the refs themselves rather
+// than from the records. Publication installs a ref before it writes the run's
+// first record, so a crash between the two leaves a run only its refs name. A
+// store whose repository was never created holds no ref, and it is not created
+// here.
+func (s CampaignRefStore) refRuns(ctx context.Context, workflowRunID string) ([]string, error) {
+	gitDir := filepath.Join(s.Root, "campaigns.git")
+	info, err := os.Lstat(gitDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect campaign ref store: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("campaign ref store path %q is not a directory", gitDir)
+	}
+	patterns := make([]string, 0, len(campaignRefNamespaces))
+	for _, namespace := range campaignRefNamespaces {
+		if workflowRunID != "" {
+			namespace += workflowRunID + "/"
+		}
+		patterns = append(patterns, namespace)
+	}
+	raw, err := runLoggedCommandOutput(ctx, nil, "", s.git(), append([]string{"--git-dir", gitDir,
+		"for-each-ref", "--format=%(refname)"}, patterns...)...)
+	if err != nil {
+		return nil, fmt.Errorf("list campaign refs: %w", err)
+	}
+	var runs []string
+	for _, name := range strings.Fields(string(raw)) {
+		for _, namespace := range campaignRefNamespaces {
+			rest, ok := strings.CutPrefix(name, namespace)
+			if !ok {
+				continue
+			}
+			run, _, _ := strings.Cut(rest, "/")
+			if safePathComponent(run) && !slices.Contains(runs, run) {
+				runs = append(runs, run)
+			}
+		}
+	}
 	return runs, nil
 }
 
@@ -602,7 +661,7 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	// destroyed by the wholesale removal below and its ref left behind forever,
 	// so the list this acts on is read again under the lock that publication
 	// also takes.
-	if holds, err := s.holdsRun(workflowRunID); err != nil || !holds {
+	if holds, err := s.holdsRun(ctx, workflowRunID); err != nil || !holds {
 		return err
 	}
 	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
@@ -610,16 +669,12 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 		return fmt.Errorf("lock campaign refs: %w", err)
 	}
 	defer lock.Close()
-	if holds, err := s.holdsRun(workflowRunID); err != nil || !holds {
+	if holds, err := s.holdsRun(ctx, workflowRunID); err != nil || !holds {
 		return err
 	}
 	records, err := s.List(workflowRunID)
 	if err != nil {
 		return err
-	}
-	staged, err := s.listRecords(filepath.Join(s.Root, "staged", workflowRunID))
-	if err != nil {
-		return fmt.Errorf("list staged campaign commits: %w", err)
 	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {
@@ -636,12 +691,11 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	// record a crashed promotion never wrote is found under the run's
 	// campaign namespace, so it is released with the run as well.
 	// A retained failed candidate's quarantine ref is swept the same way, so a
-	// ref whose record a crash never wrote is released too.
-	namespaces := []string{"refs/campaigns/" + workflowRunID + "/", "refs/campaigns-quarantine/" + workflowRunID + "/"}
-	if len(staged) != 0 {
-		namespaces = append(namespaces, "refs/campaign-staged/"+workflowRunID+"/")
-	}
-	for _, namespace := range namespaces {
+	// ref whose record a crash never wrote is released too. Every namespace
+	// is swept even without records in it, because holdsRun also counts a run
+	// that only a ref names, and a run left listed would never be released.
+	for _, namespace := range campaignRefNamespaces {
+		namespace += workflowRunID + "/"
 		names, err := runLoggedCommandOutput(ctx, log, "", s.git(), "--git-dir", gitDir,
 			"for-each-ref", "--format=%(refname)", namespace)
 		if err != nil {
@@ -669,8 +723,10 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 // holdsRun reports whether the store has published or staged anything for one
 // workflow run. A run directory left without records, as a crash between a
 // quarantine ref and its record can leave it, still holds the run, because
-// Runs lists it and only the release below sweeps its refs.
-func (s CampaignRefStore) holdsRun(workflowRunID string) (bool, error) {
+// Runs lists it and only the release below sweeps its refs. So does a ref with
+// no run directory at all, which a crash during the run's first publication
+// leaves.
+func (s CampaignRefStore) holdsRun(ctx context.Context, workflowRunID string) (bool, error) {
 	for _, kind := range []string{"provenance", "staged"} {
 		dir := filepath.Join(s.Root, kind, workflowRunID)
 		records, err := s.listRecords(dir)
@@ -686,7 +742,8 @@ func (s CampaignRefStore) holdsRun(workflowRunID string) (bool, error) {
 			return false, fmt.Errorf("inspect campaign commit records: %w", err)
 		}
 	}
-	return false, nil
+	pinned, err := s.refRuns(ctx, workflowRunID)
+	return len(pinned) != 0, err
 }
 
 func (s CampaignRefStore) validate() error {
