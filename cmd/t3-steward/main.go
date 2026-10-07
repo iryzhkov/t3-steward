@@ -63,6 +63,7 @@ Commands:
   backlog            Inspect and control coordinator workflows; deprecated offline file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.
+  lease              Acquire, renew, release and check shared integration/release ownership.
   wait               Park a thread until a check succeeds; the steward wakes it (add, list, cancel).
   ask                Inside a task: ask the owner a question in T3 and park until it is answered;
                      answer <id>: answer an open ask from the CLI.
