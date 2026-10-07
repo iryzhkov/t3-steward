@@ -13,10 +13,20 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
-// FrameHandler serves one frame. A handler that refuses a request it could
-// still answer returns both the signed reply and the reason: the reply is sent
-// and the stream stays open, and the reason is logged.
+// FrameHandler serves one frame. A handler that refuses a request with a
+// complete signed answer returns that reply with an *AnsweredError; any other
+// error closes the stream without a reply.
 type FrameHandler func(context.Context, []byte) ([]byte, error)
+
+// AnsweredError is a handler error whose reply is a complete answer: the peer
+// receives the reply, the stream stays open, and the error is logged. Any
+// other handler error closes the stream without writing, because a handler
+// may fail after writing part of a reply, and a partial reply must never reach
+// the peer as a complete one; the peer sees the stream end and retries.
+type AnsweredError struct{ Err error }
+
+func (e *AnsweredError) Error() string { return e.Err.Error() }
+func (e *AnsweredError) Unwrap() error { return e.Err }
 
 // listenerLog is where the listener reports a request it could not serve.
 // Nothing a peer sends ends its stream without a logged reason.
@@ -79,10 +89,12 @@ func ServeWorkerListener(ctx context.Context, listener net.Listener, limit int64
 				<-serial
 				cancel()
 				if err != nil {
-					listenerLog().Warn("worker stream request failed", "error", err, "answered", len(reply) != 0)
-					if len(reply) == 0 {
+					var answered *AnsweredError
+					if !errors.As(err, &answered) || len(reply) == 0 {
+						listenerLog().Warn("worker stream request failed", "error", err)
 						return
 					}
+					listenerLog().Warn("worker stream request refused", "error", err)
 				}
 				if err := codec.Write(conn, reply); err != nil {
 					listenerLog().Warn("worker stream reply not sent", "error", err)

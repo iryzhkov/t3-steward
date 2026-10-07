@@ -16,7 +16,7 @@ import (
 // maxPreviousCatalogRevisions bounds how many capacity-only predecessors a
 // worker keeps executing packages of. Each is added only while work from it
 // may still be live, so a handful covers any realistic run of resizes.
-const maxPreviousCatalogRevisions = 8
+const maxPreviousCatalogRevisions = 32
 
 // capacityOnlyChange reports whether next differs from current only in the
 // worker's cpu class and executor capacity. Those are coordinator admission

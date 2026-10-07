@@ -277,7 +277,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		if err := (workerproto.Codec{MaxBytes: 8 << 20}).Encode(&output, response); err != nil {
 			return nil, errors.Join(reason, err)
 		}
-		return output.Bytes(), reason
+		return output.Bytes(), &AnsweredError{Err: reason}
 	}
 	// An unusable retained catalog is no authority on revision identity, so it
 	// cannot fence the republication that recovers the worker. Epoch, signature

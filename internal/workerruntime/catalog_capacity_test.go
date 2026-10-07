@@ -3,6 +3,7 @@ package workerruntime
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -184,6 +185,58 @@ func setListenerLogOutput(w io.Writer) func() {
 	logger := slog.New(slog.NewTextHandler(w, nil))
 	listenerLog = func() *slog.Logger { return logger }
 	return func() { listenerLog = previous }
+}
+
+// Only a refusal the handler marks as answered is sent. A handler that fails
+// after writing part of its reply, as an artifact stream can, must end the
+// stream so the peer retries, never deliver the part as a complete frame.
+func TestWorkerListenerSendsOnlyAnsweredRefusals(t *testing.T) {
+	var logged bytes.Buffer
+	restore := setListenerLogOutput(&logged)
+	defer restore()
+	dir, err := os.MkdirTemp("", "t3cat-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	listener, err := net.Listen("unix", filepath.Join(dir, "worker.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- ServeWorkerListener(ctx, listener, 1<<20, time.Minute, 1, func(_ context.Context, raw []byte) ([]byte, error) {
+			if string(raw) == "refuse" {
+				return []byte("signed refusal"), &AnsweredError{Err: errors.New("busy")}
+			}
+			return []byte("header\nPARTIAL"), errors.New("artifact send: short object")
+		})
+	}()
+	frames := workerproto.FrameCodec{MaxBytes: 1 << 20}
+	conn, err := net.Dial("unix", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := frames.Write(conn, []byte("refuse")); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := frames.Read(conn); err != nil || string(reply) != "signed refusal" {
+		t.Fatalf("answered refusal = %q, %v", reply, err)
+	}
+	if err := frames.Write(conn, []byte("stream")); err != nil {
+		t.Fatal(err)
+	}
+	if reply, err := frames.Read(conn); err == nil {
+		t.Fatalf("a failed handler's partial reply was delivered: %q", reply)
+	}
+	// The log is read once the listener has stopped writing it.
+	cancel()
+	<-done
+	if !strings.Contains(logged.String(), "short object") || !strings.Contains(logged.String(), "busy") {
+		t.Fatalf("listener did not log both outcomes: %q", logged.String())
+	}
 }
 
 // A frame larger than the listener accepts is logged rather than dropped
