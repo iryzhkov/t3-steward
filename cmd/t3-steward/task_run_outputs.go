@@ -2,7 +2,10 @@ package main
 
 import (
 	"path"
+	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -17,7 +20,26 @@ func taskRunOutputsLine(outputs []string) string {
 		return "outputs none: only " + finalMessageArtifactName +
 			" is kept; declare files the task writes with --output FILE"
 	}
-	return "outputs " + strings.Join(outputs, ", ") + " (" + finalMessageArtifactName + " is always kept)"
+	printed := make([]string, len(outputs))
+	for i, output := range outputs {
+		printed[i] = printedOutputName(output)
+	}
+	return "outputs " + strings.Join(printed, ", ") + " (" + finalMessageArtifactName + " is always kept)"
+}
+
+// printedOutputName is a declared name as a terminal line carries it. The
+// validator admits control and format characters and newlines, and a name read
+// back from a stored manifest is not the caller's own, so such a name is
+// quoted: it can neither drive the terminal nor forge a line. JSON carries the
+// name exactly.
+func printedOutputName(name string) string {
+	unsafe := strings.ContainsFunc(name, func(symbol rune) bool {
+		return symbol == utf8.RuneError || unicode.IsControl(symbol) || unicode.Is(unicode.Cf, symbol)
+	})
+	if unsafe {
+		return strconv.Quote(name)
+	}
+	return name
 }
 
 // missingDeclaredOutputs names the files a task declared and did not leave
@@ -25,7 +47,7 @@ func taskRunOutputsLine(outputs []string) string {
 // ended may still write them and a skipped one never ran, so neither is
 // missing anything. A declared commit is not a file and is not checked here.
 // Names are compared after path.Clean, because the manifest accepts
-// "reports/./a.md" and two spellings of one path are one file.
+// "reports/./a.md" and two spellings of one path are one file, named once.
 func missingDeclaredOutputs(task backlogadmin.TaskDetail, collected []string) []string {
 	if task.Attempt == nil || !task.Attempt.Progress.Terminal() || task.Attempt.Progress == domain.ProgressSkipped {
 		return nil
@@ -35,10 +57,13 @@ func missingDeclaredOutputs(task backlogadmin.TaskDetail, collected []string) []
 		retained[path.Clean(name)] = true
 	}
 	var missing []string
+	reported := make(map[string]bool, len(task.Task.Outputs))
 	for _, declared := range task.Task.Outputs {
-		if declared.Commit != nil || retained[path.Clean(declared.Name)] {
+		clean := path.Clean(declared.Name)
+		if declared.Commit != nil || retained[clean] || reported[clean] {
 			continue
 		}
+		reported[clean] = true
 		missing = append(missing, declared.Name)
 	}
 	return missing

@@ -536,7 +536,7 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 			fmt.Fprintf(out, "    %s is not there: this task produced no result\n", missing)
 		}
 		for _, missing := range task.MissingOutputs {
-			fmt.Fprintf(out, "    %s is not there: declared output was not retained\n", missing)
+			fmt.Fprintf(out, "    %s is not there: declared output was not retained\n", printedOutputName(missing))
 		}
 	}
 	return nil

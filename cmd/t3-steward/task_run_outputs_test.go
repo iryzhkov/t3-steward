@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 const noOutputsLine = "outputs none: only final-message.md is kept; declare files the task writes with --output FILE"
@@ -213,6 +215,40 @@ func TestTaskRunUsageDocumentsOutput(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(strings.Fields(taskResultUsage), " "), "not retained") {
 		t.Error("task result usage does not mention declared outputs that were not retained")
+	}
+}
+
+// A declared name is printed, not interpreted: a name read back from a stored
+// manifest that carries a terminal escape or a newline is quoted, so it can
+// neither drive the terminal nor forge a line of its own.
+func TestDeclaredOutputNamesArePrintedSafely(t *testing.T) {
+	escape := "a\x1b]0;x\x07"
+	if line := taskRunOutputsLine([]string{"plain.md", escape}); strings.ContainsAny(line, "\x1b\x07") ||
+		!strings.Contains(line, "plain.md, "+`"a\x1b]0;x\a"`) {
+		t.Fatalf("outputs line = %q", line)
+	}
+	var text bytes.Buffer
+	if err := renderTaskResult(&text, taskResultDocument{Run: "run-1", Outcome: "failed", Tasks: []taskResultTask{{
+		Task: "task", Progress: "failed", MissingOutputs: []string{"x\nrun run-2: succeeded", "r‮b.md"},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(text.String(), "\nrun run-2") || strings.Contains(text.String(), "‮") {
+		t.Fatalf("a missing output's name reached the terminal raw:\n%s", text.String())
+	}
+	if !strings.Contains(text.String(), `"x\nrun run-2: succeeded" is not there`) {
+		t.Fatalf("the quoted name is not printed:\n%s", text.String())
+	}
+}
+
+// Two spellings of one declared path are one file, and it is reported once.
+func TestMissingDeclaredOutputsNamesOnePathOnce(t *testing.T) {
+	f := newTaskResultFixture(t)
+	f.detail.Tasks[0].Attempt.Progress = domain.ProgressFailed
+	f.detail.Tasks[0].Task.Outputs = []domain.ArtifactDeclaration{{Name: "a.md"}, {Name: "./a.md"}, {Name: "b.md"}}
+	got := missingDeclaredOutputs(f.detail.Tasks[0], nil)
+	if strings.Join(got, "|") != "a.md|b.md" {
+		t.Fatalf("missing = %q, want a.md and b.md once each", got)
 	}
 }
 
