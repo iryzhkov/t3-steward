@@ -112,8 +112,9 @@ type SystemdScopeRunner struct {
 	SystemdRunBinary string
 	SystemctlBinary  string
 	// ScopeCleanupTimeout bounds how long a KillRemaining request waits for
-	// its scope to empty, and how long a cancelled run spends killing its
-	// scope and reaping its launcher; zero means scopeCleanupTimeout.
+	// its scope to empty. A cancelled run spends at most this long killing
+	// its scope and as long again reaping its launcher. Zero means
+	// scopeCleanupTimeout.
 	ScopeCleanupTimeout time.Duration
 }
 
@@ -195,21 +196,26 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 		}
 		return result, err
 	case <-ctx.Done():
-		// The task's context is already done, so cleanup gets a bound of its
-		// own. The launcher is killed first, so the command stops even when
-		// the user manager does not answer.
+		// The task's context is already done, so cleanup gets bounds of its
+		// own: one for the scope kill and one for reaping the launcher. The
+		// scope is killed while the launcher still holds it, because systemd
+		// collects a scope whose last process has exited and then refuses to
+		// kill it as not loaded. The launcher is killed whatever the user
+		// manager answered.
+		killCtx, cancelKill := context.WithTimeout(context.Background(), r.cleanupTimeout())
+		killErr := r.killScope(killCtx, log, unit)
+		cancelKill()
 		_ = command.Process.Kill()
-		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), r.cleanupTimeout())
-		defer cancelCleanup()
-		killErr := r.killScope(cleanupCtx, log, unit)
+		reap := time.NewTimer(r.cleanupTimeout())
+		defer reap.Stop()
 		select {
 		case <-waited:
-		case <-cleanupCtx.Done():
+		case <-reap.C:
 			// A process outside the launcher still holds its output open
 			// after the scope kill: the scope is not shown to be empty, and
 			// the output cannot be read while it is still being written.
 			if killErr == nil {
-				killErr = errors.New("launcher output still held open after the cleanup deadline")
+				killErr = errors.New("launcher output still held open after the cleanup timeout")
 			}
 			fmt.Fprintf(log, "! %v\n", killErr)
 			return ProcessResult{}, errors.Join(ctx.Err(), fmt.Errorf("kill process scope %s: %w", unit, killErr))

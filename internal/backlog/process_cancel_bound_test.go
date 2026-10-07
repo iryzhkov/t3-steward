@@ -53,6 +53,39 @@ func TestCancelledRunReturnsWithinCleanupBoundWhenSystemctlHangs(t *testing.T) {
 	waitForProcessExit(t, launcher)
 }
 
+// systemd collects a scope as soon as its last process exits, after which
+// systemctl refuses to kill it as not loaded. Cancelling a command that left
+// nothing behind must therefore kill the scope while the launcher still
+// holds it, and report plain cancellation rather than a containment failure.
+func TestCancelledRunKillsTheScopeBeforeItsLauncherExits(t *testing.T) {
+	root := t.TempDir()
+	launcherPath := filepath.Join(root, "launcher.pid")
+	run := writeExecutable(t, root, "run", fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$$\" > %q.tmp && mv %q.tmp %q\nexec sleep 30\n", launcherPath, launcherPath, launcherPath))
+	// The fake manager behaves like systemd: a scope whose process is gone
+	// is no longer loaded.
+	ctl := writeExecutable(t, root, "ctl", fmt.Sprintf("#!/bin/sh\nlauncher=$(cat %q)\nif kill -0 \"$launcher\" 2>/dev/null; then kill -KILL \"$launcher\"; exit 0; fi\necho \"Failed to kill unit: Unit not loaded.\" >&2\nexit 1\n", launcherPath))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := (SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: 5 * time.Second}).Run(
+			ctx, ProcessRequest{ID: "cancel-empty", Dir: root, Program: "true"})
+		done <- err
+	}()
+	launcher := waitForPID(t, launcherPath)
+	cancel()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelled run did not return")
+	}
+	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "kill process scope") {
+		t.Fatalf("cancelled run error = %v, want plain cancellation", err)
+	}
+	waitForProcessExit(t, launcher)
+}
+
 // A descendant that escaped the launcher and keeps its output open cannot
 // hold a cancelled run past the cleanup bound when the scope kill also fails.
 func TestCancelledRunReturnsWhenDescendantHoldsOutputAndScopeKillFails(t *testing.T) {

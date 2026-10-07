@@ -45,6 +45,23 @@ func TestCommandWaitKeepsABoundedOutputTail(t *testing.T) {
 	}
 }
 
+// A command that succeeds but leaves a background child holding its output
+// is still met: the bounded wait for its output is not a failure.
+func TestCommandWaitSucceedsDespiteABackgroundChildHoldingOutput(t *testing.T) {
+	started := time.Now()
+	out, code, err := execCommand(context.Background(), Wait{
+		Command:    []string{"/bin/sh", "-c", "echo met; sleep 3 & exit 0"},
+		Dir:        t.TempDir(),
+		RunTimeout: 30 * time.Second,
+	})
+	if err != nil || code != 0 || out != "met\n" {
+		t.Fatalf("successful command = (%q, %d, %v), want met with exit 0", out, code, err)
+	}
+	if elapsed := time.Since(started); elapsed > 2500*time.Millisecond {
+		t.Fatalf("successful command waited %s for its background child", elapsed.Round(time.Millisecond))
+	}
+}
+
 // Exit-code semantics are unchanged: 0 met, 2 give up, anything else not yet.
 func TestCommandWaitReportsExitCodes(t *testing.T) {
 	for _, want := range []int{0, 1, 2, 7} {

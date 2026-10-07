@@ -8,6 +8,7 @@ package wait
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -258,6 +259,11 @@ func execCommand(ctx context.Context, w Wait) (string, int, error) {
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	err := cmd.Run()
+	if errors.Is(err, exec.ErrWaitDelay) && cctx.Err() == nil {
+		// The command exited 0 and a child it left in the background still
+		// holds its output: the command's own result stands.
+		err = nil
+	}
 	if cctx.Err() != nil {
 		return out.String(), -1, fmt.Errorf("command exceeded its run timeout of %s", timeout)
 	}
