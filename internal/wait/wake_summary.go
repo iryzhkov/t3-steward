@@ -405,10 +405,12 @@ func (b *summaryBudget) read(ctx context.Context, source NodeSummarySource, open
 			return readSummaryTail(io.LimitReader(body, artifact.Size))
 		default:
 			limit := int64(summaryHeadBytes)
+			extra := int64(1) // JSON records need a byte to detect truncation.
 			if mode == readBundle {
 				limit = summaryBundleBytes
+				extra = 0 // A bundle header needs no truncation probe beyond its allowance.
 			}
-			data, err := io.ReadAll(io.LimitReader(body, limit+1))
+			data, err := io.ReadAll(io.LimitReader(body, limit+extra))
 			if err != nil {
 				return summaryBytes{}, err
 			}

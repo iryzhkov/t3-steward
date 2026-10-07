@@ -69,6 +69,17 @@ func TestNodeSummaryStuckReadSpoilsOnlyItsCell(t *testing.T) {
 	}
 }
 
+func TestNodeSummaryBundleReadsOnlyItsHeaderAllowance(t *testing.T) {
+	sha := strings.Repeat("b", 40)
+	body := fixtureBundle(sha) + strings.Repeat("x", 1<<20)
+	source := &fakeSummarySource{contents: map[string]string{"b": body}}
+	task := SummaryTask{Name: "fix", Attempt: "attempt", Progress: domain.ProgressSucceeded, Artifacts: []SummaryArtifact{{ID: "b", Name: "unit.bundle", Kind: domain.ArtifactOutput, Size: int64(len(body))}}}
+	budget := summaryBudget{opens: 60}
+	row := budget.summarizeTask(context.Background(), source, fixtureRun, task)
+	if row.Head != sha || source.read != summaryBundleBytes {
+		t.Fatalf("row=%+v bytes=%d want %d", row, source.read, summaryBundleBytes)
+	}
+}
 func TestNodeSummaryHeadlineUsesStatuses(t *testing.T) {
 	for _, tc := range []struct {
 		status, value string
