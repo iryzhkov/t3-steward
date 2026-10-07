@@ -175,8 +175,9 @@ func TestReadsNegotiateWithCurrentRC116AndRC115Coordinators(t *testing.T) {
 		calls       int32
 	}{
 		{coordinator: "current", calls: 1},
-		{coordinator: "rc.116", knows: map[string]bool{Version: true, rc116Version: true}, calls: 2},
-		{coordinator: "rc.115", knows: map[string]bool{Version: true}, calls: 3},
+		{coordinator: "rc.117", knows: map[string]bool{Version: true, rc116Version: true, RC117ReadVersion: true}, calls: 2},
+		{coordinator: "rc.116", knows: map[string]bool{Version: true, rc116Version: true}, calls: 3},
+		{coordinator: "rc.115", knows: map[string]bool{Version: true}, calls: 4},
 	} {
 		t.Run(tc.coordinator, func(t *testing.T) {
 			service := rc116ExtendedService(t)
@@ -204,9 +205,9 @@ func TestReadsNegotiateWithCurrentRC116AndRC115Coordinators(t *testing.T) {
 			if calls != tc.calls {
 				t.Fatalf("%s: %d calls with versions %v, want %d", tc.coordinator, calls, versions, tc.calls)
 			}
-			// Only a coordinator of this release sends the review gate; an
+			// Only a coordinator of rc.117 or later sends the review gate; an
 			// rc.116 or rc.115 one cannot, and the older shapes leave it out.
-			if (got.Task.Attempt.ReviewGate != nil) != (tc.coordinator == "current") {
+			if (got.Task.Attempt.ReviewGate != nil) != (tc.coordinator == "current" || tc.coordinator == "rc.117") {
 				t.Fatalf("%s: review gate %+v", tc.coordinator, got.Task.Attempt.ReviewGate)
 			}
 		})

@@ -26,6 +26,12 @@ var (
 	// that version and decode the answer strictly.
 	//go:embed rc116_extended_response_schema.txt
 	rc116ExtendedResponseSchemaText string
+	// rc117_extended_response_schema.txt is the v1_response_schema.txt that
+	// TestWriteV1ResponseSchema wrote on v0.11.0-rc.117 (c053983): every key
+	// path an RC117ReadVersion answer had in that release, whose clients ask
+	// for that version and decode the answer strictly.
+	//go:embed rc117_extended_response_schema.txt
+	rc117ExtendedResponseSchemaText string
 )
 
 var (
@@ -33,6 +39,7 @@ var (
 	v1GraphAmendmentSchema      = parseKeySchema(v1GraphAmendmentSchemaText)
 	v1UnknownRecoverySchema     = parseKeySchema(v1UnknownRecoverySchemaText)
 	rc116ExtendedResponseSchema = parseKeySchema(rc116ExtendedResponseSchemaText)
+	rc117ExtendedResponseSchema = parseKeySchema(rc117ExtendedResponseSchemaText)
 )
 
 // keySchema is a parsed key path list: the paths a decoder accepts, and the
@@ -97,6 +104,14 @@ func projectV1Response(response *Response) error {
 // that release reads it.
 func projectRC116ExtendedResponse(response *Response) error {
 	return projectToSchema(response, rc116ExtendedResponseSchema)
+}
+
+// projectRC117ExtendedResponse gives response the shape an RC117ReadVersion
+// answer had in v0.11.0-rc.117: every field added since, such as a review
+// gate's round budget, a task's role selection or a rerun's reused commits,
+// is left out, so a strict client of that release reads it.
+func projectRC117ExtendedResponse(response *Response) error {
+	return projectToSchema(response, rc117ExtendedResponseSchema)
 }
 
 // projectV1Answers gives the graph amendment and unknown recovery answers of
