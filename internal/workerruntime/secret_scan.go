@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
@@ -23,7 +24,14 @@ type SecretScanConfig struct {
 	StaticCanaries []string
 	Canaries       func(context.Context, workerproto.ExecutionPackage) ([]string, error)
 	Log            *slog.Logger
+	// DecodeTimeout bounds the decoding of one bundle, whose prerequisites
+	// are read from the task's objects. Zero uses DefaultBundleDecodeTimeout.
+	DecodeTimeout time.Duration
 }
+
+// DefaultBundleDecodeTimeout bounds a bundle decode when the scan sets no
+// DecodeTimeout.
+const DefaultBundleDecodeTimeout = 5 * time.Minute
 
 // SecretScanError contains only redacted evidence, safe for explain and notifications.
 type SecretScanError struct {

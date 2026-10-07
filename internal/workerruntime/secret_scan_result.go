@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -282,6 +283,9 @@ func scanGitOutput(ctx context.Context, repo string, args ...string) ([]byte, er
 func scanGitCommand(ctx context.Context, repo string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-replace-objects", "-c", "core.commitGraph=false", "-C", repo}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1", "GIT_GRAFT_FILE="+os.DevNull, "GIT_SHALLOW_FILE="+os.DevNull)
+	// Git is stopped when ctx ends; nothing it started may keep the scan
+	// waiting on its output after that.
+	cmd.WaitDelay = 5 * time.Second
 	return cmd
 }
 
@@ -359,6 +363,36 @@ func (s *resultScanner) scanGitObjects(ctx context.Context, repo, object, kind, 
 	}
 	return nil
 }
+
+// bundleHeader reads the object format the bundle at path declares, sha256
+// when its header says so and otherwise sha1, and the prerequisite commits it
+// lists. A bundle whose header cannot be read is refused by the decode that
+// follows.
+func bundleHeader(path string) (format string, prerequisites []string) {
+	format = "sha1"
+	f, err := openRegular(path)
+	if err != nil {
+		return format, nil
+	}
+	defer f.Close()
+	reader := bufio.NewReader(io.LimitReader(f, 1<<20))
+	for index := 0; ; index++ {
+		line, err := reader.ReadString('\n')
+		line = strings.TrimSuffix(line, "\n")
+		if err != nil || (index > 0 && line == "") {
+			return format, prerequisites
+		}
+		if line == "@object-format=sha256" {
+			format = "sha256"
+		}
+		if oid, ok := strings.CutPrefix(line, "-"); ok {
+			if oid, _, _ = strings.Cut(oid, " "); gitObjectID.MatchString(oid) {
+				prerequisites = append(prerequisites, oid)
+			}
+		}
+	}
+}
+
 func (s *resultScanner) scanBundle(ctx context.Context, workspace, object, path string) error {
 	failure := func() *SecretScanError {
 		return &SecretScanError{Object: s.safeName(object), Detector: "bundle-decode", Offset: 0}
@@ -371,12 +405,38 @@ func (s *resultScanner) scanBundle(ctx context.Context, workspace, object, path 
 		return failure()
 	}
 	defer os.RemoveAll(dir)
-	// Borrow prerequisite objects locally; no fetch or network operation.
+	// The prerequisite objects are borrowed from the workspace through an
+	// alternate, with no fetch or network operation. Git never runs in the
+	// task's repository, whose configuration, HEAD and refs the task wrote and
+	// can make Git wait on. The objects are still the task's, and Git waits on
+	// a FIFO among them too, so the decode has its own time limit whatever the
+	// caller's context; running out of it refuses the bundle.
+	timeout := s.config.DecodeTimeout
+	if timeout <= 0 {
+		timeout = DefaultBundleDecodeTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	repo := filepath.Join(dir, "repo.git")
-	if _, err := scanGitOutput(ctx, workspace, "clone", "--shared", "--bare", "--no-hardlinks", "--", workspace, repo); err != nil {
+	format, prerequisites := bundleHeader(path)
+	if _, err := scanGitOutput(ctx, dir, "init", "-q", "--bare", "--object-format="+format, "--", repo); err != nil {
 		return failure()
 	}
-	if _, err := scanGitOutput(ctx, repo, "bundle", "unbundle", path); err != nil {
+	objects := filepath.Join(workspace, ".git", "objects")
+	if err := os.WriteFile(filepath.Join(repo, "objects", "info", "alternates"), []byte(objects+"\n"), 0o600); err != nil {
+		return failure()
+	}
+	// Refs at the prerequisites end the unbundle's connectivity walk there,
+	// as the task's own refs did when the workspace was cloned. A missing
+	// prerequisite fails here or in the unbundle.
+	for index, prerequisite := range prerequisites {
+		if _, err := scanGitOutput(ctx, repo, "update-ref", fmt.Sprintf("refs/prerequisites/%d", index), prerequisite); err != nil {
+			return failure()
+		}
+	}
+	// The unbundle would otherwise list the alternate's refs by running Git
+	// in the task's repository.
+	if _, err := scanGitOutput(ctx, repo, "-c", "core.alternateRefsCommand=true", "bundle", "unbundle", path); err != nil {
 		return failure()
 	}
 	indexes, err := filepath.Glob(filepath.Join(repo, "objects", "pack", "*.idx"))

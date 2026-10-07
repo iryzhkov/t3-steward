@@ -17,6 +17,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
@@ -913,7 +914,17 @@ func openRegular(path string) (*os.File, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("path is not a regular file")
 	}
-	return os.Open(path)
+	// The path may have been replaced since the check: the open does not wait
+	// on a FIFO, and the opened file is checked again.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil, err
+	}
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		f.Close()
+		return nil, errors.New("path is not a regular file")
+	}
+	return f, nil
 }
 
 func writeJSONExclusive(path string, value any) error {

@@ -136,7 +136,7 @@ func (d *LocalDriver) snapshotWorkInProgress(ctx context.Context, pkg workerprot
 	// The task's own index seeds the snapshot where Git can use it; an index
 	// it cannot, such as a split one, gives way to HEAD's tree.
 	tree, err := git.stage(ctx, filepath.Join(git.gitDir, "task-index"), "")
-	if err != nil {
+	if err != nil && ctx.Err() == nil {
 		tree, err = git.stage(ctx, filepath.Join(scratch, "index"), head)
 	}
 	if err != nil {
@@ -358,12 +358,12 @@ func newSnapshotRepository(ctx context.Context, workspace, gitDir string) (snaps
 	// The task's index is data too. Seeding the snapshot from it keeps what
 	// Git already knows about the work tree: files whose recorded state still
 	// matches are not read again, so a file a filter checked out is kept as
-	// the task's index has it, and paths outside a sparse checkout stay. One
-	// it cannot read gives way to HEAD's tree, but an index that is not a
-	// file at all fails the snapshot like any other special file.
-	if raw, err := readRootFile(ctx, root, ".git/index", 1<<30); err == nil {
-		files["task-index"] = string(raw)
-	} else if errors.Is(err, errFileType) || ctx.Err() != nil {
+	// the task's index has it, and paths outside a sparse checkout stay. It is
+	// copied as a file, never held in memory. One Git cannot use gives way to
+	// HEAD's tree, but an index that is not a file at all fails the snapshot
+	// like any other special file.
+	if err := copyRootFile(ctx, root, ".git/index", filepath.Join(gitDir, "task-index"), 1<<30); err != nil &&
+		(errors.Is(err, errFileType) || ctx.Err() != nil) {
 		return snapshotRepository{}, fmt.Errorf("read .git/index: %w", err)
 	}
 	for name, content := range files {
@@ -412,7 +412,7 @@ func copyWorkspaceObjects(ctx context.Context, root *os.Root, objects string) er
 			if ext := filepath.Ext(file.Name()); name == "pack" && ext != ".pack" && ext != ".idx" && ext != ".rev" {
 				continue
 			}
-			if err := copyRootFile(ctx, root, ".git/objects/"+name+"/"+file.Name(), filepath.Join(objects, name, file.Name())); err != nil {
+			if err := copyRootFile(ctx, root, ".git/objects/"+name+"/"+file.Name(), filepath.Join(objects, name, file.Name()), 0); err != nil {
 				return err
 			}
 		}
@@ -478,22 +478,35 @@ func readRootDir(root *os.Root, dir string) ([]os.DirEntry, error) {
 	return f.ReadDir(-1)
 }
 
-// copyRootFile copies the regular file name in root to destination.
-func copyRootFile(ctx context.Context, root *os.Root, name, destination string) error {
-	source, _, err := openRootFile(root, name)
+// copyRootFile copies the regular file name in root to destination, which it
+// creates. A limit above zero refuses a larger file before destination is
+// created; one that grows past it is cut there. A failed copy leaves no
+// destination behind.
+func copyRootFile(ctx context.Context, root *os.Root, name, destination string, limit int64) error {
+	source, info, err := openRootFile(root, name)
 	if err != nil {
 		return err
 	}
 	defer source.Close()
+	var reader io.Reader = source
+	if limit > 0 {
+		if info.Size() > limit {
+			return fmt.Errorf("%s is larger than %d bytes", name, limit)
+		}
+		reader = io.LimitReader(source, limit)
+	}
 	target, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}
-	if err := copyChunks(ctx, target, source); err != nil {
-		target.Close()
-		return err
+	err = copyChunks(ctx, target, reader)
+	if closeErr := target.Close(); err == nil {
+		err = closeErr
 	}
-	return target.Close()
+	if err != nil {
+		os.Remove(destination)
+	}
+	return err
 }
 
 // readRootFile reads the regular file name in root, of at most limit bytes.
