@@ -129,14 +129,16 @@ type WorkspacePreparation struct {
 	// DependencySources binds each dependency carried from another run, keyed
 	// by the dependency directory it is materialized in, to the run and task
 	// that produced it. A commit record of another run is accepted only from a
-	// directory bound to exactly that run and task.
+	// directory bound to exactly that run and task. Failed candidates additionally
+	// require the exact source attempt, even within the consuming run.
 	DependencySources map[string]DependencySource
 }
 
-// DependencySource is the run and task a carried dependency came from.
+// DependencySource identifies the run, task and attempt a carried dependency came from.
 type DependencySource struct {
 	WorkflowRunID string
 	TaskID        string
+	AttemptID     string
 }
 
 // PreparedWorkspace is the published run directory and pinned source revision.
@@ -495,15 +497,18 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 			// An ordinary dependency file is not a commit reference.
 			return nil
 		}
+		relative, relErr := filepath.Rel(dependenciesDir, path)
+		if relErr != nil {
+			return fmt.Errorf("resolve dependency commits: %w", relErr)
+		}
+		directory, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
+		if err := ValidateFailedCommitSource(provenance, request.DependencySources[directory]); err != nil {
+			return fmt.Errorf("resolve dependency commits: %w", err)
+		}
 		if provenance.WorkflowRunID != request.WorkflowRunID {
 			// A record of another run arrives only as a carried input, and only
 			// the source binding of the dependency it arrived in can vouch for
 			// it: the run and the task must both be that binding's.
-			relative, relErr := filepath.Rel(dependenciesDir, path)
-			if relErr != nil {
-				return fmt.Errorf("resolve dependency commits: %w", relErr)
-			}
-			directory, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
 			source, bound := request.DependencySources[directory]
 			if !bound || source.WorkflowRunID != provenance.WorkflowRunID {
 				return fmt.Errorf("dependency commit %s belongs to run %q, want %q",

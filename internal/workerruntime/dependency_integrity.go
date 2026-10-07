@@ -302,8 +302,12 @@ func (d *LocalDriver) restoreDependencyCommit(ctx context.Context, pkg workerpro
 }
 
 func validateDependencyProvenance(pkg workerproto.ExecutionPackage, dependency workerproto.DependencyInput, provenance backlog.CommitProvenance) error {
-	if provenance.FailedAttempt != nil && (dependency.Provenance == nil || dependency.Provenance.AttemptID != provenance.FailedAttempt.ID) {
-		return errors.New("failed commit provenance does not match its carried dependency attempt")
+	var source backlog.DependencySource
+	if dependency.Provenance != nil {
+		source = backlog.DependencySource{WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID, AttemptID: dependency.Provenance.AttemptID}
+	}
+	if err := backlog.ValidateFailedCommitSource(provenance, source); err != nil {
+		return err
 	}
 	run, task := pkg.Identity.WorkflowRunID, dependency.TaskID
 	if dependency.Provenance != nil {

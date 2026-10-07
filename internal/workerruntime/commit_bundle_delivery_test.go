@@ -53,7 +53,7 @@ func TestPreparationReceivesSourceRunBundlesAndBindings(t *testing.T) {
 	if omitted := deliveries[backlog.CampaignRef(pkg.Identity.WorkflowRunID, "task-producer", "followup")]; omitted.Omitted != "over the total" || omitted.Open != nil {
 		t.Fatalf("omitted delivery = %+v", omitted)
 	}
-	want := map[string]backlog.DependencySource{"external-implement": {WorkflowRunID: "run-source", TaskID: "task-source"}}
+	want := map[string]backlog.DependencySource{"external-implement": {WorkflowRunID: "run-source", TaskID: "task-source", AttemptID: "attempt-source"}}
 	if got := dependencySources(pkg); !reflect.DeepEqual(got, want) {
 		t.Fatalf("dependency sources = %+v, want %+v", got, want)
 	}

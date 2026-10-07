@@ -72,6 +72,19 @@ func (s CampaignRefStore) discardFailedAttempt(ctx context.Context, run, task, a
 	return nil
 }
 
+// ValidateFailedCommitSource requires explicit custody binding before a failed
+// candidate can be obtained, including when it names the consuming run.
+// Ordinary published commits retain their existing source-validation behavior.
+func ValidateFailedCommitSource(p CommitProvenance, source DependencySource) error {
+	if p.FailedAttempt == nil {
+		return nil
+	}
+	if source.WorkflowRunID != p.WorkflowRunID || source.TaskID != p.TaskID || source.AttemptID != p.FailedAttempt.ID {
+		return errors.New("failed commit provenance does not match its carried dependency source attempt")
+	}
+	return nil
+}
+
 // ValidateCommitProvenance is the shared identity fence for records and transport.
 func ValidateCommitProvenance(p CommitProvenance) error {
 	if err := validateCommitTarget(p.WorkflowRunID, p.TaskID, p.Name); err != nil {

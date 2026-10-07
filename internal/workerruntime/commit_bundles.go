@@ -38,7 +38,8 @@ func commitBundleDeliveries(pkg workerproto.ExecutionPackage, open func(workerpr
 }
 
 // dependencySources binds each dependency carried from another run to the run
-// and task the package says produced it, keyed by the directory preparation
+// and task the package says produced it, with the source attempt required for
+// failed candidates, keyed by the directory preparation
 // materializes it in: the recorded artifact namespace, or the task ID for a
 // dependency with no materialized artifacts.
 func dependencySources(pkg workerproto.ExecutionPackage) map[string]backlog.DependencySource {
@@ -52,14 +53,14 @@ func dependencySources(pkg workerproto.ExecutionPackage) map[string]backlog.Depe
 		}
 		if len(dependency.Artifacts) == 0 {
 			sources[dependency.TaskID] = backlog.DependencySource{
-				WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+				WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID, AttemptID: dependency.Provenance.AttemptID,
 			}
 		}
 		for _, object := range dependency.Artifacts {
 			parts := strings.Split(object.Path, "/")
 			if len(parts) >= 3 && parts[0] == "dependencies" {
 				sources[parts[1]] = backlog.DependencySource{
-					WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+					WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID, AttemptID: dependency.Provenance.AttemptID,
 				}
 			}
 		}
