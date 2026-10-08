@@ -12,12 +12,11 @@ import (
 	"time"
 )
 
-// A reader of a task's result directory always finds a complete collection
-// while a new one is published: the public directory is never missing, and its
-// final message is always one collection's whole file. Moving the old
-// directory aside and then renaming the new one in left a moment with no
-// directory at all, and a crash in that moment left none until the next
-// collection.
+// A raw-path reader whose read completes before K further collections of the
+// same task are published never observes a missing directory or a partial file.
+// K is resultRetainedGenerations; the grace window additionally protects brief
+// reads during faster bursts. The public directory is never missing during
+// nonempty publication, and its final message is one collection's whole file.
 func TestReadersAlwaysFindACompleteCollectionWhileANewOneIsPublished(t *testing.T) {
 	directory := filepath.Join(t.TempDir(), "run-1", "task")
 	publish := func(n int) {

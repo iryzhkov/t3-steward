@@ -6,8 +6,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -107,7 +109,7 @@ func TestTaskResultOfARetriedTaskCollectsOnlyTheSelectedAttemptsOutputs(t *testi
 
 // Collecting again after a retry replaces the task's directory, so a file an
 // earlier collection wrote for the previous attempt does not survive next to
-// the new attempt's results, and nothing is left behind beside it.
+// the new attempt's results. Retired siblings remain subject to both safety gates.
 func TestTaskResultReplacesTheDirectoryAnEarlierCollectionWrote(t *testing.T) {
 	f := newTaskResultFixture(t)
 	if err := f.run("run-1/task"); err != nil {
@@ -140,18 +142,15 @@ func TestTaskResultReplacesTheDirectoryAnEarlierCollectionWrote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "task" {
-		names := make([]string, 0, len(entries))
-		for _, entry := range entries {
-			names = append(names, entry.Name())
-		}
-		t.Fatalf("run directory holds %v, want only the task directory", names)
+	if len(entries) != 2 {
+		t.Fatalf("run directory holds %v, want public and one retired generation", entries)
 	}
+	assertResultRetentionAfterGrace(t, base, 1)
 }
 
 // Two collections of the same task at once, as two agents waiting on one run
-// do, each succeed, and exactly one complete directory is left, with nothing
-// beside it. Moving the directory aside and renaming the new one in is not one
+// do, each succeed, and exactly one complete public directory is left, with
+// retired generations subject to retention. Moving the directory aside is not one
 // step, so either could find the other's directory in the way.
 func TestConcurrentCollectionsOfOneTaskEachSucceedAndLeaveOneDirectory(t *testing.T) {
 	runDirectory := filepath.Join(t.TempDir(), "run-1")
@@ -192,9 +191,10 @@ func TestConcurrentCollectionsOfOneTaskEachSucceedAndLeaveOneDirectory(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("run directory holds %d entries, want only the task directory", len(entries))
+	if len(entries) < 2 {
+		t.Fatalf("run directory holds %d entries, want public and retained generations", len(entries))
 	}
+	assertResultRetentionAfterGrace(t, directory, resultRetainedGenerations)
 }
 
 // Once the new collection is in place, failing to delete the earlier one is
@@ -235,8 +235,46 @@ func TestAPreviousCollectionThatCannotBeRemovedDoesNotFailTheNewOne(t *testing.T
 	if got := readFile(t, directory, "final-message.md"); got != "new" {
 		t.Fatalf("final message = %q", got)
 	}
-	if len(left) != 1 {
-		t.Fatalf("leftovers = %v, want the previous collection reported", left)
+	if len(left) != 0 {
+		t.Fatalf("fresh retirement should not be reclaimed: %v", left)
+	}
+	entries, err := os.ReadDir(filepath.Dir(directory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), retiredResultPrefix(directory)) {
+			old = filepath.Join(filepath.Dir(directory), entry.Name())
+		}
+	}
+	if old == "" {
+		t.Fatal("previous collection was not retired")
+	}
+	aged := retiredResultFixture(t, directory, time.Now().Add(-2*resultRetirementGrace), "")
+	if err := os.Remove(aged); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(old, aged); err != nil {
+		t.Fatal(err)
+	}
+	left = []string{aged} // restore permissions even if an assertion fails
+	for n := 0; n < resultRetainedGenerations; n++ {
+		retiredResultFixture(t, directory, time.Now().Add(time.Duration(n)), "recent")
+	}
+	staged, err = stageResultDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staged, "final-message.md"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	left, err = publishResultDirectory(staged, directory)
+	if err != nil || len(left) != 1 || left[0] != aged {
+		t.Fatalf("leftovers = %v, err %v, want aged generation reported", left, err)
+	}
+	if got := readFile(t, directory, "final-message.md"); got != "new" {
+		t.Fatalf("cleanup failure disturbed publication: %q", got)
 	}
 }
 

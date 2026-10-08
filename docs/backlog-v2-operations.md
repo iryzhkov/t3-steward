@@ -683,6 +683,13 @@ succeeded or skipped, 2 failed or cancelled with whatever exists still written,
 1 not terminal with the progress printed. A task the graph skipped ran nothing
 and has nothing to collect, which is not a failure to report. `--json` inlines the final message.
 
+Nonempty re-collections replace the public task directory atomically and retain
+the previous generation in a hidden sibling. Reads completing before 16 further
+publications of that task are protected. Publication and leftover cleanup
+reclaim only generations retired at least five seconds ago and outside the
+newest 16; bursts can retain more within the grace window. After that window,
+cleanup retains 16. Empty collections still remove the public directory.
+
 To stop a run:
 
 ```sh

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +56,60 @@ func stageResultDirectory(directory string) (string, error) {
 // it moves aside. No task name begins with it.
 const resultStagingPrefix = ".task-result-"
 
+// Retired names have a separate namespace and a fixed-size task identity so
+// even a long task name fits in a filesystem path element.
+const resultRetiredPrefix = resultStagingPrefix + "retired-"
+
+// Five seconds covers ordinary raw-path file opens; keeping the newest sixteen
+// generations also protects readers across a burst of re-collections.
+const resultRetirementGrace = 5 * time.Second
+const resultRetainedGenerations = 16
+
+func retiredResultPrefix(directory string) string {
+	return fmt.Sprintf("%s%x-", resultRetiredPrefix, sha256.Sum256([]byte(filepath.Base(directory))))
+}
+
+// removeRetiredResults keeps the newest K and every generation within the grace
+// window. Rapid publishers can temporarily retain more than K; after the window,
+// the next publish or sweep reduces retention to K. Retirement time comes from
+// the name, never from the old collection's potentially ancient mtime.
+func removeRetiredResults(directory string, now time.Time) []string {
+	parent := filepath.Dir(directory)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil
+	}
+	prefix := retiredResultPrefix(directory)
+	type retired struct {
+		name string
+		when time.Time
+	}
+	var generations []retired
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		stamp, _, ok := strings.Cut(strings.TrimPrefix(entry.Name(), prefix), "-")
+		nanos, err := strconv.ParseInt(stamp, 10, 64)
+		if !ok || err != nil {
+			continue
+		}
+		generations = append(generations, retired{entry.Name(), time.Unix(0, nanos)})
+	}
+	sort.Slice(generations, func(i, j int) bool { return generations[i].name > generations[j].name })
+	var left []string
+	for i, generation := range generations {
+		if i < resultRetainedGenerations || now.Sub(generation.when) < resultRetirementGrace {
+			continue
+		}
+		path := filepath.Join(parent, generation.name)
+		if err := os.RemoveAll(path); err != nil {
+			left = append(left, path)
+		}
+	}
+	return left
+}
+
 // interruptedCollectionAge is how long a hidden staging directory beside a
 // task's directory must have been left untouched before a later collection
 // takes it for one a crash interrupted. No collection runs this long.
@@ -78,10 +135,10 @@ var swapDirectories = exchangeDirectories
 // no directory. When there is no earlier collection a plain rename publishes
 // the new one; if another collection of the same task got there first, the new
 // one is exchanged with it, and the last collection to finish wins. Once the new
-// collection is in place, removing the earlier one, now at staged, is cleanup: a
-// removal that fails does not undo the collection, and the directory left
-// behind is returned for the caller to report. So is removing what a collection
-// interrupted by a crash left beside directory.
+// collection is in place, retiring the earlier one and reclaiming eligible
+// generations is cleanup: a failure does not undo publication, and the path
+// left behind is returned for the caller to report. So is removing what a
+// collection interrupted by a crash left beside directory.
 func replaceResultDirectory(staged, directory string) ([]string, error) {
 	left, err := publishResultDirectory(staged, directory)
 	if err != nil {
@@ -94,17 +151,18 @@ func replaceResultDirectory(staged, directory string) ([]string, error) {
 // collections beside directory that no collection has touched for
 // interruptedCollectionAge, which only a collection a crash interrupted leaves.
 // A recent one may belong to a collection of the same task still running, so
-// it is kept. It returns those it could not remove.
+// it is kept. Retired generations of this task use their separate age and count
+// gates instead. It returns those it could not remove.
 func removeInterruptedCollections(staged, directory string, now time.Time) []string {
 	parent := filepath.Dir(directory)
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		return nil
 	}
-	var left []string
+	left := removeRetiredResults(directory, now)
 	for _, entry := range entries {
 		path := filepath.Join(parent, entry.Name())
-		if !strings.HasPrefix(entry.Name(), resultStagingPrefix) || path == staged || strings.HasPrefix(path, staged+"-") {
+		if !strings.HasPrefix(entry.Name(), resultStagingPrefix) || strings.HasPrefix(entry.Name(), resultRetiredPrefix) || path == staged || strings.HasPrefix(path, staged+"-") {
 			continue
 		}
 		info, err := os.Lstat(path)
@@ -118,9 +176,21 @@ func removeInterruptedCollections(staged, directory string, now time.Time) []str
 	return left
 }
 
-// publishResultDirectory puts staged in place of directory; see
-// replaceResultDirectory.
-func publishResultDirectory(staged, directory string) ([]string, error) {
+// publishResultDirectory atomically publishes a nonempty collection and renames
+// the exchanged-out generation to a hidden, task-specific retired sibling.
+// A raw-path reader completing before K (resultRetainedGenerations) further
+// publications sees a complete file. Reclamation requires BOTH retirement age
+// >= resultRetirementGrace and exclusion from the newest K retired generations.
+// Thus retention is K plus generations within the grace window, not a hard
+// disk-space bound during bursts. Cleanup runs on successful publication and
+// the leftover sweep; failures are returned in left without undoing publication.
+// Empty collections and unsupported exchange retain their existing semantics.
+func publishResultDirectory(staged, directory string) (left []string, err error) {
+	defer func() {
+		if err == nil {
+			left = append(left, removeRetiredResults(directory, time.Now())...)
+		}
+	}()
 	entries, err := os.ReadDir(staged)
 	if err != nil {
 		return nil, err
@@ -132,7 +202,9 @@ func publishResultDirectory(staged, directory string) ([]string, error) {
 		err := swapDirectories(staged, directory)
 		switch {
 		case err == nil:
-			if err := os.RemoveAll(staged); err != nil {
+			retired := filepath.Join(filepath.Dir(directory), retiredResultPrefix(directory)+
+				fmt.Sprintf("%020d-%s", time.Now().UnixNano(), strings.TrimPrefix(filepath.Base(staged), resultStagingPrefix)))
+			if err := os.Rename(staged, retired); err != nil {
 				return []string{staged}, nil
 			}
 			return nil, nil

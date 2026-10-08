@@ -378,7 +378,14 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 	if err != nil {
 		return taskResultTask{}, err
 	}
-	defer os.RemoveAll(staging)
+	published := false
+	defer func() {
+		// After publication staging may hold a retired generation whose rename
+		// failed. Keep it for readers and report it through the left mechanism.
+		if !published {
+			_ = os.RemoveAll(staging)
+		}
+	}()
 	final := false
 	for _, artifact := range detail.Artifacts {
 		if artifact.Metadata.TaskID != task.Task.ID || !ofSelectedAttempt(task, artifact) {
@@ -433,6 +440,7 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 	if err != nil {
 		return taskResultTask{}, err
 	}
+	published = true
 	for _, path := range left {
 		if c.stderr != nil {
 			fmt.Fprintf(c.stderr, "warning: could not remove the previous collection at %s\n", path)
