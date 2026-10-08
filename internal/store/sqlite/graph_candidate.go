@@ -27,7 +27,7 @@ func validateGraphCandidateTx(ctx context.Context, tx *sql.Tx, c GraphCommit, ru
 		}
 		request.Source = obs.Target.String()
 	}
-	tasks, err := domain.AmendTasks(request, run, templates, "task:graph:"+request.ID, "input:graph:"+request.ID)
+	tasks, err := domain.AmendTasks(request, run, templates, domain.GraphTaskID(request.ID), domain.GraphPromptInputID(request.ID))
 	if err != nil {
 		return err
 	}
@@ -45,7 +45,7 @@ func validateGraphCandidateTx(ctx context.Context, tx *sql.Tx, c GraphCommit, ru
 	}
 	wantsPrompt := request.Operation == "task-add" || (request.Operation == "task-set" && request.Prompt != "")
 	if wantsPrompt {
-		if len(c.Inputs) != 1 || c.Inputs[0].ID != "input:graph:"+request.ID {
+		if len(c.Inputs) != 1 || c.Inputs[0].ID != domain.GraphPromptInputID(request.ID) {
 			return errors.New("prompt amendment requires its single prepared prompt")
 		}
 	} else if len(c.Inputs) != 0 {

@@ -197,17 +197,8 @@ def case9():
                  "--idempotency-key", "qual-rerun-new", "--reason", "disposable repair",
                  "--json")
     save("case9-rerun-response.json", result)
-    # The API response carries the new run under its graph result.
-    def run_ids(value):
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key in ("id", "runId") and isinstance(child, str) and child.startswith("run:rerun:"):
-                    yield child
-                yield from run_ids(child)
-        elif isinstance(value, list):
-            for child in value:
-                yield from run_ids(child)
-    new = next(run_ids(result))
+    # Read the command document's run ID; stored identities have no required prefix.
+    new = result["runId"]
     assert new != original
     after = terminal(new)
     save("case9-new.json", after)

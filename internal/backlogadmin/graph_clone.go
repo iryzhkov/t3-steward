@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -27,10 +26,10 @@ func (s *Service) cloneGraph(ctx context.Context, p Principal, r domain.GraphAme
 	if err = json.Unmarshal(raw, &tasks); err != nil {
 		return result, err
 	}
-	runID := "run:clone:" + r.ID
+	runID := domain.CloneRunID(r.ID)
 	idMap := map[string]string{}
 	for i, task := range tasks {
-		idMap[task.ID] = fmt.Sprintf("task:clone:%s:%d", r.ID, i)
+		idMap[task.ID] = domain.CloneTaskID(r.ID, i)
 	}
 	artifactMap := map[string]string{}
 	var inputs []domain.Artifact
@@ -55,7 +54,7 @@ func (s *Service) cloneGraph(ctx context.Context, p Principal, r domain.GraphAme
 		if a.Kind != domain.ArtifactInput || a.WorkflowRunID != source.ID {
 			return "", errors.New("clone input is outside source custody")
 		}
-		copied := fmt.Sprintf("input:clone:%s:%d", r.ID, len(inputs))
+		copied := domain.CloneInputID(r.ID, len(inputs))
 		a.ID = copied
 		a.WorkflowRunID = runID
 		a.AttemptID = ""
