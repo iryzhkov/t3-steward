@@ -49,24 +49,67 @@ func stageResultDirectory(directory string) (string, error) {
 // directory that another collection of the same task put in place meanwhile.
 const replaceResultDirectoryRounds = 16
 
+// swapDirectories is exchangeDirectories; tests replace it to take the path a
+// filesystem without an atomic exchange takes.
+var swapDirectories = exchangeDirectories
+
 // replaceResultDirectory puts a finished collection in place of whatever an
 // earlier collection left at directory, so no file of an earlier attempt
 // survives next to the selected attempt's results. A collection that wrote
 // nothing removes the earlier one and leaves no directory, as a task that
 // never produced anything always has.
 //
-// A directory cannot be renamed over a non-empty one, so what is there is first
-// moved aside. Another collection of the same task may put its own directory in
-// place in between; that one is complete too, so it is moved aside as well and
-// the last collection to finish wins. Once the new collection is in place,
-// removing the old ones is cleanup: a removal that fails does not undo the
-// collection, and the directories left behind are returned for the caller to
-// report.
+// A directory cannot be renamed over a non-empty one, so the new collection is
+// exchanged with the earlier one in a single rename: a reader, or a crash, sees
+// either the whole earlier collection or the whole new one at directory, never
+// no directory. When there is no earlier collection a plain rename publishes
+// the new one; if another collection of the same task got there first, the new
+// one is exchanged with it, and the last collection to finish wins. Once the new
+// collection is in place, removing the earlier one, now at staged, is cleanup: a
+// removal that fails does not undo the collection, and the directory left
+// behind is returned for the caller to report.
 func replaceResultDirectory(staged, directory string) ([]string, error) {
 	entries, err := os.ReadDir(staged)
 	if err != nil {
 		return nil, err
 	}
+	if len(entries) == 0 {
+		return moveAsideResultDirectory(staged, directory, entries)
+	}
+	for round := 0; round < replaceResultDirectoryRounds; round++ {
+		err := swapDirectories(staged, directory)
+		switch {
+		case err == nil:
+			if err := os.RemoveAll(staged); err != nil {
+				return []string{staged}, nil
+			}
+			return nil, nil
+		case errors.Is(err, errExchangeUnsupported):
+			return moveAsideResultDirectory(staged, directory, entries)
+		case !errors.Is(err, fs.ErrNotExist):
+			return nil, err
+		}
+		err = os.Rename(staged, directory)
+		if err == nil {
+			return nil, nil
+		}
+		// ErrExist covers ENOTEMPTY: a concurrent collection got there first.
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("another collection kept replacing %s", directory)
+}
+
+// moveAsideResultDirectory replaces directory in two renames: what is there is
+// moved aside, then the new collection is renamed in. Between the two there is
+// no directory, so it is used only to remove an earlier collection when the new
+// one is empty, and on a filesystem that cannot exchange two directories.
+//
+// Another collection of the same task may put its own directory in place in
+// between; that one is complete too, so it is moved aside as well and the last
+// collection to finish wins.
+func moveAsideResultDirectory(staged, directory string, entries []os.DirEntry) ([]string, error) {
 	var retired []string
 	placed := false
 	for round := 0; round < replaceResultDirectoryRounds && !placed; round++ {
