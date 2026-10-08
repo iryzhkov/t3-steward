@@ -197,7 +197,7 @@ type ContinuationInput struct {
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs, PackageCapabilityFailedCommit}
+	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs, PackageCapabilityFailedCommit, PackageCapabilityContainedLimits}
 }
 
 // MarksCommitOutputs reports whether the package names its dependencies'
@@ -292,6 +292,10 @@ type ExecutionPackage struct {
 	ExpiresAt    *time.Time                   `json:"expiresAt,omitempty"`
 	Limits       ExecutionLimits              `json:"limits"`
 	CreatedAt    time.Time                    `json:"createdAt"`
+
+	// ResourceDemand is the demand the coordinator accounted for the attempt,
+	// which a contained run enforces. It requires PackageCapabilityContainedLimits.
+	ResourceDemand *domain.ResourceDemand `json:"resourceDemand,omitempty"`
 }
 
 type ExecutionPackageManifest struct {
@@ -603,6 +607,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if pkg.Gate == nil && slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkerOwnedGate) {
 		return errors.New("execution package: worker-owned-gate-v1 capability requires a gate")
+	}
+	if err := validateResourceDemand(pkg); err != nil {
+		return err
 	}
 	supported := append(SupportedPackageCapabilities(), CapabilityCampaignSupervision)
 	declared := make(map[string]struct{}, len(pkg.RequiredCapabilities))

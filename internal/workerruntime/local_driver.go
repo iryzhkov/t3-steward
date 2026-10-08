@@ -372,6 +372,9 @@ func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.Executi
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return "", err
 	} else if scoped != nil {
+		if retained, ok := scoped.T3.(retainedT3); ok && retained.ended != nil {
+			return "", retained.ended
+		}
 		return scoped.ObserveThread(ctx, pkg)
 	}
 	if d.Config.DryRun {

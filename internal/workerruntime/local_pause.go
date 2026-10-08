@@ -441,7 +441,7 @@ func attemptLive(record AttemptRecord, now time.Time) (bool, string) {
 // it notices a thread that runs again by other means.
 func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record AttemptRecord, now time.Time) error {
 	pkg := record.Package.Package
-	threadState, observeErr := r.driver.ObserveThread(ctx, pkg)
+	threadState, observeErr := r.observeThread(ctx, id, pkg)
 	if observeErr != nil {
 		r.log.Warn("T3 observation unavailable; paused attempt waits", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
 		return nil

@@ -687,7 +687,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 	case PhaseRunning:
 		// Observe before deciding on a pause. A stopped turn during a host
 		// drain may be a checkpoint rather than task completion.
-		threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
+		threadState, observeErr := r.observeThread(ctx, id, record.Package.Package)
 		if observeErr != nil {
 			r.log.Warn("T3 observation unavailable; attempt keeps running", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
 			break
@@ -731,7 +731,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 			break
 		}
 		if !throttlePaused(record) {
-			threadState, observeErr := r.driver.ObserveThread(ctx, record.Package.Package)
+			threadState, observeErr := r.observeThread(ctx, id, record.Package.Package)
 			switch {
 			case observeErr != nil:
 				r.log.Warn("T3 observation unavailable; stopped attempt waits", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
@@ -836,7 +836,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 // and an active thread is simply running.
 func (r *Runtime) recoverUnknown(ctx context.Context, id string, record AttemptRecord) error {
 	pkg := record.Package.Package
-	threadState, err := r.driver.ObserveThread(ctx, pkg)
+	threadState, err := r.observeThread(ctx, id, pkg)
 	if err != nil {
 		r.log.Warn("unknown attempt cannot be observed yet", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
@@ -1038,7 +1038,7 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 	}
 	record := state.Attempts[id]
 	pkg := record.Package.Package
-	threadState, err := r.driver.ObserveThread(ctx, pkg)
+	threadState, err := r.observeThread(ctx, id, pkg)
 	if err != nil {
 		return fmt.Errorf("T3 observation unavailable before dispatch: %w", err)
 	}
@@ -1049,7 +1049,7 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 		return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, pkg.Identity.ThreadID)
 	case backlog.DispatchThreadMissing:
 		if err := r.driver.CreateThread(ctx, pkg, record.WorkspacePath); err != nil {
-			observed, observeErr := r.driver.ObserveThread(ctx, pkg)
+			observed, observeErr := r.observeThread(ctx, id, pkg)
 			switch {
 			case observeErr == nil && observed == backlog.DispatchThreadActive:
 				return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, pkg.Identity.ThreadID)
@@ -1058,11 +1058,16 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 			case observeErr == nil && observed == backlog.DispatchThreadMissing:
 				// No thread exists, so the failed create had no provider effect.
 				return r.markFailed(ctx, id, "T3 thread creation failed: "+err.Error())
+			case errors.Is(observeErr, errAttemptFailed):
+				return nil
 			default:
 				return r.markUnknown(id, "T3 create outcome is ambiguous: "+err.Error())
 			}
 		}
-		observed, err := r.driver.ObserveThread(ctx, pkg)
+		observed, err := r.observeThread(ctx, id, pkg)
+		if errors.Is(err, errAttemptFailed) {
+			return nil
+		}
 		if err != nil || observed == backlog.DispatchThreadMissing {
 			detail := "T3 create could not be proven"
 			if err != nil {
@@ -1272,7 +1277,7 @@ func (r *Runtime) reconcileWaiting(ctx context.Context, id string, record Attemp
 	if hasCommandRequest(record, domain.WorkerCommandStop) {
 		return r.stop(ctx, id)
 	}
-	threadState, err := r.driver.ObserveThread(ctx, record.Package.Package)
+	threadState, err := r.observeThread(ctx, id, record.Package.Package)
 	if err != nil {
 		r.log.Warn("T3 observation unavailable; parked attempt waits", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil

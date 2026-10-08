@@ -71,6 +71,21 @@ intent or missing unit never authorizes another launch or releases ownership.
 The service has no worker-service dependency, no restart policy and no lease
 timer. Cancellation of the calling CLI/worker context leaves it running.
 
+A launch spec may carry `limits` (`cpus`, `memoryMb`). The worker sets them from
+the resource demand the coordinator accounted for the attempt, which a
+coordinator sends only to a worker advertising `contained-resource-limits-v1`;
+an unsized demand launches exactly as before. A sized launch gets
+`CPUQuota=<cpus*100>%`, `MemoryMax=<memoryMb>M`, `MemorySwapMax=0` and
+`TasksMax=4096`, and the sandbox environment sets `GOMAXPROCS`, `GOFLAGS=-p=N`,
+`MAKEFLAGS=-jN` and `CARGO_BUILD_JOBS=N` to the CPU count. The limits are part
+of the digested spec, so a relaunch with different limits is refused. The
+observation that `contained-show` prints includes the requested limits and
+`limitsStatus`: `applied`, or `limits not applied` when systemd reports them
+back as unlimited, which a user manager without cgroup controller delegation
+does; that is logged once per launch. A run the memory limit kills reports
+`contained run exceeded its N MB memory reservation` as its failure, which is
+kept after the unit stops.
+
 Stop is an explicit cancellation/finalization effect. It waits for systemd's
 control-group stop and persists a complete stop receipt. An uncertain stop reply
 does not release ownership. Even an exited main process is not treated as proof
