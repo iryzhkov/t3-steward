@@ -137,7 +137,14 @@ func publishResultDirectory(staged, directory string) ([]string, error) {
 			}
 			return nil, nil
 		case errors.Is(err, errExchangeUnsupported):
-			return moveAsideResultDirectory(staged, directory, entries)
+			// A plain rename can publish to an absent destination atomically.
+			// It cannot overwrite a nonempty collection, even if a concurrent
+			// publisher created that collection after the failed exchange.
+			// Never move that collection aside to make this rename succeed.
+			if renameErr := os.Rename(staged, directory); renameErr != nil {
+				return nil, fmt.Errorf("cannot publish collection at %s: %w; use a filesystem that supports atomic directory exchange (rename: %w)", directory, err, renameErr)
+			}
+			return nil, nil
 		case !errors.Is(err, fs.ErrNotExist):
 			return nil, err
 		}
@@ -156,7 +163,7 @@ func publishResultDirectory(staged, directory string) ([]string, error) {
 // moveAsideResultDirectory replaces directory in two renames: what is there is
 // moved aside, then the new collection is renamed in. Between the two there is
 // no directory, so it is used only to remove an earlier collection when the new
-// one is empty, and on a filesystem that cannot exchange two directories.
+// one is empty. Nonempty replacements must exchange atomically or refuse.
 //
 // Another collection of the same task may put its own directory in place in
 // between; that one is complete too, so it is moved aside as well and the last
