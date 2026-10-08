@@ -265,17 +265,26 @@ func openInstrumented(path string, instrument func(driver.Connector) driver.Conn
 	return &Store{db: db, now: time.Now, path: path}, nil
 }
 
-// Close releases coordinator ownership, when held, and closes the database.
+// Close checkpoints an owned coordinator before closing the database, then
+// releases ownership. The ownership fence stays held throughout shutdown.
 func (s *Store) Close() error {
+	var checkpointErr error
+	if s.ownerLock != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var busy, logPages, checkpointed int
+		checkpointErr = s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logPages, &checkpointed)
+		cancel()
+		if checkpointErr == nil && busy != 0 {
+			checkpointErr = fmt.Errorf("coordinator WAL checkpoint blocked by another database reader (busy=%d)", busy)
+		}
+	}
+	closeErr := s.db.Close()
 	var releaseErr error
 	if s.ownerLock != nil {
 		releaseErr = releaseCoordinatorLock(s.ownerLock)
 		s.ownerLock = nil
 	}
-	if err := s.db.Close(); err != nil {
-		return err
-	}
-	return releaseErr
+	return errors.Join(checkpointErr, closeErr, releaseErr)
 }
 
 // SetClock replaces the wall clock used for time-sensitive transactional fences.

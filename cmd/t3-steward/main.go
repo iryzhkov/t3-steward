@@ -60,7 +60,7 @@ Commands:
   models             Every provider route the fleet can run now, with its quota state.
   triage             Everything waiting for an operator, each with a ready-to-run command.
   quota              telemetry: the coordinator's recorded quota readings and work, with deltas.
-  coordinator        Show which coordinator this host administers (identity); reload it (reload).
+  coordinator        Identity, reload, online backup and health --wait-ready.
   backlog            Inspect and control coordinator workflows; deprecated offline file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
   schedules          Inspect and control schedules and trigger history.

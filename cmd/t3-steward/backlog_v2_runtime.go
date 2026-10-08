@@ -822,7 +822,7 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	}
 }
 
-func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slog.Logger) (result error) {
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
 		return err
@@ -831,7 +831,7 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { result = errors.Join(result, store.Close()) }()
 	// Quota waits count a reading fresh by the same threshold models marks
 	// readings stale at.
 	store.SetQuotaStaleAfter(modelsStaleAfter(cfg))
@@ -1204,6 +1204,16 @@ func serveCoordinatorBoundaries(
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	reconnect := &coordinatorReconnect{workers: cycle.workers, pending: cycle.workers != nil}
+	if cycle.workers != nil {
+		cycle.workers = reconnect
+	}
+	retry := time.NewTimer(reconnect.nextDelay())
+	defer retry.Stop()
+	var retryC <-chan time.Time
+	if reconnect.pending {
+		retryC = retry.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1213,8 +1223,24 @@ func serveCoordinatorBoundaries(
 			return nil
 		case err := <-serverDone:
 			return err
+		case <-retryC:
+			cycle.TickWithWorkers(ctx)
+			if reconnect.pending {
+				retry.Reset(reconnect.nextDelay())
+			} else {
+				retryC = nil
+				reconnect.delay = 0
+			}
 		case <-ticker.C:
 			cycle.TickWithWorkers(ctx)
+			if reconnect.pending && retryC == nil {
+				retry.Reset(reconnect.nextDelay())
+				retryC = retry.C
+			} else if !reconnect.pending {
+				retry.Stop()
+				retryC = nil
+				reconnect.delay = 0
+			}
 		}
 	}
 }
