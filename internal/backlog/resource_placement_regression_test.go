@@ -7,10 +7,10 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-// A fleet-managed worker configures executor slots only. A preset is an
-// expected live need for telemetry floors and ranking, never a reservation of
-// configured CPU, memory or scratch capacity, so a slot-only worker must keep
-// receiving preset tasks exactly as it did before resource-aware placement.
+// A fleet-managed worker configures executor slots only. A preset's sizes are
+// a reservation only on the dimensions a worker declares, so a slot-only
+// worker counts a preset task as one slot and keeps receiving preset tasks
+// exactly as it did before resource-aware placement.
 func TestResourcePlacementSlotOnlyWorkerTakesPresetTasks(t *testing.T) {
 	for _, preset := range []string{ResourcePresetLight, ResourcePresetBuild} {
 		t.Run(preset, func(t *testing.T) {
@@ -19,11 +19,14 @@ func TestResourcePlacementSlotOnlyWorkerTakesPresetTasks(t *testing.T) {
 			task := placementTask()
 			task.ResourceDemand = resourceDemandFor(resources)
 			task.ResourcePreset = resources.Preset
-			if task.ResourceDemand.CPUUnits != 0 || task.ResourceDemand.MemoryMB != 0 || task.ResourceDemand.ScratchMB != 0 {
-				t.Fatalf("preset %s reserves configured capacity: %+v", preset, task.ResourceDemand)
+			if task.ResourceDemand.CPUUnits != presetSizes[preset].CPUUnits || task.ResourceDemand.MemoryMB != presetSizes[preset].MemoryMB {
+				t.Fatalf("preset %s demand = %+v, want its sizes", preset, task.ResourceDemand)
 			}
 			worker := resourceWorker("fleet")
 			worker.Allocatable = domain.AllocatableCapacity{ExecutorSlots: 4}
+			if shortfalls := capacityExclusions(task.ResourceDemand, worker); len(shortfalls) != 0 {
+				t.Fatalf("slot-only worker refuses preset %s on capacity: %+v", preset, shortfalls)
+			}
 			s, err := SelectWorker(placementRequest(task), []domain.WorkerInventory{worker})
 			if err != nil {
 				t.Fatal(err)
@@ -36,7 +39,7 @@ func TestResourcePlacementSlotOnlyWorkerTakesPresetTasks(t *testing.T) {
 }
 
 // The preset's expected needs still drive live safety floors: a build task is
-// refused by a worker whose live memory cannot hold build's 4096 MB plus the
+// refused by a worker whose live memory cannot hold build's 6000 MB plus the
 // reserve, while a light task still fits there.
 func TestResourcePlacementPresetNeedsDriveLiveFloors(t *testing.T) {
 	for _, tc := range []struct {

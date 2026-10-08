@@ -341,9 +341,11 @@ func applyManifestDefaults(manifest *Manifest) {
 	if manifest.Environment.Scope == "" {
 		manifest.Environment.Scope = EnvironmentScopeTask
 	}
-	// Expand the workflow-level preset before the tasks inherit from it, so a
-	// task sees the same values the workflow author would read back.
-	expandResourcePreset(&manifest.Resources)
+	// Expand the workflow-level preset's classes before the tasks inherit from
+	// it, so a task sees the same values the workflow author would read back.
+	// Preset sizes are filled after inheritance, below, so that an explicit
+	// workflow size is not overridden by the sizes of a task's preset.
+	expandResourcePresetClasses(&manifest.Resources)
 	applyPreflightDefaults(&manifest.Preflight)
 	applyManifestSupervisionDefaults(manifest)
 	for name, task := range manifest.Tasks {
@@ -373,10 +375,11 @@ func applyManifestDefaults(manifest *Manifest) {
 		task.placementImpossible = len(manifest.Placement.Hosts) != 0 && len(task.Placement.Hosts) != 0 &&
 			len(intersectConstraints(manifest.Placement.Hosts, task.Placement.Hosts)) == 0
 		task.Placement = effectivePlacement(manifest.Placement, task.Placement)
-		expandResourcePreset(&task.Resources)
+		expandResourcePresetClasses(&task.Resources)
 		task.Resources = effectiveResources(manifest.Resources, task.Resources)
 		// Expand once more: a task that inherited only a preset from the
-		// workflow still needs that preset's classes filled in.
+		// workflow still needs that preset's classes filled in, and every
+		// task needs its effective preset's sizes for what nothing declared.
 		expandResourcePreset(&task.Resources)
 		task.Preflight = effectivePreflight(manifest.Preflight, task.Preflight)
 		applyPreflightDefaults(&task.Preflight)
@@ -385,6 +388,7 @@ func applyManifestDefaults(manifest *Manifest) {
 		}
 		manifest.Tasks[name] = task
 	}
+	expandResourcePresetSizes(&manifest.Resources)
 }
 
 // DefaultGateTimeout is the per-command gate timeout when a task names none.

@@ -33,6 +33,14 @@ import (
 // difficulty named beside each number, because "effort" is also a route option
 // and the old label read as a model setting. The three lines were edited to
 // match; the numbers, and every other byte, are unchanged.
+//
+// A third change is that presets are sized: preset light expands to cpu units
+// 0.5, memory 1000 MB and scratch 512 MB, and preset build to 4, 6000 MB and
+// 8192 MB, so an author reads back what a task reserves. The four resources
+// lines of the text golden were edited to append the sizes, and the JSON
+// gains the same sizes as the deltas recorded below; the digest is unchanged
+// because the example's files are.
+
 const (
 	unsupervisedPlanTextGolden = "testdata/origin-main-three-node-plan.txt"
 	unsupervisedPlanJSONGolden = "testdata/origin-main-three-node-plan.json"
@@ -87,8 +95,9 @@ func TestUnsupervisedCampaignPlanTextMatchesOriginMainByteForByte(t *testing.T) 
 
 // planJSONCompatibilityDeltas is the complete, deliberate difference between
 // the plan document origin/main produced for an unsupervised campaign and the
-// one this branch produces. There are exactly three, and they are recorded here
-// rather than hidden by a loose comparison:
+// one this branch produces. Supervision brought three, recorded here rather
+// than hidden by a loose comparison, and sized presets the rest, described
+// beside them:
 //
 //   - the plan schema version moved from 1 to 2, because the document gained
 //     optional supervision and gate sections;
@@ -98,8 +107,8 @@ func TestUnsupervisedCampaignPlanTextMatchesOriginMainByteForByte(t *testing.T) 
 // A consumer pinned to schema version 1 sees the version change and can refuse,
 // which is the point of versioning the document. A consumer that reads totals
 // by name is unaffected by two added zero-valued counters. Anything beyond
-// these three is a compatibility regression, and the test below is what turns
-// one into a failure.
+// the recorded deltas is a compatibility regression, and the test below is
+// what turns one into a failure.
 var planJSONCompatibilityDeltas = []struct {
 	was string
 	now string
@@ -107,6 +116,19 @@ var planJSONCompatibilityDeltas = []struct {
 	{was: `  "schemaVersion": 1,`, now: `  "schemaVersion": 2,`},
 	{was: "", now: `    "gates": 0,`},
 	{was: "", now: `    "heldTasks": 0`},
+	// Sized presets: the workflow and two tasks inherit light, one task
+	// declares build. Each size line is removed wherever it occurs, and the
+	// class line before them loses the comma the sizes needed.
+	{was: "", now: `"cpuUnits": 0.5,`},
+	{was: "", now: `"memoryMb": 1000,`},
+	{was: "", now: `"scratchMb": 512`},
+	{was: "", now: `"cpuUnits": 4,`},
+	{was: "", now: `"memoryMb": 6000,`},
+	{was: "", now: `"scratchMb": 8192`},
+	{was: "\"minCpuClass\": \"low\"\n", now: "\"minCpuClass\": \"low\",\n"},
+	{was: "\"minCpuClass\": \"low\"\n", now: "\"minCpuClass\": \"low\",\n"},
+	{was: "\"minCpuClass\": \"low\"\n", now: "\"minCpuClass\": \"low\",\n"},
+	{was: "\"preferredCpuClass\": \"high\"\n", now: "\"preferredCpuClass\": \"high\",\n"},
 }
 
 func TestUnsupervisedCampaignPlanJSONDiffersFromOriginMainOnlyAsRecorded(t *testing.T) {

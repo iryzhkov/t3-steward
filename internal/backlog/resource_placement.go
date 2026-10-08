@@ -16,29 +16,19 @@ const (
 	ExclusionResourceTempDisk      = "resource-temp-disk"
 )
 
-// Expected live needs of one attempt of a preset. They are telemetry inputs
-// only: a preset never reserves configured CPU, memory or scratch capacity, so
-// a worker that configures executor slots alone still receives preset tasks.
-var (
-	buildResourceNeeds = domain.ResourceDemand{CPUUnits: 2, MemoryMB: 4096, ScratchMB: 8192}
-	lightResourceNeeds = domain.ResourceDemand{CPUUnits: .25, MemoryMB: 256, ScratchMB: 512}
-)
-
 // expectedResourceNeeds is the live use one attempt is expected to add to a
-// worker. Explicit sizes win per dimension. Otherwise the declared preset
-// selects its needs, whatever CPU classes the task overrode, because a class
-// says nothing about memory or scratch. Any other task, including one that
-// declares a preset's classes without the preset, uses the policy's nominal
-// unsized needs, so a burst of unsized tasks still spreads and a bare class
-// floor is not mistaken for a build.
+// worker. Explicit sizes win per dimension; a task ingested since presets were
+// sized carries its preset's sizes as explicit ones. Otherwise the declared
+// preset selects its sizes from presetSizes, whatever CPU classes the task
+// overrode, because a class says nothing about memory or scratch. Any other
+// task, including one that declares a preset's classes without the preset,
+// uses the policy's nominal unsized needs, so a burst of unsized tasks still
+// spreads and a bare class floor is not mistaken for a build.
 func expectedResourceNeeds(task domain.Task, p domain.ResourcePlacementPolicy) domain.ResourceDemand {
 	demand := task.ResourceDemand
 	needs := domain.ResourceDemand{CPUUnits: p.UnsizedTaskCPUUnits, MemoryMB: p.UnsizedTaskMemoryMB, ScratchMB: p.UnsizedTaskScratchMB}
-	switch task.ResourcePreset {
-	case ResourcePresetBuild:
-		needs = buildResourceNeeds
-	case ResourcePresetLight:
-		needs = lightResourceNeeds
+	if sizes, ok := presetSizes[task.ResourcePreset]; ok {
+		needs = sizes
 	}
 	if demand.CPUUnits > 0 {
 		needs.CPUUnits = demand.CPUUnits
@@ -83,12 +73,17 @@ func liveResourceEvaluation(request WorkerPlacementRequest, worker domain.Worker
 	addFloor(v.MemoryAvailableMB, demand.MemoryMB, p.MemoryReserveMB, ExclusionResourceMemory, "memory")
 	addFloor(v.WorkspaceFreeMB, demand.ScratchMB, p.DiskReserveMB, ExclusionResourceWorkspaceDisk, "workspace disk")
 	addFloor(v.TempFreeMB, demand.ScratchMB, p.DiskReserveMB, ExclusionResourceTempDisk, "temp disk")
-	if validSize(v.SwapUsedMB) && *v.SwapUsedMB > p.MaxSwapUsedMB {
-		exclusions = append(exclusions, WorkerExclusion{Code: ExclusionResourceSwap, Detail: fmt.Sprintf("swap used %d MB exceeds limit %d MB", *v.SwapUsedMB, p.MaxSwapUsedMB)})
+	if swap, kind := countedSwapMB(v, p); swap > p.MaxSwapUsedMB {
+		exclusions = append(exclusions, WorkerExclusion{Code: ExclusionResourceSwap, Detail: fmt.Sprintf("%s used %d MB exceeds limit %d MB", kind, swap, p.MaxSwapUsedMB)})
 	}
 	if knownCPU {
 		cores := float64(*v.CPUCount)
 		e.CPUHeadroom = math.Max(-1, math.Min(1, (cores-math.Max(*v.Load1, *v.Load5)-demand.CPUUnits)/cores))
+		// Only complete telemetry may exclude on load; partial telemetry
+		// still informs the score.
+		if exclusion, over := buildLoadCeiling(*v.CPUCount, math.Max(*v.Load1, *v.Load5), demand, p); over && e.State == "known" {
+			exclusions = append(exclusions, exclusion)
+		}
 	}
 	if validSize(v.MemoryAvailableMB) {
 		available := float64(*v.MemoryAvailableMB)

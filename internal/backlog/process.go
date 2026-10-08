@@ -35,6 +35,10 @@ type ProcessRequest struct {
 	// a chatty remote into a memory hazard. Zero means unbounded, which is what
 	// every caller that does not care still gets.
 	MaxOutputBytes int
+	// Limits is the task's reservation. A sized request's scope is told the
+	// parallelism to use and, where the user manager can enforce them, given
+	// cpu and memory limits; see ProcessLimits.
+	Limits ProcessLimits
 }
 
 type ProcessResult struct {
@@ -114,6 +118,12 @@ type SystemdScopeRunner struct {
 	// ScopeCleanupTimeout bounds how long a KillRemaining request waits for
 	// its scope to empty; zero means scopeCleanupTimeout.
 	ScopeCleanupTimeout time.Duration
+	// LookupEnv reads the worker's own environment, which a sized request's
+	// GOFLAGS extends; nil means os.LookupEnv.
+	LookupEnv func(string) (string, bool)
+	// Controllers reports whether the user manager can enforce cpu and memory
+	// limits; nil reads the delegated cgroup controllers once per process.
+	Controllers func() (cpu, memory bool)
 }
 
 func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (ProcessResult, error) {
@@ -136,9 +146,9 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 		"--unit=" + unit,
 		"--property=KillMode=control-group",
 		"--working-directory=" + request.Dir,
-		"--",
-		request.Program,
 	}
+	args = append(args, r.scopeLimitArguments(request.Limits)...)
+	args = append(args, "--", request.Program)
 	args = append(args, request.Args...)
 	fmt.Fprintf(log, "$ %s %s\n", r.systemdRun(), strings.Join(args, " "))
 

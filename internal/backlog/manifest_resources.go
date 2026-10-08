@@ -1,6 +1,10 @@
 package backlog
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
+)
 
 // CPUClass is the operator-assigned performance class of a worker's CPU, used
 // as a placement constraint floor and as a soft preference. It is an ordered
@@ -20,12 +24,22 @@ const (
 	CPUClassHigh   CPUClass = "high"
 )
 
-// Resource presets expand to a class floor and preference. An explicitly
-// declared field always wins over what a preset would have expanded to.
+// Resource presets expand to a class floor and preference and to sizes. An
+// explicitly declared field always wins over what a preset would have expanded
+// to.
 const (
 	ResourcePresetBuild = "build"
 	ResourcePresetLight = "light"
 )
+
+// presetSizes is the one definition of what a preset reserves. The same sizes
+// are the reservation demand on a worker that declares capacity and the live
+// need the telemetry floors and the build load ceiling use; a worker that
+// declares no cpu or memory capacity counts them as one executor slot.
+var presetSizes = map[string]domain.ResourceDemand{
+	ResourcePresetBuild: {CPUUnits: 4, MemoryMB: 6000, ScratchMB: 8192},
+	ResourcePresetLight: {CPUUnits: .5, MemoryMB: 1000, ScratchMB: 512},
+}
 
 // rank orders the classes. An unknown or unset class ranks below every valid
 // class, so comparisons on unvalidated input never claim a bad value is high.
@@ -67,6 +81,15 @@ type ManifestResources struct {
 // explicit field beats the preset, and the preset beats nothing at all. An
 // unknown preset name expands nothing; validateResources rejects it by name.
 func expandResourcePreset(resources *ManifestResources) {
+	expandResourcePresetClasses(resources)
+	expandResourcePresetSizes(resources)
+}
+
+// expandResourcePresetClasses fills only the CPU classes a preset implies.
+// A manifest expands classes before a task inherits from its workflow and
+// sizes only after, so a size the workflow declared explicitly still beats
+// the preset a task declares, as every explicit field does.
+func expandResourcePresetClasses(resources *ManifestResources) {
 	switch resources.Preset {
 	case ResourcePresetBuild:
 		if resources.MinCPUClass == "" {
@@ -79,6 +102,24 @@ func expandResourcePreset(resources *ManifestResources) {
 		if resources.MinCPUClass == "" {
 			resources.MinCPUClass = CPUClassLow
 		}
+	}
+}
+
+// expandResourcePresetSizes fills the sizes a preset implies that no field
+// declares.
+func expandResourcePresetSizes(resources *ManifestResources) {
+	sizes, sized := presetSizes[resources.Preset]
+	if !sized {
+		return
+	}
+	if resources.CPUUnits == nil {
+		resources.CPUUnits = &sizes.CPUUnits
+	}
+	if resources.MemoryMB == nil {
+		resources.MemoryMB = &sizes.MemoryMB
+	}
+	if resources.ScratchMB == nil {
+		resources.ScratchMB = &sizes.ScratchMB
 	}
 }
 

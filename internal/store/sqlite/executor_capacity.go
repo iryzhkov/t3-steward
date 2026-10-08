@@ -86,10 +86,14 @@ func requireExecutorCapacityTx(
 			}
 			continue
 		}
+		ownerDemand = domain.GoverningDemand(ownerDemand, allocatable)
 		used.CPUUnits += ownerDemand.CPUUnits
 		used.MemoryMB += ownerDemand.MemoryMB
 		used.ScratchMB += ownerDemand.ScratchMB
 	}
+	// A size the worker declares no capacity for is counted as a slot only,
+	// as placement and the planning registry count it.
+	demand = domain.GoverningDemand(demand, allocatable)
 	switch {
 	case usedSlots >= allocatable.ExecutorSlots:
 		return fmt.Errorf("%w on worker %q: %d of %d slots reserved",

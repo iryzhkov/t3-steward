@@ -69,9 +69,13 @@ type LocalDriverConfig struct {
 	// Authorization binds effects to the current authored routes, including empty revocations.
 	Authorization   *domain.WorkerInventory
 	CatalogRevision string
-	ArtifactRoot    string
-	RunsRoot        string
-	StopTimeout     time.Duration
+	// CompatibleCatalogRevisions are earlier revisions that differ from
+	// CatalogRevision only in executor capacity, whose packages stay
+	// executable because the worker adopted the change while busy.
+	CompatibleCatalogRevisions []string
+	ArtifactRoot               string
+	RunsRoot                   string
+	StopTimeout                time.Duration
 	// SnapshotTimeout bounds a work-in-progress snapshot of a failing
 	// attempt. Zero uses DefaultSnapshotTimeout.
 	SnapshotTimeout time.Duration
@@ -102,6 +106,9 @@ type LocalDriver struct {
 	// above all the removal of its identity record. Nil uses the default
 	// logger; nothing here is silent.
 	Log *slog.Logger
+	// revisions is the catalog revisions Prepare accepts, which a capacity
+	// change adopted in place updates. Nil means Config alone.
+	revisions *catalogRevisionSet
 }
 
 func (d *LocalDriver) logger() *slog.Logger {
@@ -143,6 +150,7 @@ func NewLocalDriver(driver LocalDriver) (*LocalDriver, error) {
 	driver.Workspace.RunsRoot = runsRoot
 	driver.Workspace.StorageRoot = artifactRoot
 	driver.Finalizer.StorageRoot = artifactRoot
+	driver.revisions = &catalogRevisionSet{current: driver.Config.CatalogRevision, previous: slices.Clone(driver.Config.CompatibleCatalogRevisions)}
 	return &driver, nil
 }
 
@@ -163,7 +171,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	if d.containedManager(pkg) != nil && (len(environment.Setup.Commands) != 0 || len(environment.RequiredCredentials) != 0) {
 		return "", errors.New("contained preparation requires an empty setup profile and no host credentials")
 	}
-	if pkg.Environment.CatalogRevision != d.Config.CatalogRevision {
+	if !d.acceptsCatalogRevision(pkg.Environment.CatalogRevision) {
 		return "", errors.New("execution package catalog revision is stale")
 	}
 	if len(environment.RequiredCredentials) > 0 {
@@ -847,7 +855,7 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if err != nil {
 		return err
 	}
-	prompt = backlog.FirstTurnPrompt(prompt, pkg.Outputs)
+	prompt = backlog.FirstTurnPromptWithLimits(prompt, pkg.Outputs, backlog.ProcessLimitsFromContext(ctx))
 	if pkg.Recovery != nil {
 		prompt += "\n\n## Recovery supplement\nThis is a retry of the original task. Keep the original task contract, outputs, and verification authoritative. Read and apply the retained repair instructions at `" + pkg.Recovery.InstructionPath + "`."
 		for _, checkpoint := range pkg.Recovery.CheckpointPaths {

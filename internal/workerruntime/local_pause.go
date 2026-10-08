@@ -625,6 +625,7 @@ type pausedCollector interface {
 // collectWithPauseEvidence collects through the driver, naming the most
 // recent local quota pause when the driver can carry it.
 func (r *Runtime) collectWithPauseEvidence(ctx context.Context, record AttemptRecord) error {
+	ctx = withAttemptProcessLimits(ctx, record)
 	pause := record.LastLocalThrottle
 	if pause == nil {
 		pause = record.LocalThrottle

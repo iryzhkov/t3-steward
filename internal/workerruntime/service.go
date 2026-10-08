@@ -22,15 +22,18 @@ import (
 type WorkerServiceOptions struct {
 	// ModelLoginFiles overrides the usual provider auth files; an empty slice
 	// selects no files (useful for isolated integrations).
-	ModelLoginFiles     []string
-	RuntimeIdentity     *domain.WorkerRuntimeIdentity
-	ObserveInventory    func(context.Context, config.BacklogV2, domain.WorkerInventory) (domain.WorkerInventory, error)
-	Settings            config.BacklogV2
-	WorkerID            string
-	WorkerEpoch         string
-	CoordinatorEpoch    int64
-	ProtocolCredentials ProtocolCredentialResolver
-	ProjectCredentials  CredentialChecker
+	ModelLoginFiles  []string
+	RuntimeIdentity  *domain.WorkerRuntimeIdentity
+	ObserveInventory func(context.Context, config.BacklogV2, domain.WorkerInventory) (domain.WorkerInventory, error)
+	Settings         config.BacklogV2
+	// CompatibleCatalogRevisions are the capacity-only predecessors of the
+	// catalog whose packages this service still executes.
+	CompatibleCatalogRevisions []string
+	WorkerID                   string
+	WorkerEpoch                string
+	CoordinatorEpoch           int64
+	ProtocolCredentials        ProtocolCredentialResolver
+	ProjectCredentials         CredentialChecker
 	// LiveTaskWait lets a worker ask whether the coordinator still holds a
 	// task-bound wait for an attempt before collecting its outputs. It is nil
 	// for a worker that cannot reach coordinator state, which is every worker
@@ -148,13 +151,14 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	}
 	driver, err := NewLocalDriver(LocalDriver{
 		Config: LocalDriverConfig{
-			Authorization:    &binding.Inventory,
-			CatalogRevision:  binding.CatalogRevision,
-			ArtifactRoot:     artifactRoot,
-			RunsRoot:         runsRoot,
-			StopTimeout:      options.Settings.Transport.RequestTimeout.D(),
-			RetainWorkspaces: true,
-			DryRun:           options.DryRun,
+			Authorization:              &binding.Inventory,
+			CatalogRevision:            binding.CatalogRevision,
+			CompatibleCatalogRevisions: options.CompatibleCatalogRevisions,
+			ArtifactRoot:               artifactRoot,
+			RunsRoot:                   runsRoot,
+			StopTimeout:                options.Settings.Transport.RequestTimeout.D(),
+			RetainWorkspaces:           true,
+			DryRun:                     options.DryRun,
 		},
 		Catalog: binding.Catalog,
 		Workspace: backlog.WorkspacePreparer{

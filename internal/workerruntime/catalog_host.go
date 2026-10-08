@@ -10,12 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
-	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -30,6 +30,9 @@ type retainedCatalog struct {
 	AppliedAt        time.Time         `json:"appliedAt"`
 	Projection       CatalogProjection `json:"projection"`
 	CoordinatorEpoch int64             `json:"coordinatorEpoch"`
+	// PreviousRevisions are capacity-only predecessors adopted while work was
+	// live; their packages stay executable. Absent for every other catalog.
+	PreviousRevisions []string `json:"previousRevisions,omitempty"`
 }
 
 // CatalogHost owns a single worker runtime independently of SSH connections.
@@ -102,6 +105,7 @@ func (h *CatalogHost) activate(ctx context.Context, c retainedCatalog) error {
 		options.RuntimeIdentity = &identity
 	}
 	options.Settings = settings
+	options.CompatibleCatalogRevisions = slices.Clone(c.PreviousRevisions)
 	options.WorkerID = h.Bootstrap.WorkerID
 	options.WorkerEpoch = c.Projection.Worker.Epoch
 	options.CoordinatorEpoch = c.CoordinatorEpoch
@@ -257,33 +261,56 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		return nil, err
 	}
 	projection := request.Projection
+	// From here on the request is authenticated, so a catalog this worker
+	// cannot take is answered with a signed refusal naming the reason. Before,
+	// the refusal was a plain error the socket server answered by closing the
+	// stream, and the coordinator saw a bare EOF while the worker logged nothing.
+	refuse := func(reason error) ([]byte, error) {
+		h.logger().Warn("catalog refused", "worker", h.Bootstrap.WorkerID, "revision", projection.Revision, "reason", reason)
+		response, err := server.Handle(ctx, envelope, func(context.Context, workerproto.Envelope) (workerproto.MessageType, any, error) {
+			return "", nil, reason
+		})
+		if err != nil {
+			return nil, errors.Join(reason, err)
+		}
+		var output bytes.Buffer
+		if err := (workerproto.Codec{MaxBytes: 8 << 20}).Encode(&output, response); err != nil {
+			return nil, errors.Join(reason, err)
+		}
+		return output.Bytes(), &AnsweredError{Err: reason}
+	}
 	// An unusable retained catalog is no authority on revision identity, so it
 	// cannot fence the republication that recovers the worker. Epoch, signature
 	// and drain guards below still apply.
 	if h.retained != nil && h.unusable == nil && h.retained.Projection.Revision != projection.Revision && request.ExpectedRevision != h.retained.Projection.Revision {
-		return nil, errors.New("stale expected catalog revision")
+		return refuse(errors.New("stale expected catalog revision"))
 	}
 	settings, err := projection.Settings(h.Bootstrap, h.Home)
 	if err != nil {
-		return nil, err
+		return refuse(err)
 	}
 	if projection.Worker.Epoch != envelope.WorkerEpoch {
-		return nil, errors.New("catalog worker epoch mismatch")
+		return refuse(errors.New("catalog worker epoch mismatch"))
 	}
+	// capacityOnly marks a change a busy worker adopts without draining: its
+	// cpu class and executor capacity are coordinator admission data, and no
+	// execution package depends on them.
+	capacityOnly := false
+	var pinned map[string]bool
 	if h.retained != nil && h.retained.Projection.Revision != projection.Revision {
 		attempts, err := h.retainedAttempts(settings)
 		if err != nil {
-			return nil, err
+			return refuse(err)
 		}
-		for _, record := range attempts {
-			terminal := record.Phase == PhaseCompleted || record.Phase == PhaseFailed ||
-				(record.Phase == PhaseStopped && record.StopConfirmed && hasCommandRequest(record, domain.WorkerCommandStop))
-			if record.SettlePending || !terminal {
-				return nil, errors.New("catalog change requires draining retained execution")
+		if live := liveAttemptCount(attempts); live > 0 {
+			if h.service == nil || h.unusable != nil || !capacityOnlyChange(h.retained.Projection, projection) {
+				return refuse(busyCatalogRefusal(h.Bootstrap.WorkerID, live, catalogChangeAreas(h.retained.Projection, projection)))
 			}
+			capacityOnly = true
+			pinned = liveCatalogRevisions(attempts)
 		}
 		if projection.Worker.Epoch != h.retained.Projection.Worker.Epoch {
-			return nil, errors.New("worker epoch change requires explicit custody recovery")
+			return refuse(errors.New("worker epoch change requires explicit custody recovery"))
 		}
 	}
 	_, _, root := WorkerRoots(settings, h.Bootstrap.WorkerID)
@@ -304,6 +331,32 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
 		}
 		next := retainedCatalog{Projection: projection, CoordinatorEpoch: envelope.CoordinatorEpoch, AppliedAt: time.Now().UTC()}
+		switch {
+		case capacityOnly:
+			next.PreviousRevisions = appendPreviousRevision(h.retained.PreviousRevisions, h.retained.Projection.Revision, projection.Revision, pinned)
+		case h.retained != nil && h.retained.Projection.Revision == projection.Revision:
+			next.PreviousRevisions = slices.Clone(h.retained.PreviousRevisions)
+		}
+		if capacityOnly && h.Options.CoordinatorEpoch == envelope.CoordinatorEpoch && reflect.DeepEqual(credentials, h.activeCredentials) && h.service.canAdoptCatalogInPlace() {
+			// The running service adopts the new capacity in place: its
+			// journal, packages and assignments are untouched, and packages of
+			// the previous revision stay executable.
+			raw, err := json.Marshal(next)
+			if err != nil {
+				return "", nil, err
+			}
+			if err = writeCatalogFile(h.catalogPath(), raw); err != nil {
+				return "", nil, err
+			}
+			if err = h.service.adoptCapacityCatalog(projection, next.PreviousRevisions); err != nil {
+				return "", nil, err
+			}
+			h.retained = &next
+			h.Options.Settings = settings
+			h.Options.CompatibleCatalogRevisions = slices.Clone(next.PreviousRevisions)
+			h.logger().Info("catalog capacity adopted while busy", "worker", h.Bootstrap.WorkerID, "revision", projection.Revision, "previous", next.PreviousRevisions)
+			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
+		}
 		// Validate the complete runtime before publishing its durable pointer.
 		candidate := &CatalogHost{Home: h.Home, Bootstrap: h.Bootstrap, Options: h.Options}
 		if err := candidate.activate(ctx, next); err != nil {
@@ -330,6 +383,13 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 	var output bytes.Buffer
 	err = (workerproto.Codec{MaxBytes: 8 << 20}).Encode(&output, response)
 	return output.Bytes(), err
+}
+
+func (h *CatalogHost) logger() *slog.Logger {
+	if h.Options.Logger != nil {
+		return h.Options.Logger
+	}
+	return slog.Default()
 }
 
 // retainedAttempts reads the attempt records the retained catalog still owns. A
