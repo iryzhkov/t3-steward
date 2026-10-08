@@ -115,6 +115,25 @@ func TestGateScopeCleanupFailureIsNotReportedAsTimeout(t *testing.T) {
 	}
 }
 
+// Keep the real clearScope typed error and its configured 20ms deadline
+// covered separately from the prestarted held-output systemctl operation.
+func TestSystemdScopeRunnerKillRemainingDirectClearScope20ms(t *testing.T) {
+	ctl := writeExecutable(t, t.TempDir(), "systemctl", "#!/bin/sh\nexec sleep 30\n")
+	runner := SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: 20 * time.Millisecond}
+	if runner.cleanupTimeout() != 20*time.Millisecond {
+		t.Fatal("configured cleanup timeout was not retained")
+	}
+	started := time.Now()
+	err := runner.clearScope("t3-steward-direct-20ms.scope")
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("direct clearScope took %s despite a 20ms cleanup bound", elapsed)
+	}
+	var cleanup *ScopeCleanupError
+	if !errors.As(err, &cleanup) || cleanup.Unit != "t3-steward-direct-20ms.scope" {
+		t.Fatalf("actual clearScope error = %v, want typed scope cleanup failure", err)
+	}
+}
+
 // The cleanup deadline can expire while a state query is still running, and
 // the query is then killed. That is the deadline on a scope last seen active,
 // not a user manager that stopped answering. Where spawning a process is slow,

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -183,47 +184,107 @@ func TestKillRemainingCleanupAcceptsAnAnswerWhoseChildHoldsOutput(t *testing.T) 
 	}
 }
 
-// Exercise the short cleanup deadline directly, so normal Run preflight does
-// not decide whether an intended post-command cleanup case is reached. Run's
-// before/after sequencing is covered separately in gate_scope_test.go.
+// Startup and pipe ownership are established before the 20ms operation begins.
 func TestKillRemainingCleanupReturnsWithinBoundWhenSystemctlChildHoldsOutput(t *testing.T) {
-	root := t.TempDir()
-	childPath := filepath.Join(root, "child.pid")
-	// The child itself records readiness through systemctl's output pipe,
-	// then holds that pipe open for much longer than the cleanup deadline.
-	child := writeExecutable(t, root, "child", fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$$\" > %q\necho held-output-ready\nexec sleep 30\n", childPath))
-	// Bash monitor mode gives the background child its own process group
-	// on both Linux and macOS; killing systemctl cannot close its output.
-	ctl := writeExecutable(t, root, "ctl", fmt.Sprintf("#!/bin/bash\nset -m\nif [ \"$2\" = kill ]; then %q & wait; else exit 1; fi\n", child))
-	started := time.Now()
-	done := make(chan error, 1)
-	go func() {
-		done <- (SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: 20 * time.Millisecond}).clearScope("t3-steward-held-output.scope")
-	}()
-	pid := waitForPID(t, childPath)
-	t.Cleanup(func() {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		waitForProcessExit(t, pid)
-	})
-	var err error
-	select {
-	case err = <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("scope cleanup waited for systemctl's child")
+	for _, delay := range []string{"0", "0.2"} {
+		t.Run("startup-delay="+delay, func(t *testing.T) {
+			root := t.TempDir()
+			childPath := filepath.Join(root, "child.pid")
+			releasePath := filepath.Join(root, "release")
+			statusPath := filepath.Join(root, "write.status")
+			child := writeExecutable(t, root, "child", fmt.Sprintf("#!/bin/sh\ntrap '' PIPE\nprintf '%%s' \"$$\" > %q\necho held-output-ready\nwhile [ ! -e %q ]; do sleep 0.01; done\necho late 2>/dev/null\necho $? > %q.tmp && mv %q.tmp %q\nexec sleep 30\n", childPath, releasePath, statusPath, statusPath, statusPath))
+			ctl := writeExecutable(t, root, "ctl", fmt.Sprintf("#!/bin/bash\nset -m\nsleep %s\n%q &\nwait\n", delay, child))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			output := &heldOutputObserver{ready: make(chan struct{})}
+			command := (SystemdScopeRunner{SystemctlBinary: ctl}).systemctlCommand(ctx, "--user", "kill", "--kill-who=all", "--signal=KILL", "t3-steward-held-output.scope")
+			command.Stdout, command.Stderr = output, output
+			setup := time.Now()
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := false
+			defer func() {
+				cancel()
+				if !waited {
+					_ = command.Wait()
+				}
+			}()
+			pid := waitForPID(t, childPath)
+			t.Cleanup(func() {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+				waitForProcessExit(t, pid)
+			})
+			select {
+			case <-output.ready:
+			case <-time.After(5 * time.Second):
+				t.Fatal("systemctl output never observed held-output-ready")
+			}
+			parentGroup, parentErr := syscall.Getpgid(command.Process.Pid)
+			group, groupErr := syscall.Getpgid(pid)
+			if parentErr != nil || groupErr != nil || group != pid || group == parentGroup {
+				t.Fatalf("held-output ownership: child group=%d parent group=%d errors=%v/%v", group, parentGroup, groupErr, parentErr)
+			}
+			if delay == "0.2" && time.Since(setup) < 200*time.Millisecond {
+				t.Fatal("startup delay control did not delay setup")
+			}
+			t.Logf("held-output-ready: live child=%d separate group=%d setup=%s", pid, group, time.Since(setup))
+			// Rescue a broken implementation without letting its Wait goroutine
+			// or the escaped child survive the test. This is beyond the 1s bound.
+			rescue := time.AfterFunc(2*time.Second, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+			defer rescue.Stop()
+			started := time.Now()
+			timer := time.AfterFunc(20*time.Millisecond, cancel)
+			err := command.Wait()
+			waited = true
+			timer.Stop()
+			elapsed := time.Since(started)
+			if elapsed > time.Second {
+				t.Fatalf("held-output Wait took %s despite a 20ms cancellation bound", elapsed.Round(time.Millisecond))
+			}
+			if ctx.Err() != context.Canceled || err == nil || command.ProcessState == nil {
+				t.Fatalf("systemctl Wait error=%v context=%v state=%v, want reaped cancelled parent", err, ctx.Err(), command.ProcessState)
+			}
+			if group, err := syscall.Getpgid(pid); err != nil || group != pid {
+				t.Fatalf("child did not survive parent cancellation and pipe closure: group=%d err=%v", group, err)
+			}
+			if err := os.WriteFile(releasePath, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				status, err := os.ReadFile(statusPath)
+				if err == nil {
+					if strings.TrimSpace(string(status)) == "0" {
+						t.Fatal("held-output child still wrote after systemctl Wait returned")
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("live held-output child never reported closed pipe: %v", err)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Logf("actual Wait=%s; live child observed closed output pipe", elapsed)
+		})
 	}
-	var cleanupErr *ScopeCleanupError
-	if !errors.As(err, &cleanupErr) || cleanupErr.Unit != "t3-steward-held-output.scope" {
-		t.Fatalf("cleanup error = %v, want a scope cleanup failure", err)
+}
+
+// exec copies stdout and stderr concurrently; readiness observes actual output
+// without racing the command's copy goroutines.
+type heldOutputObserver struct {
+	mu    sync.Mutex
+	text  strings.Builder
+	ready chan struct{}
+	once  sync.Once
+}
+
+func (o *heldOutputObserver) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.text.Write(p)
+	if strings.Contains(o.text.String(), "held-output-ready\n") {
+		o.once.Do(func() { close(o.ready) })
 	}
-	// A deadline that expires before the child owns output is not evidence
-	// that held-output cleanup works.
-	if !strings.Contains(cleanupErr.Detail, "held-output-ready") {
-		t.Fatalf("cleanup never observed the child holding output: %v", err)
-	}
-	if group, groupErr := syscall.Getpgid(pid); groupErr != nil || group != pid {
-		t.Fatalf("held-output child group = %d, err = %v, want live separate group %d", group, groupErr, pid)
-	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("scope cleanup took %s despite a 20ms cleanup bound", elapsed.Round(time.Millisecond))
-	}
+	return len(p), nil
 }
