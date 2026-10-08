@@ -240,6 +240,17 @@ func TestResultCollectionKeepsRetirementWhenItsRenameFails(t *testing.T) {
 		if !strings.Contains(f.stderr.String(), old) {
 			t.Fatalf("unretired leftover not reported: %q", f.stderr.String())
 		}
+		// A subsequent sweep, including after grace and interrupted-staging
+		// age expire, must treat a failed rename as a newest-K retirement.
+		if err := os.Chmod(base, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if left := removeInterruptedCollections("", filepath.Join(base, task.Task.Name), time.Now().Add(2*interruptedCollectionAge)); len(left) != 0 {
+			t.Fatal(left)
+		}
+		if got := readFile(t, old, "final-message.md"); got != "the job" {
+			t.Fatalf("failed-rename retirement lost to sweep: %q", got)
+		}
 	}
 }
 

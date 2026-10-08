@@ -79,7 +79,11 @@ finishing before 16 further collections of that task are published sees a
 complete file. Each publish and leftover sweep reclaims only generations both
 at least five seconds retired and outside the newest 16. Bursts can retain more
 than 16 during that grace window; after it, cleanup retains 16. Empty collections
-still remove the public directory. This is interim protection, not a read lease.
+still remove the public directory. Publishers and cleanup coordinate through a
+parent-directory lock; protected exchange names preserve retirement order and
+reader protection across crashes or failed cleanup renames. Preparations that
+never publish are reclaimed after 24 hours without counting toward the newest 16.
+This is interim protection, not a read lease.
 
 `campaign show`, its `status` alias and `backlog show` print verification
 reports for each task's latest attempt in text. The result comes from the

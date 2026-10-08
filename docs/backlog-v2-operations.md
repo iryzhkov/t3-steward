@@ -688,7 +688,11 @@ the previous generation in a hidden sibling. Reads completing before 16 further
 publications of that task are protected. Publication and leftover cleanup
 reclaim only generations retired at least five seconds ago and outside the
 newest 16; bursts can retain more within the grace window. After that window,
-cleanup retains 16. Empty collections still remove the public directory.
+cleanup retains 16. Publication and cleanup share a parent-directory lock, with
+protected exchange names preserving publication order and reader protection even
+after crashes or failed retirement renames. Unpublished preparations are removed
+after 24 hours and do not count toward the newest 16. Empty collections still
+remove the public directory.
 
 To stop a run:
 

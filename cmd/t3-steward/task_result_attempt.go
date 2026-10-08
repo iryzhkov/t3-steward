@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"golang.org/x/sys/unix"
 )
 
 // ofSelectedAttempt reports whether artifact was produced by the attempt a task
@@ -69,10 +70,96 @@ func retiredResultPrefix(directory string) string {
 	return fmt.Sprintf("%s%x-", resultRetiredPrefix, sha256.Sum256([]byte(filepath.Base(directory))))
 }
 
+// lockResultParent serializes publications and sweeps across processes without
+// leaving a lock file beside the collections. Independent opens also serialize
+// goroutines in one process. Closing the descriptor (including on crash) releases
+// the flock. Sweeps use a nonblocking lock and defer cleanup to the next sweep
+// when a publisher owns the parent.
+func lockResultParent(directory string, wait bool) (*os.File, error) {
+	parent, err := os.Open(filepath.Dir(directory))
+	if err != nil {
+		return nil, err
+	}
+	flags := unix.LOCK_EX
+	if !wait {
+		flags |= unix.LOCK_NB
+	}
+	for {
+		err = unix.Flock(int(parent.Fd()), flags)
+		if !errors.Is(err, unix.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		_ = parent.Close()
+		return nil, err
+	}
+	return parent, nil
+}
+
+// prepareResultExchange reserves an order while holding the parent lock and
+// moves staging into the retirement namespace BEFORE exchange. The incoming
+// inode in the name distinguishes a crash before exchange (unpublished staging)
+// from a crash after exchange (a real retirement), without a second rename.
+// Advancing beyond every reserved timestamp prevents clock rollback or equal
+// timestamps from changing publication order.
+func prepareResultExchange(staged, directory string) (prepared, retired string, err error) {
+	entries, err := os.ReadDir(filepath.Dir(directory))
+	if err != nil {
+		return "", "", err
+	}
+	prefix := retiredResultPrefix(directory)
+	order := time.Now().UnixNano()
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		stamp, _, _ := strings.Cut(strings.TrimPrefix(entry.Name(), prefix), "-")
+		nanos, parseErr := strconv.ParseInt(stamp, 10, 64)
+		if parseErr == nil && nanos >= order {
+			if nanos == 1<<63-1 {
+				return "", "", errors.New("result retirement order exhausted")
+			}
+			order = nanos + 1
+		}
+	}
+	var incoming unix.Stat_t
+	if err := unix.Lstat(staged, &incoming); err != nil {
+		return "", "", err
+	}
+	retired = filepath.Join(filepath.Dir(directory), prefix+
+		fmt.Sprintf("%020d-%s", order, strings.TrimPrefix(filepath.Base(staged), resultStagingPrefix)))
+	prepared = fmt.Sprintf("%s-staged-%d", retired, incoming.Ino)
+	if err := os.Rename(staged, prepared); err != nil {
+		return "", "", err
+	}
+	return prepared, retired, nil
+}
+
+// unpublishedResult reports whether a protected exchange path still contains
+// its incoming inode. Once exchange succeeds it contains the previous public
+// inode, so even a failed final retirement rename uses the age AND count gates.
+func unpublishedResult(path string) (bool, error) {
+	_, inode, ok := strings.Cut(filepath.Base(path), "-staged-")
+	if !ok {
+		return false, nil
+	}
+	want, err := strconv.ParseUint(inode, 10, 64)
+	if err != nil {
+		return false, err
+	}
+	var current unix.Stat_t
+	if err := unix.Lstat(path, &current); err != nil {
+		return false, err
+	}
+	return current.Ino == want, nil
+}
+
 // removeRetiredResults keeps the newest K and every generation within the grace
 // window. Rapid publishers can temporarily retain more than K; after the window,
 // the next publish or sweep reduces retention to K. Retirement time comes from
 // the name, never from the old collection's potentially ancient mtime.
+// The caller must hold the parent-directory lock.
 func removeRetiredResults(directory string, now time.Time) []string {
 	parent := filepath.Dir(directory)
 	entries, err := os.ReadDir(parent)
@@ -85,6 +172,7 @@ func removeRetiredResults(directory string, now time.Time) []string {
 		when time.Time
 	}
 	var generations []retired
+	var left []string
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
 			continue
@@ -94,10 +182,26 @@ func removeRetiredResults(directory string, now time.Time) []string {
 		if !ok || err != nil {
 			continue
 		}
+		path := filepath.Join(parent, entry.Name())
+		unpublished, err := unpublishedResult(path)
+		if err != nil {
+			// Uncertain identity must never cause deletion of a reader's files.
+			left = append(left, path)
+			continue
+		}
+		if unpublished {
+			// Crashed before exchange: it is not a publication and must not
+			// displace any of the newest K actual retirements.
+			if now.Sub(time.Unix(0, nanos)) >= interruptedCollectionAge {
+				if err := os.RemoveAll(path); err != nil {
+					left = append(left, path)
+				}
+			}
+			continue
+		}
 		generations = append(generations, retired{entry.Name(), time.Unix(0, nanos)})
 	}
 	sort.Slice(generations, func(i, j int) bool { return generations[i].name > generations[j].name })
-	var left []string
 	for i, generation := range generations {
 		if i < resultRetainedGenerations || now.Sub(generation.when) < resultRetirementGrace {
 			continue
@@ -154,6 +258,14 @@ func replaceResultDirectory(staged, directory string) ([]string, error) {
 // it is kept. Retired generations of this task use their separate age and count
 // gates instead. It returns those it could not remove.
 func removeInterruptedCollections(staged, directory string, now time.Time) []string {
+	lock, err := lockResultParent(directory, false)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return nil
+	}
+	if err != nil {
+		return []string{filepath.Dir(directory)}
+	}
+	defer lock.Close()
 	parent := filepath.Dir(directory)
 	entries, err := os.ReadDir(parent)
 	if err != nil {
@@ -178,6 +290,13 @@ func removeInterruptedCollections(staged, directory string, now time.Time) []str
 
 // publishResultDirectory atomically publishes a nonempty collection and renames
 // the exchanged-out generation to a hidden, task-specific retired sibling.
+// A parent-directory flock orders exchange, retirement naming and reclamation
+// across processes. Before exchange, staging moves to a protected retirement
+// name recording the incoming inode; a crash or failed final rename cannot
+// expose an exchanged generation to the abandoned-staging sweep. The inode
+// distinguishes unpublished preparations, which are cleaned up after 24 hours
+// and do not count toward the newest K. Retirement order is reserved under the
+// lock and is monotonic even if the wall clock moves backwards.
 // A raw-path reader completing before K (resultRetainedGenerations) further
 // publications sees a complete file. Reclamation requires BOTH retirement age
 // >= resultRetirementGrace and exclusion from the newest K retired generations.
@@ -186,6 +305,11 @@ func removeInterruptedCollections(staged, directory string, now time.Time) []str
 // the leftover sweep; failures are returned in left without undoing publication.
 // Empty collections and unsupported exchange retain their existing semantics.
 func publishResultDirectory(staged, directory string) (left []string, err error) {
+	lock, err := lockResultParent(directory, true)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
 	defer func() {
 		if err == nil {
 			left = append(left, removeRetiredResults(directory, time.Now())...)
@@ -198,29 +322,40 @@ func publishResultDirectory(staged, directory string) (left []string, err error)
 	if len(entries) == 0 {
 		return moveAsideResultDirectory(staged, directory, entries)
 	}
+	prepared, retired, err := prepareResultExchange(staged, directory)
+	if err != nil {
+		return nil, err
+	}
+	// Before publication fails, restore the caller's staging path so its existing
+	// deferred cleanup still removes the unselected collection.
+	defer func() {
+		if err != nil {
+			if restoreErr := os.Rename(prepared, staged); restoreErr != nil {
+				err = fmt.Errorf("%w; unpublished collection kept at %s: %v", err, prepared, restoreErr)
+			}
+		}
+	}()
 	for round := 0; round < replaceResultDirectoryRounds; round++ {
-		err := swapDirectories(staged, directory)
+		exchangeErr := swapDirectories(prepared, directory)
 		switch {
-		case err == nil:
-			retired := filepath.Join(filepath.Dir(directory), retiredResultPrefix(directory)+
-				fmt.Sprintf("%020d-%s", time.Now().UnixNano(), strings.TrimPrefix(filepath.Base(staged), resultStagingPrefix)))
-			if err := os.Rename(staged, retired); err != nil {
-				return []string{staged}, nil
+		case exchangeErr == nil:
+			if err := os.Rename(prepared, retired); err != nil {
+				return []string{prepared}, nil
 			}
 			return nil, nil
-		case errors.Is(err, errExchangeUnsupported):
+		case errors.Is(exchangeErr, errExchangeUnsupported):
 			// A plain rename can publish to an absent destination atomically.
 			// It cannot overwrite a nonempty collection, even if a concurrent
 			// publisher created that collection after the failed exchange.
 			// Never move that collection aside to make this rename succeed.
-			if renameErr := os.Rename(staged, directory); renameErr != nil {
-				return nil, fmt.Errorf("cannot publish collection at %s: %w; use a filesystem that supports atomic directory exchange (rename: %w)", directory, err, renameErr)
+			if renameErr := os.Rename(prepared, directory); renameErr != nil {
+				return nil, fmt.Errorf("cannot publish collection at %s: %w; use a filesystem that supports atomic directory exchange (rename: %w)", directory, exchangeErr, renameErr)
 			}
 			return nil, nil
-		case !errors.Is(err, fs.ErrNotExist):
-			return nil, err
+		case !errors.Is(exchangeErr, fs.ErrNotExist):
+			return nil, exchangeErr
 		}
-		err = os.Rename(staged, directory)
+		err = os.Rename(prepared, directory)
 		if err == nil {
 			return nil, nil
 		}
