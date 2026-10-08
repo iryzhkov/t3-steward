@@ -1,0 +1,48 @@
+{
+  "workflow": {
+    "summary": {
+      "run": {"id": "run-failed", "workflowId": "wf-1", "progress": "failed", "revision": 8},
+      "workflow": {"id": "wf-1", "name": "unit", "taskIds": ["t-implement", "t-review"]},
+      "progress": {"total": 2, "failed": 1, "skipped": 1}
+    },
+    "tasks": [
+      {
+        "task": {
+          "id": "t-implement", "workflowId": "wf-1", "name": "implement",
+          "outputs": [{"name": "implementation", "commit": {}}],
+          "verification": ["go build ./...", "make test", "make lint"]
+        },
+        "attempt": {
+          "id": "a-implement-1", "workflowRunId": "run-failed", "taskId": "t-implement", "number": 1,
+          "progress": "failed", "control": "released", "revision": 5,
+          "failure": "verification command failed (2): make test"
+        },
+        "artifacts": [
+          {"metadata": {"id": "art-quarantined", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "git-state", "name": "git/failed-campaign-commits/implementation.json"}},
+          {"metadata": {"id": "art-verify-0", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "verification", "name": "verification/000.json"}},
+          {"metadata": {"id": "art-verify-1", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "verification", "name": "verification/001.json"}}
+        ]
+      },
+      {
+        "task": {
+          "id": "t-review", "workflowId": "wf-1", "name": "review", "needs": ["implement"],
+          "dependencyInputs": {"implement": ["implementation"]},
+          "reviewOutput": {"verdictLine": "review.md"},
+          "outputs": [{"name": "review.md"}]
+        },
+        "attempt": {
+          "id": "a-review-1", "workflowRunId": "run-failed", "taskId": "t-review", "number": 1,
+          "progress": "skipped", "control": "released", "revision": 2,
+          "failure": "terminal dependency prevented execution: implement failed"
+        }
+      }
+    ],
+    "taskWaits": [],
+    "waits": []
+  },
+  "artifacts": {
+    "art-quarantined": {"version": "campaign-commit/v1", "workflowRunId": "run-failed", "taskId": "t-implement", "name": "implementation", "repository": "git@github.com:o/r.git", "base": "0000000000000000000000000000000000000000", "commit": "4444444444444444444444444444444444444444"},
+    "art-verify-0": {"command": "go build ./...", "exitCode": 0, "output": ""},
+    "art-verify-1": {"command": "make test", "exitCode": 2, "output": "--- FAIL: TestX"}
+  }
+}

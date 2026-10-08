@@ -1,0 +1,45 @@
+{
+  "workflow": {
+    "summary": {
+      "run": {"id": "run-changes", "workflowId": "wf-1", "progress": "succeeded", "revision": 7},
+      "workflow": {"id": "wf-1", "name": "unit", "taskIds": ["t-implement", "t-review"]},
+      "progress": {"total": 2, "succeeded": 2}
+    },
+    "tasks": [
+      {
+        "task": {
+          "id": "t-implement", "workflowId": "wf-1", "name": "implement",
+          "outputs": [{"name": "implementation", "commit": {}}],
+          "verification": ["make test"]
+        },
+        "attempt": {
+          "id": "a-implement-1", "workflowRunId": "run-changes", "taskId": "t-implement", "number": 1,
+          "progress": "succeeded", "control": "released", "revision": 5
+        },
+        "artifacts": [
+          {"metadata": {"id": "art-commit", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "output", "name": "implementation"}},
+          {"metadata": {"id": "art-verify-0", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "verification", "name": "verification/000.json"}}
+        ]
+      },
+      {
+        "task": {
+          "id": "t-review", "workflowId": "wf-1", "name": "review", "needs": ["implement"],
+          "dependencyInputs": {"implement": ["implementation"]},
+          "reviewOutput": {"verdictLine": "review.md"},
+          "outputs": [{"name": "review.md"}]
+        },
+        "attempt": {
+          "id": "a-review-1", "workflowRunId": "run-changes", "taskId": "t-review", "number": 1,
+          "progress": "succeeded", "control": "released", "revision": 4,
+          "reviewVerdict": {"verdict": "changes-requested", "blocking_findings": 2, "finding_titles": ["acceptance line ignores verification", "no JSON test"]}
+        }
+      }
+    ],
+    "taskWaits": [],
+    "waits": []
+  },
+  "artifacts": {
+    "art-commit": {"version": "campaign-commit/v1", "workflowRunId": "run-changes", "taskId": "t-implement", "name": "implementation", "repository": "git@github.com:o/r.git", "base": "0000000000000000000000000000000000000000", "commit": "3333333333333333333333333333333333333333"},
+    "art-verify-0": {"command": "make test", "exitCode": 0, "output": "ok"}
+  }
+}

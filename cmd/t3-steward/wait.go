@@ -71,9 +71,17 @@ Every wait has one condition, its KIND. Attention is task-bound; the other kinds
                                       arguments; run: completed (met on
                                       conclusion success, failed otherwise);
                                       pr: merged (default), reviewed,
-                                      checks-passed; three gh errors in a row
-                                      give up, a target that is gone gives up
-                                      at once
+                                      checks-passed, checks-completed; three gh
+                                      errors in a row give up, a target that is
+                                      gone gives up at once
+             --github-checks owner/name@<sha> | owner/name#<n> [--repo owner/name]
+                                      the checks of one commit, or of a pull
+                                      request's head (also its URL, or <n>):
+                                      met when every check run and status
+                                      finished and none failed, failed when
+                                      one failed; the reason is one line such
+                                      as "checks failed: 6 checks, 1 failure
+                                      (lint), 5 success"
 
   COORDINATOR KINDS  settled by the coordinator from its own records, no
   local check on any host
@@ -102,8 +110,8 @@ task-bound, is one parseable line:
 
   t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> <key>=<value>...
 
-plus kind-specific pairs: shell exit=; time at=; github target=run:<id>|pr:<n>
-state= conclusion= url=; node run= task= attempt= revision= progress=
+plus kind-specific pairs: shell exit=; time at=; github target=run:<id>|pr:<n>|commit:<sha>
+state= conclusion= url= [checks=<conclusion>=<n>,...]; node run= task= attempt= revision= progress=
 [control= pauseReason=] and, for a terminal run, failed=<comma list> and
 result="t3-steward task result <run>"; quota pool= phase= percent=. Values with a
 space are quoted, unknown keys are to be ignored, key order is not promised. A
@@ -223,6 +231,7 @@ Examples, inside a task:
 
   t3-steward wait add --task current --github run $(gh run list --limit 1 --json databaseId --jq '.[0].databaseId') --timeout 2h
   t3-steward wait add --task current --github pr owner/name#45 --state checks-passed
+  t3-steward wait add --task current --github-checks owner/name@$(git rev-parse HEAD) --timeout 2h
   t3-steward wait add --task current --for 30m --or-timeout
   t3-steward wait add --task current --node <run>/<task> --state succeeded
   t3-steward wait add --task current --quota claude-main --phase normal

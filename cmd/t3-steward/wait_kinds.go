@@ -311,6 +311,7 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 	at := fs.String("at", "", "RFC 3339 instant of a time wait")
 	after := fs.String("for", "", "duration of a time wait")
 	github := fs.String("github", "", "run <id> or pr <number>")
+	githubChecks := fs.String("github-checks", "", "owner/name@<sha> or a pull request")
 	state := fs.String("state", "", "state waited for")
 	repo := fs.String("repo", "", "owner/name for --github")
 	if err := fs.Parse(normalizeKindArgs(args)); err != nil {
@@ -340,6 +341,16 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 		}
 		gitHubTarget = target
 	}
+	if *githubChecks != "" && *github == "" {
+		if *state != "" {
+			return spec, errors.New("--github-checks always waits for checks-completed; --state belongs to --github")
+		}
+		target, err := parseGitHubChecksTarget(*githubChecks, *repo)
+		if err != nil {
+			return spec, err
+		}
+		gitHubTarget = target
+	}
 
 	var kinds []string
 	if *at != "" || *after != "" {
@@ -348,6 +359,9 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 	if *github != "" {
 		kinds = append(kinds, "--github")
 	}
+	if *githubChecks != "" {
+		kinds = append(kinds, "--github-checks")
+	}
 	if len(spec.Command) > 0 {
 		kinds = append(kinds, "a command after --")
 	}
@@ -355,14 +369,14 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 	case len(kinds) > 1:
 		return spec, fmt.Errorf("one wait has one kind; %s were given", strings.Join(kinds, " and "))
 	case len(kinds) == 0:
-		return spec, errors.New("add needs a condition: a command after --, --at RFC3339 / --for DURATION, or --github run <id> | pr <n>")
+		return spec, errors.New("add needs a condition: a command after --, --at RFC3339 / --for DURATION, --github run <id> | pr <n>, or --github-checks owner/name@<sha>")
 	}
-	if *github == "" && (*state != "" || *repo != "") {
+	if *github == "" && *githubChecks == "" && (*state != "" || *repo != "") {
 		return spec, errors.New("--state and --repo belong to --github")
 	}
 
 	switch {
-	case *github != "":
+	case *github != "" || *githubChecks != "":
 		target := gitHubTarget
 		spec.Kind = domain.WaitKindGitHub
 		spec.GitHub = &target

@@ -1,0 +1,55 @@
+{
+  "workflow": {
+    "summary": {
+      "run": {"id": "run-accepted", "workflowId": "wf-1", "progress": "succeeded", "revision": 9},
+      "workflow": {"id": "wf-1", "name": "unit", "taskIds": ["t-implement", "t-review"]},
+      "progress": {"total": 2, "succeeded": 2}
+    },
+    "tasks": [
+      {
+        "task": {
+          "id": "t-review", "workflowId": "wf-1", "name": "review", "needs": ["implement"],
+          "dependencyInputs": {"implement": ["implementation"]},
+          "reviewOutput": {"verdictLine": "review.md"},
+          "outputs": [{"name": "review.md"}]
+        },
+        "attempt": {
+          "id": "a-review-1", "workflowRunId": "run-accepted", "taskId": "t-review", "number": 1,
+          "progress": "succeeded", "control": "released", "revision": 4,
+          "reviewVerdict": {"verdict": "accept", "blocking_findings": 0}
+        },
+        "artifacts": [
+          {"metadata": {"id": "art-review-md", "taskId": "t-review", "attemptId": "a-review-1", "kind": "output", "name": "review.md"}}
+        ]
+      },
+      {
+        "task": {
+          "id": "t-implement", "workflowId": "wf-1", "name": "implement",
+          "outputs": [{"name": "implementation", "commit": {}}, {"name": "handoff.md"}],
+          "verification": ["go build ./...", "make test"]
+        },
+        "attempt": {
+          "id": "a-implement-2", "workflowRunId": "run-accepted", "taskId": "t-implement", "number": 2,
+          "progress": "succeeded", "control": "released", "revision": 6
+        },
+        "artifacts": [
+          {"metadata": {"id": "art-old-commit", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "output", "name": "implementation"}},
+          {"metadata": {"id": "art-old-verify", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "verification", "name": "verification/000.json"}},
+          {"metadata": {"id": "art-commit", "taskId": "t-implement", "attemptId": "a-implement-2", "kind": "output", "name": "implementation"}},
+          {"metadata": {"id": "art-verify-0", "taskId": "t-implement", "attemptId": "a-implement-2", "kind": "verification", "name": "verification/000.json"}},
+          {"metadata": {"id": "art-verify-1", "taskId": "t-implement", "attemptId": "a-implement-2", "kind": "verification", "name": "verification/001.json"}}
+        ]
+      }
+    ],
+    "taskWaits": [],
+    "waits": []
+  },
+  "artifacts": {
+    "art-review-md": "VERDICT: ACCEPT\n",
+    "art-old-commit": {"version": "campaign-commit/v1", "workflowRunId": "run-accepted", "taskId": "t-implement", "name": "implementation", "repository": "git@github.com:o/r.git", "base": "0000000000000000000000000000000000000000", "commit": "2222222222222222222222222222222222222222"},
+    "art-old-verify": {"command": "go build ./...", "exitCode": 1, "output": ""},
+    "art-commit": {"version": "campaign-commit/v1", "workflowRunId": "run-accepted", "taskId": "t-implement", "name": "implementation", "repository": "git@github.com:o/r.git", "base": "0000000000000000000000000000000000000000", "commit": "1111111111111111111111111111111111111111"},
+    "art-verify-0": {"command": "go build ./...", "exitCode": 0, "output": ""},
+    "art-verify-1": {"command": "make test", "exitCode": 0, "output": "ok"}
+  }
+}

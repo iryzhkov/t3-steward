@@ -128,6 +128,11 @@ type campaignCLI struct {
 	detail func(context.Context, string) (backlogadmin.WorkflowDetail, error)
 	mutate func(context.Context, backlogadmin.Mutation) (backlogadmin.MutationResponse, error)
 	query  func(context.Context, backlogadmin.Query) (backlogadmin.Response, error)
+
+	// openArtifact reads one retained artifact, which result needs for the
+	// commit records and verification reports it reports on.
+	openArtifact func(context.Context, string) (backlogadmin.ArtifactContent, error)
+
 	// release is the release the coordinator reports for itself, from the same
 	// identity every client already reads. The run form of cancel needs it
 	// because an older coordinator accepts that command and cannot apply it,
@@ -226,6 +231,9 @@ func campaignCLIFor(cfg config.Config) campaignCLI {
 		},
 		detail: func(ctx context.Context, runID string) (backlogadmin.WorkflowDetail, error) {
 			return describeCampaignRunDetail(ctx, cfg, runID)
+		},
+		openArtifact: func(ctx context.Context, id string) (backlogadmin.ArtifactContent, error) {
+			return openTaskResultArtifact(ctx, cfg, id)
 		},
 		mutate: func(ctx context.Context, mutation backlogadmin.Mutation) (backlogadmin.MutationResponse, error) {
 			transport, err := newCoordinatorTransport(cfg)
@@ -359,6 +367,8 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		return c.runCommit(ctx, args[1:])
 	case "progress":
 		return c.runProgress(ctx, args[1:])
+	case "result":
+		return c.runResult(ctx, args[1:])
 	case "collect", "uncollected":
 		return c.runCollection(ctx, args)
 	case "validate":
@@ -465,7 +475,7 @@ func (c campaignCLI) explainNamesATask(ctx context.Context, args []string) error
 
 // campaignCommands are the subcommands run dispatches, in the order a
 // did-you-mean suggestion prefers them.
-var campaignCommands = []string{"validate", "plan", "compile", "check", "submit", "list", "progress", "show", "status", "explain", "graph", "cancel", "fix", "rerun", "supervision", "recovery", "commit", "help"}
+var campaignCommands = []string{"validate", "plan", "compile", "check", "submit", "list", "progress", "result", "show", "status", "explain", "graph", "cancel", "fix", "rerun", "supervision", "recovery", "commit", "help"}
 
 // nearestCampaignCommand returns the campaign subcommand within two edits of
 // name, or "" when none is that close.

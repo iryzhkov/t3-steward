@@ -146,6 +146,24 @@ func campaignHelpPages() []helpPage {
 			Notes:    "Without run IDs, lists open runs and runs terminal in the last 24 hours. Explicit IDs bypass that default window. No result bodies or state writes. Text rows are at most 120 terminal columns; non-ASCII values are escaped. An older coordinator is refused; upgrade it.",
 			Parsers:  []parserSite{{Func: "parseProgressArgs"}},
 		},
+		{
+			Path:    "campaign result",
+			Purpose: "one short block: run state, one line per task and whether review ACCEPT and verification passed on the same commit.",
+			Usage:   []string{"t3-steward campaign result <run> [--json] [--wait [--timeout D]]"},
+			Flags:   append([]helpFlag{jsonFlag("the versioned result document")}, blockingWaitFlags()...),
+			Exits: append(coordinatorExits(),
+				helpExit{2, "the run failed or was cancelled; the result is still printed"},
+				helpExit{130, "wait interrupted"}),
+			JSONKeys: []string{"schemaVersion", "run", "state", "terminal", "tasks", "acceptance"},
+			JSONNote: "schemaVersion is \"t3-steward.campaign-result/v1\". Each task has task, taskId, attemptId, state, failureClass, failure, verdict, reviewGate, commits, verification and reviewed; acceptance has accepted, commit, reviewTask, verifiedTask and reason. See docs/campaign-result.md.",
+			Notes: "Read-only. Each task line gives its state, the failure class and failure, the review verdict recorded for its latest attempt (and the commits that verdict is about), the review gate, the declared commit and the verification result. " +
+				"The acceptance line is yes only when a recorded ACCEPT and the recorded passing verification name one and the same commit: a review task's ACCEPT is about the commit outputs it consumed, whose producing attempt must have succeeded with every declared verification command reported at exit 0 (and a declared gate passed); a review-declared task's gate passed as accepted-head binds its reviewed head to its declared commit and its own verification. " +
+				"It is never inferred from exit codes or task success alone, and a recorded CHANGES_REQUESTED on the same commit makes it no. " +
+				"The exit code is the run's: 0 succeeded, 2 failed or cancelled, 1 not terminal yet; acceptance is in the output, not the exit code. " +
+				"--wait polls until the run is terminal, backing off from 100ms to 10s; --timeout D bounds it, prints the last state and exits 1. Interrupting never cancels work; reattach with campaign result <run> --wait. " +
+				"\"campaign show\" is the full run document and \"task result\" collects a task's files; this verb is the decision summary of both.",
+			Parsers: []parserSite{{Func: "runResult"}, {Func: "Parse"}},
+		},
 		campaignAliasPage("campaign status", "alias of campaign show: one run with its tasks and supervision.",
 			"t3-steward campaign status <run> [--json]", "backlog show"),
 		func() helpPage {
