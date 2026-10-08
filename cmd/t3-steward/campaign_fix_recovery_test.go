@@ -105,7 +105,7 @@ func TestCampaignFixRefusesCarriedAttemptDrift(t *testing.T) {
 	oldCommit := strings.Repeat("c", 40)
 	cli.open = func(ctx context.Context, id string) (backlogadmin.ArtifactContent, error) {
 		if id == "old-commit" || id == "carried-commit" {
-			raw, e := json.Marshal(backlog.CommitProvenance{Version: backlog.CampaignCommitRecordVersion, WorkflowRunID: "run", TaskID: "p", Name: "implementation", Repository: "project", Base: strings.Repeat("a", 40), Commit: oldCommit, Ref: "refs/campaign/test"})
+			raw, e := json.Marshal(backlog.CommitProvenance{Version: backlog.CampaignCommitRecordVersion, WorkflowRunID: "run", TaskID: "p", Name: "implementation", Repository: "project", Base: strings.Repeat("a", 40), Commit: oldCommit, Ref: backlog.CampaignRef("run", "p", "implementation")})
 			if e != nil {
 				t.Fatal(e)
 			}

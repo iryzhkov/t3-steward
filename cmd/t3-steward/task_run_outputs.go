@@ -43,7 +43,7 @@ func printedOutputName(name string) string {
 }
 
 // missingDeclaredOutputs names the files a task declared and did not leave
-// behind, given the output artifacts collected for it. A task that has not
+// behind, given only the selected attempt's collected output artifacts. A task that has not
 // ended may still write them and a skipped one never ran, so neither is
 // missing anything. A declared commit is not a file and is not checked here.
 // Names are compared after path.Clean, because the manifest accepts

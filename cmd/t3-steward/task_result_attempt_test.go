@@ -37,6 +37,28 @@ func TestTaskResultOfARetriedTaskOmitsThePreviousAttemptsResults(t *testing.T) {
 	}
 }
 
+// An earlier attempt's declared output cannot satisfy the selected attempt's
+// completeness check, and collection leaves the durable artifact record intact.
+func TestTaskResultReportsDeclaredOutputMissingFromSelectedAttempt(t *testing.T) {
+	f := retryTaskResultFixture(t)
+	f.detail.Tasks[0].Task.Outputs = []domain.ArtifactDeclaration{{Name: "reports/report.md"}}
+	artifacts := len(f.detail.Artifacts)
+	if err := f.run("run-1/task", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	got := f.document(t).Tasks[0]
+	if len(got.Files) != 0 || len(got.MissingOutputs) != 1 || got.MissingOutputs[0] != "reports/report.md" {
+		t.Fatalf("selected attempt result = %#v; want no earlier files and missing declared report", got)
+	}
+	if len(f.detail.Artifacts) != artifacts || f.content["output-report"] != "report" {
+		t.Fatal("collection changed the earlier attempt's durable artifact record")
+	}
+	base := filepath.Join(f.resultsDir(), "run-1", "task")
+	if _, err := os.Stat(filepath.Join(base, "reports", "report.md")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("earlier attempt's report was collected: %v", err)
+	}
+}
+
 // When both attempts wrote an output of the same name, the selected attempt's
 // is the one collected even though the earlier attempt's artifact is listed
 // after it, and an output only the earlier attempt wrote is not collected.
