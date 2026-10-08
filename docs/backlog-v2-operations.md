@@ -334,6 +334,8 @@ after the record has been pruned is refused by the rerun itself, which reads the
 artifact before it creates anything, rather than failing hours later in
 preparation.
 
+See [Path-safe coordinator identities](safe-identities.md) for ID derivation and compatibility with existing records.
+
 On every coordinator boundary, after the projection has advanced the sinks, the
 refs of every run whose provenance records retention has removed are released
 together. A run whose sink is not yet terminal is never released, which covers
@@ -962,8 +964,19 @@ outside the exact canary set; high-confidence token patterns still apply.
 
 High-confidence patterns cover GitHub tokens, Anthropic and OpenAI keys, AWS AKIA
 access IDs, labeled Cloudflare API tokens, PEM private-key headers and age secret
-keys. The default policy blocks patterns in declared commits and bundles and warns
-for outputs, archives and final messages. Configure the worker runtime with:
+keys. The prefix patterns (GitHub, Anthropic, OpenAI, AWS and age) match only at a
+left boundary: at the start of the scanned object or text, or after a byte that is
+not an ASCII letter, digit, underscore or hyphen. A percent escape such as `%3D`
+or a backslash escape `\n`, `\t` or `\r` right before the prefix also counts, so a
+key in an encoded query string or a JSON string is still found. A prefix inside a
+longer identifier is therefore not a finding: a Steward task id (the word task, a
+hyphen and 32 hex digits) no longer reads as an OpenAI key, and neither do words
+such as disk or risk followed by a hyphen and a long identifier. The reported byte
+offset and fingerprint are those of the token itself. The Cloudflare pattern is
+anchored on its label and the private-key pattern on its PEM header, so neither
+needs the boundary. The default policy blocks patterns in declared commits and
+bundles and warns for outputs, archives and final messages. Configure the worker
+runtime with:
 
 ```yaml
 backlog_v2:
@@ -1571,9 +1584,22 @@ UTF-8; null typed fields and duplicate object members are rejected. The line for
 exactly the first line; the body is never interpreted. Case is ignored:
 ACCEPT, ACCEPTED and APPROVE normalize to `accept`; CHANGES_REQUESTED,
 CHANGES REQUESTED, REQUEST_CHANGES and REJECT normalize to `changes-requested`
-(the canonical hyphenated form is also accepted). The verdict output is limited
-to 64 KiB. Missing, malformed, oversized or unknown verdicts fail verification
-with a `review_output verification failed` reason.
+(the canonical hyphenated form is also accepted). The line may also carry one
+leading `VERDICT:` label, in any case and followed by optional spaces or tabs,
+so `VERDICT: ACCEPT` and `VERDICT: CHANGES_REQUESTED` are accepted; anything
+else on the line, Markdown emphasis, a repeated label or a label without the
+colon is refused. The JSON `verdict` field takes the bare word only. The
+verdict output is limited to 64 KiB. Missing, malformed, oversized or unknown
+verdicts fail verification with a `review_output verification failed` reason.
+
+Only the coordinator parses verdicts, so worker versions do not matter. A
+coordinator before this change (rc.116 and rc.117) refuses the `VERDICT:`
+label, so a review that writes it fails there; `campaign compile` declares
+`review_output: {verdict_line: review.md}` on its review task and its prompt
+asks for the labelled line, so compiled workflows need a coordinator with this
+change, and a coordinator older than rc.116 refuses them at submission as an
+unknown field. Upgrade the coordinator first. Workflows compiled earlier
+declare no `review_output` and behave as before.
 
 A review that requests changes still succeeds as execution: it completed its
 review. This declaration does not add an acceptance gate or change dependency

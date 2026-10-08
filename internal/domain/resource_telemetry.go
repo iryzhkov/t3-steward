@@ -15,9 +15,13 @@ type WorkerTelemetry struct {
 	Load5             *float64  `json:"load_5,omitempty"`
 	MemoryAvailableMB *int64    `json:"memory_available_mb,omitempty"`
 	SwapUsedMB        *int64    `json:"swap_used_mb,omitempty"`
-	WorkspaceFreeMB   *int64    `json:"workspace_free_mb,omitempty"`
-	TempFreeMB        *int64    `json:"temp_free_mb,omitempty"`
-	RunningAttempts   *int      `json:"running_attempts,omitempty"`
+	// ZramSwapUsedMB is the part of SwapUsedMB held on zram devices, which is
+	// compressed memory rather than paging to disk. It is reported only to a
+	// coordinator that asks for it; nil means the split is unknown.
+	ZramSwapUsedMB  *int64 `json:"zram_swap_used_mb,omitempty"`
+	WorkspaceFreeMB *int64 `json:"workspace_free_mb,omitempty"`
+	TempFreeMB      *int64 `json:"temp_free_mb,omitempty"`
+	RunningAttempts *int   `json:"running_attempts,omitempty"`
 }
 
 // Clone makes decision evidence and planning adjustments independent of input.
@@ -31,6 +35,7 @@ func (v *WorkerTelemetry) Clone() *WorkerTelemetry {
 	c.Load5 = copyMeasurement(v.Load5)
 	c.MemoryAvailableMB = copyMeasurement(v.MemoryAvailableMB)
 	c.SwapUsedMB = copyMeasurement(v.SwapUsedMB)
+	c.ZramSwapUsedMB = copyMeasurement(v.ZramSwapUsedMB)
 	c.WorkspaceFreeMB = copyMeasurement(v.WorkspaceFreeMB)
 	c.TempFreeMB = copyMeasurement(v.TempFreeMB)
 	c.RunningAttempts = copyMeasurement(v.RunningAttempts)
@@ -58,12 +63,20 @@ type ResourcePlacementPolicy struct {
 	UnsizedTaskCPUUnits  float64
 	UnsizedTaskMemoryMB  int
 	UnsizedTaskScratchMB int
+	// BuildMaxLoadPerCPU is the soft ceiling on new build-class work: a
+	// worker whose observed load per cpu is above it takes no new task that
+	// needs two or more cpu units. Zero disables the ceiling.
+	BuildMaxLoadPerCPU float64
+	// SwapIgnoreZram counts only disk swap against MaxSwapUsedMB when the
+	// worker reports how much of its swap is on zram.
+	SwapIgnoreZram bool
 }
 
 func DefaultResourcePlacementPolicy() ResourcePlacementPolicy {
 	return ResourcePlacementPolicy{
 		TelemetryMaxAge: 2 * time.Minute, MemoryReserveMB: 1024, DiskReserveMB: 2048, MaxSwapUsedMB: 4096, CPUWeight: 1, MemoryWeight: 1,
 		UnsizedTaskCPUUnits: 1, UnsizedTaskMemoryMB: 1024,
+		BuildMaxLoadPerCPU: 1.5, SwapIgnoreZram: true,
 	}
 }
 
@@ -86,6 +99,9 @@ func (p ResourcePlacementPolicy) Validate() error {
 	}
 	if math.IsNaN(p.UnsizedTaskCPUUnits) || math.IsInf(p.UnsizedTaskCPUUnits, 0) || p.UnsizedTaskCPUUnits < 0 || p.UnsizedTaskMemoryMB < 0 || p.UnsizedTaskScratchMB < 0 {
 		return fmt.Errorf("resource placement unsized task needs must be finite and nonnegative")
+	}
+	if math.IsNaN(p.BuildMaxLoadPerCPU) || math.IsInf(p.BuildMaxLoadPerCPU, 0) || p.BuildMaxLoadPerCPU < 0 {
+		return fmt.Errorf("resource placement build_max_load_per_cpu must be finite and nonnegative")
 	}
 	return nil
 }

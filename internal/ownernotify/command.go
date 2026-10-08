@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/procgroup"
 )
 
 // CommandSinkName is the command sink's identity in the outbox.
@@ -101,17 +103,15 @@ func (c *Command) Deliver(ctx context.Context, notification Notification) error 
 	if err != nil {
 		return &DeliveryError{Reason: "encode command payload: " + err.Error(), Permanent: true}
 	}
-	command := exec.CommandContext(ctx, c.argv[0], c.argv[1:]...)
+	// A program that forks a child holding stderr open would otherwise keep
+	// Wait blocked after the context killed the program itself.
+	command := procgroup.CommandContext(ctx, time.Second, c.argv[0], c.argv[1:]...)
 	command.Stdin = bytes.NewReader(payload)
 	// A non-nil empty slice, not nil: nil would inherit everything.
 	command.Env = append([]string{}, c.environment()...)
-	isolateProcessGroup(command)
 	var stderr limitedBuffer
 	stderr.limit = 512
 	command.Stderr = &stderr
-	// A program that forks a child holding stderr open would otherwise keep
-	// Wait blocked after the context killed the program itself.
-	command.WaitDelay = time.Second
 	if err := command.Run(); err != nil {
 		reason := "command failed: " + err.Error()
 		var exitErr *exec.ExitError

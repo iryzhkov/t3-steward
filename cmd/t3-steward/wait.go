@@ -297,6 +297,7 @@ func cmdWaitList(ctx context.Context, cfg config.Config, store *sqlite.Store, ar
 			return store.ListWaits(ctx, thread)
 		},
 		coordinator: coordinatorWaitSource(cfg),
+		summary:     recordedNodeSummary(store),
 	}
 	return runWaitList(ctx, sources, options, out)
 }

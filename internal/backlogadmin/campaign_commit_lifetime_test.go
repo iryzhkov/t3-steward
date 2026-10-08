@@ -195,7 +195,7 @@ func TestARerunAuthoredAfterSettlementStillResolvesTheCarriedCommit(t *testing.T
 		}
 	}
 	if len(skipped) != 1 || skipped[0].WorkflowRunID != "run" ||
-		!strings.Contains(skipped[0].Reason, "rerun:rerun-1") {
+		!strings.Contains(skipped[0].Reason, "rerun:"+result.Run.ID) {
 		t.Fatalf("skipped = %+v, want the pinned source named with its holder", skipped)
 	}
 	retained, releasable = campaign.lifetime(t)

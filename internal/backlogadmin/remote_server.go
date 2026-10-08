@@ -284,7 +284,7 @@ func mutatingOperation(operation string) bool {
 // to a submission; a read that carries no effect to deduplicate must not spend
 // it.
 //
-// Only the two list actions are reclassified. Everything else this operation
+// Only the list actions are reclassified. Everything else this operation
 // word carries, including the task-wake transitions and expiries the runner also
 // sends, keeps its replay protection.
 func mutatingRequest(operation string, request localRequest) bool {
@@ -296,7 +296,7 @@ func mutatingRequest(operation string, request localRequest) bool {
 	}
 	if operation == localOperationNodeWait && request.NodeWait != nil {
 		switch request.NodeWait.Action {
-		case "list", "list-task", AskRelayWorkAction:
+		case "list", "list-task", AskRelayWorkAction, RunCollectionListAction:
 			return false
 		}
 	}

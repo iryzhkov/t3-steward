@@ -25,6 +25,13 @@ Outputs:
   and why, verification commands with their exit codes, limitations and open
   risks.
 
+While iterating, run the tests of the packages you changed and of their
+importers rather than the whole suite. In a repository with a `test-affected`
+make target, such as t3-steward, that is `make test-affected BASE=d2e827681336e76413fdab34392f029a3e131cf4`;
+where Huyang is your editing interface, it is Huyang `verify_run` with
+`test_scope=affected`. This does not replace the verification below, which
+still runs once.
+
 Verification: these commands run in the workspace after you stop, and every
 one must exit 0:
 - `go test ./...`

@@ -17,7 +17,8 @@ import (
 // time and the reason, and explain deliberate historical marker cleanup.
 func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,10 +28,9 @@ func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	query := Query{Version: Version, Kind: QueryQuarantine, Principal: Principal{ID: "operator"}}
-	// The digests are the content hashes the intake source records, so they are
-	// real SHA-256 values here too: the store refuses anything else.
+	// The digest is the content hash the retired intake source recorded, so it
+	// is a real SHA-256 value here too: the store refuses anything else.
 	const first = "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed"
-	const second = "3fc4ccfe745870e2c0d99f71f30ff0656c8dedd41cc1d7d3d376b0dbe685e2f3"
 
 	empty, err := service.Query(ctx, query)
 	if err != nil || len(empty.Quarantine) != 0 {
@@ -39,7 +39,7 @@ func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 
 	at := time.Date(2026, 9, 14, 8, 30, 0, 0, time.UTC)
 	reason := "legacy submission references an unmapped project"
-	if _, _, err := store.QuarantineSubmission(ctx, "legacy-abc", first, reason, at); err != nil {
+	if err := sqlitetest.SeedHistoricQuarantine(path, "legacy-abc", first, reason, at); err != nil {
 		t.Fatal(err)
 	}
 	response, err := service.Query(ctx, query)
@@ -59,31 +59,14 @@ func TestQuarantineQueryShowsWhatIntakeRefused(t *testing.T) {
 		strings.Contains(entry.Retry, "explicitly enabled") || strings.Contains(entry.Retry, "change the file") {
 		t.Fatalf("retry advice = %q", entry.Retry)
 	}
-
-	// Changed content is a new observation: the marker follows the digest.
-	if _, _, err := store.QuarantineSubmission(ctx, "legacy-abc", second, reason, at.Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	changed, err := service.Query(ctx, query)
-	if err != nil || len(changed.Quarantine) != 1 || changed.Quarantine[0].Digest != second {
-		t.Fatalf("quarantine after a digest change = %+v, %v", changed.Quarantine, err)
-	}
-
-	// The retained storage helper clears a marker without retrying content.
-	if err := store.ReleaseSubmissionQuarantine(ctx, "legacy-abc"); err != nil {
-		t.Fatal(err)
-	}
-	released, err := service.Query(ctx, query)
-	if err != nil || len(released.Quarantine) != 0 {
-		t.Fatalf("quarantine after release = %+v, %v", released.Quarantine, err)
-	}
 }
 
 // Retained historical markers require deliberate, authenticated cleanup.
 // The release is audited with the operator's reason and is safe to repeat.
 func TestQuarantineReleaseClearsAMarkerAndIsSafeToRepeat(t *testing.T) {
 	ctx := context.Background()
-	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +79,7 @@ func TestQuarantineReleaseClearsAMarkerAndIsSafeToRepeat(t *testing.T) {
 	service.SetClock(func() time.Time { return at.Add(time.Hour) })
 	const digest = "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed"
 	const reason = "legacy submission references an unmapped project"
-	if _, _, err := store.QuarantineSubmission(ctx, "legacy-abc", digest, reason, at); err != nil {
+	if err := sqlitetest.SeedHistoricQuarantine(path, "legacy-abc", digest, reason, at); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,7 +162,8 @@ func TestQuarantineQueryIsAReadWithoutATarget(t *testing.T) {
 	if !validQuery(Query{Kind: QueryQuarantine}) {
 		t.Fatal("a quarantine query needs no target and must be valid without one")
 	}
-	store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := sqlitetest.OpenMigrated(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +175,7 @@ func TestQuarantineQueryIsAReadWithoutATarget(t *testing.T) {
 	ctx := context.Background()
 	at := time.Date(2026, 9, 14, 8, 30, 0, 0, time.UTC)
 	const digest = "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed"
-	if _, _, err := store.QuarantineSubmission(ctx, "legacy-abc", digest, "refused", at); err != nil {
+	if err := sqlitetest.SeedHistoricQuarantine(path, "legacy-abc", digest, "refused", at); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := service.Query(ctx, Query{
@@ -199,7 +183,7 @@ func TestQuarantineQueryIsAReadWithoutATarget(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, found, err := store.LoadSubmissionQuarantine(ctx, "legacy-abc"); err != nil || !found {
-		t.Fatalf("reading the view released the marker: found=%t err=%v", found, err)
+	if records, err := store.ListQuarantinedSubmissions(ctx); err != nil || len(records) != 1 || records[0].Key != "quarantine:legacy-abc" {
+		t.Fatalf("reading the view released the marker: records=%+v err=%v", records, err)
 	}
 }

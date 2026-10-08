@@ -23,7 +23,8 @@ Outputs:
   `VERDICT: CHANGES_REQUESTED`. Then the reviewed commit, the findings (each
   with a severity, file:line, a concrete failure scenario and a reproducing
   command), the criteria checked with their evidence, and the commands you
-  ran with their exit codes.
+  ran with their exit codes. The coordinator records that first line as the
+  review's verdict, and a first line in any other form fails this task.
 - `continuation.md`: kept current as you work.
 
 Verification: {{if .Verify}}rerun these on the implementation commit:

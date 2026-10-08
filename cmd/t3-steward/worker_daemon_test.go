@@ -67,3 +67,16 @@ func TestPersistentWorkerOptionsForwardTheHostsUsage(t *testing.T) {
 		t.Fatalf("a missing watchdog database produced usage source %#v", options.Usage)
 	}
 }
+
+// The persistent worker every host runs once ignored the result secret scan
+// block of its configuration: a warn policy set on a host had no effect, and
+// bundles were still refused. The options the daemon serves with must carry
+// the configured block.
+func TestPersistentWorkerOptionsCarryTheResultSecretScan(t *testing.T) {
+	cfg := config.Default()
+	cfg.BacklogV2.ResultSecretScan = config.V2ResultSecretScan{MaxObjectBytes: 32 << 20, PatternPolicy: "warn"}
+	options := persistentWorkerOptions(context.Background(), cfg, slog.New(slog.DiscardHandler), nil, t.TempDir(), "digest", workerruntime.ProtocolResolver{}, nil, nil)
+	if options.Settings.ResultSecretScan != cfg.BacklogV2.ResultSecretScan {
+		t.Fatalf("persistent worker serves result secret scan %+v, configured %+v", options.Settings.ResultSecretScan, cfg.BacklogV2.ResultSecretScan)
+	}
+}

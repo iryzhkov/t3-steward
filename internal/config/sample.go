@@ -159,16 +159,12 @@ report:
 backlog:
   # Markdown intake is retired. enabled accepts only false/default; true fails.
   # Use t3-steward task run or campaign submit. Existing files are untouched.
-  # Legacy path/timing/preamble/forwarding fields remain parseable metadata;
-  # forecast fields below still feed modern quota planning.
+  # Older files may still set dir, quiet_for, preamble and default_host; they
+  # decode but do nothing. Forecast fields below still feed quota planning.
   enabled: false
-  dir: ""                       # retained metadata; never scanned or created
-  quiet_for: 30m
   long_window_cap_percent: 80   # weekly windows are never pushed past this
   history_days: 56
-  # default_host is ignored compatibility metadata; forwarding is retired.
-  # host_name remains the archive identity (default: the OS host name).
-  default_host: ""
+  # host_name is the archive identity (default: the OS host name).
   host_name: ""
   # Forecast of your own (interactive) usage, used to decide how much of a
   # window backlog tasks may spend. See "t3-steward forecast".

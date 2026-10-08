@@ -8,13 +8,13 @@ import (
 
 // extendedQueryVersions are the versions that opt a v1 read of kind into the
 // fields a strict older client would reject, newest first. A coordinator
-// older than this release refuses the first, an rc.116 one the first two, and
+// older than this release refuses the first, an rc.116 one the first three, and
 // one older than rc.116 every one of them.
 func extendedQueryVersions(kind QueryKind) []string {
 	if kind == QueryStatus {
 		return []string{StatusIntakeVersion}
 	}
-	return []string{CurrentReadVersion, RC117ReadVersion, ExtendedReadVersion}
+	return []string{CurrentReadVersion, RC118ReadVersion, RC117ReadVersion, ExtendedReadVersion}
 }
 
 // queryExtended negotiates a v1 read. Each retry is bounded, read-only, and

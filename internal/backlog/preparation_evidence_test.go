@@ -3,13 +3,10 @@ package backlog
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // Every preparation attempt of one attempt ID keeps its own evidence file. The
@@ -98,31 +95,5 @@ func assertRetainedPreparationLog(t *testing.T, err error, parent, attemptID str
 	}
 	if _, statErr := os.Stat(want); statErr != nil {
 		t.Fatalf("retained log %d: %v", ordinal, statErr)
-	}
-}
-
-func TestWorkflowPreparationRetriesKeepEveryAttemptsEvidence(t *testing.T) {
-	runsRoot := t.TempDir()
-	parent := filepath.Join(runsRoot, "run-1")
-	if err := os.MkdirAll(parent, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	source := filepath.Join(t.TempDir(), "preparation.log")
-	if err := os.WriteFile(source, []byte("staged evidence\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager := &WorkflowWorkspaceManager{Preparer: WorkspacePreparer{RunsRoot: runsRoot}}
-	request := WorkspacePreparation{
-		WorkflowRunID: "run-1",
-		Task:          workspaceTask("task-id", "task"),
-		Attempt:       domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-id"},
-	}
-	for ordinal := 1; ordinal <= 3; ordinal++ {
-		cause := &PreparationError{Err: fmt.Errorf("clone task workspace %d", ordinal), LogPath: source}
-		err := manager.retainInitialFailure(request, cause)
-		assertRetainedPreparationLog(t, err, parent, "attempt-1", ordinal)
-		if !strings.Contains(err.Error(), fmt.Sprintf("clone task workspace %d", ordinal)) {
-			t.Fatalf("error = %v, want the causal failure of attempt %d", err, ordinal)
-		}
 	}
 }

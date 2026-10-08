@@ -10,6 +10,7 @@ cd t3-steward
 make check-fast  # build, vet, go test -short, lint, short race on changed packages
 make check-review # same checks, full-size race on changed packages once
 make check-review-no-sqlite-checkptr # opt-in: faster, no checkptr in modernc.org
+make test-affected BASE=<commit> # race tests of changed packages and their importers
 make test        # go test, go test -race, go vet: the complete gate
 make lint        # staticcheck and gofmt
 make build       # bin/t3-steward
@@ -42,6 +43,19 @@ checkptr off for `modernc.org` packages alone, which roughly halves the CPU cost
 of each SQL statement under the race detector; checkptr still covers every other
 package. They lose that one check, so they never replace `make check-review`
 before review, and CI keeps checkptr everywhere.
+
+`make test-affected BASE=<commit>` is the edit-test loop: it runs, under the
+race detector with checkptr kept and without `-short`, the tests of the
+packages changed against `BASE` and of every package whose tests import one of
+them, directly, transitively or only from a `_test.go` file. Uncommitted and
+untracked files count. A changed file that is not Go, such as an embedded
+template or a testdata golden, selects the package directory that encloses it,
+a file under no package (docs, the Makefile) selects nothing, and a change to
+`go.mod` or `go.sum` selects every package. `BASE` is required, is read only
+from the make command line, and never falls back to the whole module; an
+unknown commit is refused. `TEST_AFFECTED_LIST=1` prints the selection without
+running it. It does not build, vet or lint, so it replaces neither
+`make check-review` nor `make test` as the gate, which still runs once.
 
 `make qualification` runs the nested-process qualification gates
 (`TestBacklogV2ProductionQualification`, `TestCoordinatorLocalMultiProcessWorkflow`),

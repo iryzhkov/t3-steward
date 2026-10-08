@@ -6,11 +6,8 @@ import (
 	"testing"
 )
 
-// Campaign and schedule role resolution picks in policy order, without the
-// quota ranking task run and review use, until M17-2b. An author must be able
-// to read that, and that an exhausted first candidate is refused at admission
-// rather than skipped, from the help and from docs/route-policy.md.
-func TestRoleHelpStatesPolicyOrderWithoutRankingDeferral(t *testing.T) {
+// Every author-facing surface describes quota ranking and its admission fence.
+func TestRoleHelpStatesRankingAndAdmission(t *testing.T) {
 	docs, err := os.ReadFile("../../docs/route-policy.md")
 	if err != nil {
 		t.Fatal(err)
@@ -18,10 +15,16 @@ func TestRoleHelpStatesPolicyOrderWithoutRankingDeferral(t *testing.T) {
 	texts := map[string]string{"AuthoringHelp": AuthoringHelp, "RoutesHelp": RoutesHelp, "docs/route-policy.md": string(docs)}
 	for name, text := range texts {
 		text = strings.Join(strings.Fields(text), " ")
+		if strings.Contains(text, "Until M17-2b") {
+			t.Errorf("%s retains obsolete deferral", name)
+		}
 		for _, want := range []string{
-			"Until M17-2b, campaign and schedule role resolution uses policy order",
-			"not the quota ranking",
-			"exhausted or gated, that route is still selected, and quota admission refuses the submission rather than falling through to a later candidate",
+			"roles use",
+			"route-ranking/v1",
+			"policy, catalog and worker eligibility checks",
+			"candidate bands, pools and reasons",
+			"quota atomically",
+			"Explicit pins stay literal",
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s missing %q", name, want)

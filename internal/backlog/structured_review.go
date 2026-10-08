@@ -9,6 +9,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -32,6 +33,10 @@ func validateReviewOutput(r *domain.ReviewOutput, outputs []string) error {
 	return fmt.Errorf("%q must be a declared output", r.Path())
 }
 
+// reviewVerdictLabel may precede the verdict word on a verdict line, as in
+// "VERDICT: ACCEPT", the form review prompts ask for.
+const reviewVerdictLabel = "VERDICT:"
+
 // ParseReviewVerdict accepts a JSON object or exactly the first line of a
 // review. It never infers a verdict from body text.
 func ParseReviewVerdict(declaration domain.ReviewOutput, raw []byte) (*domain.ReviewVerdict, error) {
@@ -46,6 +51,15 @@ func ParseReviewVerdict(declaration domain.ReviewOutput, raw []byte) (*domain.Re
 	} else {
 		line, _, _ := strings.Cut(string(raw), "\n")
 		out.Verdict = strings.TrimSpace(line)
+		// One leading label, in any case, then optional spaces or tabs; the
+		// rest obeys the same word rule as a bare verdict. Other whitespace
+		// after the label is refused rather than trimmed.
+		if len(out.Verdict) >= len(reviewVerdictLabel) && strings.EqualFold(out.Verdict[:len(reviewVerdictLabel)], reviewVerdictLabel) {
+			out.Verdict = strings.TrimLeft(out.Verdict[len(reviewVerdictLabel):], " \t")
+			if strings.TrimLeftFunc(out.Verdict, unicode.IsSpace) != out.Verdict {
+				out.Verdict = ""
+			}
+		}
 	}
 	normalized := strings.ToUpper(strings.TrimSpace(out.Verdict))
 	normalized = strings.NewReplacer("_", " ", "-", " ").Replace(normalized)
@@ -55,6 +69,9 @@ func ParseReviewVerdict(declaration domain.ReviewOutput, raw []byte) (*domain.Re
 	case "CHANGES REQUESTED", "REQUEST CHANGES", "REJECT":
 		out.Verdict = "changes-requested"
 	default:
+		if declaration.Verdict == "" {
+			return nil, errors.New("review verdict line must be ACCEPT/ACCEPTED/APPROVE or CHANGES_REQUESTED/CHANGES REQUESTED/REQUEST_CHANGES/REJECT, alone or after VERDICT: as in VERDICT: ACCEPT")
+		}
 		return nil, errors.New("review verdict must be ACCEPT/ACCEPTED/APPROVE or CHANGES_REQUESTED/CHANGES REQUESTED/REQUEST_CHANGES/REJECT")
 	}
 	if out.BlockingFindings < 0 {

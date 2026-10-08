@@ -41,9 +41,11 @@ type CredentialResolver interface {
 type RoleWorkerEligible func(ViabilityTask, string, bool) bool
 
 type ViabilitySettings struct {
-	ResolveRoles   func(context.Context, []ViabilityTask, []Project, RoleWorkerEligible) (map[string]domain.RoleSelection, map[string]ViabilityReason)
-	ResourcePolicy domain.ResourcePlacementPolicy
-	ReviewRoutes   map[string]config.ReviewRouteMetadata
+	// ResolveRankedRoles receives a request-local snapshot from the same view as admission.
+	ResolveRankedRoles func(context.Context, []ViabilityTask, []Project, RoleWorkerEligible, RoleQuotaSnapshot) (map[string]domain.RoleSelection, map[string]ViabilityReason)
+	ResolveRoles       func(context.Context, []ViabilityTask, []Project, RoleWorkerEligible) (map[string]domain.RoleSelection, map[string]ViabilityReason)
+	ResourcePolicy     domain.ResourcePlacementPolicy
+	ReviewRoutes       map[string]config.ReviewRouteMetadata
 	// Projects and SetupProfiles are the catalog entries this coordinator is
 	// configured with. They are the definitions rather than a constructed
 	// ProjectCatalog on purpose: the catalog constructor refuses to hold a
@@ -205,12 +207,14 @@ func (v view) viability(ctx context.Context, settings ViabilitySettings, request
 		hasRoles = hasRoles || task.Role != ""
 	}
 	if hasRoles {
-		if settings.ResolveRoles == nil {
+		if settings.ResolveRoles == nil && settings.ResolveRankedRoles == nil {
 			for _, task := range request.Tasks {
 				if task.Role != "" {
 					failures[task.Name] = newViabilityReason("role-unsupported", "this coordinator does not support role:; upgrade the coordinator")
 				}
 			}
+		} else if settings.ResolveRankedRoles != nil {
+			selections, failures = settings.ResolveRankedRoles(ctx, request.Tasks, v.projects(settings, Filter{}), v.roleWorkerEligible(settings, workers), v.roleQuotaSnapshot())
 		} else {
 			selections, failures = settings.ResolveRoles(ctx, request.Tasks, v.projects(settings, Filter{}), v.roleWorkerEligible(settings, workers))
 		}
@@ -761,7 +765,8 @@ func placementReasonCode(exclusion string) string {
 	case backlog.ExclusionCPUClassBelowMinimum, backlog.ExclusionCPUClassUnknown:
 		return ReasonCPUClassImpossible
 	case backlog.ExclusionResourceMemory, backlog.ExclusionResourceSwap,
-		backlog.ExclusionResourceWorkspaceDisk, backlog.ExclusionResourceTempDisk:
+		backlog.ExclusionResourceWorkspaceDisk, backlog.ExclusionResourceTempDisk,
+		backlog.ExclusionResourceCPULoad:
 		return "resource-pressure"
 	case backlog.ExclusionCapacityExhausted:
 		return ReasonWorkerAtCapacity

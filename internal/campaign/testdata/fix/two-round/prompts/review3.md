@@ -1,0 +1,4 @@
+Review review3 against the complete original brief and acceptance criteria.
+Read .t3/inputs/inputs/fix/rules.md first, then the original brief and context. List .t3/dependencies/ and inspect the preceding fix commit, handoff and verification. Check out its exact commit; do not edit or commit source.
+Read the preceding review's verdict.json and review.md. If the fixer was a no-op, carry its preceding accept only after confirming the worker gate result in gate/log.txt; otherwise perform a fresh full review.
+Write continuation.md, review.md and verdict.json. review.md begins exactly VERDICT: ACCEPT or VERDICT: CHANGES_REQUESTED; verdict.json carries the structured verdict, blocking_findings and finding_titles. Reproduce every defect you request changes for with a failing test or command. Report checked criteria and exact verification commands with exit codes.

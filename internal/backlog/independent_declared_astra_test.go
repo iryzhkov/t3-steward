@@ -229,7 +229,10 @@ func TestIndependentDeclaredGraphCustody(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				runID := "run:" + operation + ":independent"
+				runID := domain.CloneRunID("independent")
+				if operation == "rerun" {
+					runID = domain.RerunRunID("independent")
+				}
 				raw, _ := json.Marshal(f.records.Tasks)
 				var tasks []domain.Task
 				if err := json.Unmarshal(raw, &tasks); err != nil {

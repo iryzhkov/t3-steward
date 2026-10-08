@@ -140,7 +140,20 @@ func cmdWorker(g globalFlags, args []string) error {
 		if err != nil {
 			return err
 		}
-		return workerruntime.BridgeWorkerStream(ctx, os.Stdin, os.Stdout, conn, (8<<20)+workerproto.StreamArtifactLimit, 2*time.Minute)
+		// The bridge owns its standard streams and closes them on SIGTERM,
+		// which releases a read or write blocked on them only once they are
+		// interruptible.
+		input, err := workerruntime.InterruptibleFile(os.Stdin.Fd(), "stdin")
+		if err != nil {
+			conn.Close()
+			return err
+		}
+		output, err := workerruntime.InterruptibleFile(os.Stdout.Fd(), "stdout")
+		if err != nil {
+			conn.Close()
+			return err
+		}
+		return workerruntime.BridgeWorkerStream(ctx, input, output, conn, (8<<20)+workerproto.StreamArtifactLimit, 2*time.Minute)
 	case "serve":
 	default:
 		return fmt.Errorf("unknown worker command %q; the commands are %s (try worker --help)", args[0], strings.Join(workerVerbList, ", "))
@@ -253,6 +266,11 @@ func persistentWorkerOptions(
 	usage *sqlite.Store,
 ) workerruntime.WorkerServiceOptions {
 	return workerruntime.WorkerServiceOptions{
+		// The catalog the coordinator publishes supplies every other setting.
+		// The result secret scan is worker-local policy no catalog carries, so
+		// it comes from this host's configuration; without it a warn policy
+		// set here had no effect.
+		Settings:            config.BacklogV2{ResultSecretScan: cfg.BacklogV2.ResultSecretScan},
 		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
 		Usage:               workerUsageSource(usage, logger),
 		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},

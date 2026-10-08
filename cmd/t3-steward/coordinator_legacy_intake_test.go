@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
@@ -36,7 +35,9 @@ func TestRunBacklogV2CoordinatorDefaultIntakeLeavesFilesAndQuarantine(t *testing
 	}
 	defer store.Close()
 	ctx := context.Background()
-	if _, _, err := store.QuarantineSubmission(ctx, backlog.LegacySubmissionKey("legacy"),
+	// The historical key retired intake derived for task "legacy":
+	// "legacy-" and the hex SHA-256 of the task ID.
+	if err := sqlitetest.SeedHistoricQuarantine(cfg.StatePath, "legacy-c49fea7425fa7f8699897a97c159c6690267d9003bb78c53fafa8fc15c325d84",
 		strings.Repeat("a", 64), "retained refusal", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}

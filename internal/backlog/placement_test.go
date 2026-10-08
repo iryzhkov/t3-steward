@@ -229,8 +229,10 @@ func TestMatchWorkersCapacityIsAHardConstraintAndPressureIsNot(t *testing.T) {
 
 	unconfigured := placementWorker("laptop", "internet")
 
+	// A worker that declares no cpu or memory capacity counts a sized demand
+	// as one slot, as it counts unsized work, so it stays eligible.
 	result := mustMatchWorkers(t, task, []domain.WorkerInventory{busy, pressured, unconfigured})
-	if want := []string{"omarchy-pc"}; !reflect.DeepEqual(result.EligibleWorkerIDs, want) {
+	if want := []string{"laptop", "omarchy-pc"}; !reflect.DeepEqual(result.EligibleWorkerIDs, want) {
 		t.Fatalf("eligible workers = %#v, want %#v", result.EligibleWorkerIDs, want)
 	}
 	// Every dimension that refused the task is reported, not only the first:
@@ -238,15 +240,13 @@ func TestMatchWorkersCapacityIsAHardConstraintAndPressureIsNot(t *testing.T) {
 	if got := evaluationCodes(t, result, "homelab"); len(got) != 3 {
 		t.Fatalf("homelab exclusions = %#v, want one per exhausted dimension", got)
 	}
-	for _, workerID := range []string{"homelab", "laptop"} {
-		for _, code := range evaluationCodes(t, result, workerID) {
-			if code != ExclusionCapacityExhausted {
-				t.Fatalf("%s exclusion = %q, want %q", workerID, code, ExclusionCapacityExhausted)
-			}
+	for _, code := range evaluationCodes(t, result, "homelab") {
+		if code != ExclusionCapacityExhausted {
+			t.Fatalf("homelab exclusion = %q, want %q", code, ExclusionCapacityExhausted)
 		}
 	}
-	if got := evaluationCodes(t, result, "laptop"); len(got) != 1 {
-		t.Fatalf("unconfigured worker exclusions = %#v, want one capacity refusal", got)
+	if got := evaluationFor(t, result, "laptop"); len(got.Exclusions) != 0 || len(got.Notes) != 1 {
+		t.Fatalf("unconfigured worker evaluation = %#v, want no exclusion and the one-slot note", got)
 	}
 
 	// A task that declares no demand is never excluded for capacity it did
@@ -373,6 +373,8 @@ func TestSelectWorkerWithoutAnEligibleWorkerStillExplainsItself(t *testing.T) {
 	task.ResourceDemand = domain.ResourceDemand{MinCPUClass: domain.CPUClassHigh, CPUUnits: 64}
 	worker := placementWorker("normandy", "internet")
 	worker.CPUClass = domain.CPUClassLow
+	// The worker declares cpu units, so the 64 it lacks is a capacity refusal.
+	worker.Allocatable = domain.AllocatableCapacity{ExecutorSlots: 4, CPUUnits: 8}
 
 	selection, err := SelectWorker(placementRequest(task), []domain.WorkerInventory{worker})
 	if err != nil {

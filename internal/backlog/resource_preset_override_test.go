@@ -87,8 +87,14 @@ func TestResourcePlacementPresetClassOverrideKeepsBuildNeeds(t *testing.T) {
 			if !ok {
 				t.Fatalf("task %q not ingested", tc.name)
 			}
-			if task.ResourceDemand.CPUUnits != 0 || task.ResourceDemand.MemoryMB != 0 || task.ResourceDemand.ScratchMB != 0 {
-				t.Fatalf("task %s reserves configured capacity: %+v", tc.name, task.ResourceDemand)
+			// A preset task carries the build sizes; build's classes alone
+			// carry none.
+			wantCPU, wantMemory := 4.0, 6000
+			if tc.name == "classes" {
+				wantCPU, wantMemory = 0, 0
+			}
+			if task.ResourceDemand.CPUUnits != wantCPU || task.ResourceDemand.MemoryMB != wantMemory {
+				t.Fatalf("task %s demand = %+v", tc.name, task.ResourceDemand)
 			}
 			worker := resourceWorker("a")
 			worker.Allocatable = domain.AllocatableCapacity{ExecutorSlots: 4}

@@ -59,6 +59,7 @@ Commands:
   policy             Read-only show/validate for route-policy/v1.
   models             Every provider route the fleet can run now, with its quota state.
   triage             Everything waiting for an operator, each with a ready-to-run command.
+  quota              telemetry: the coordinator's recorded quota readings and work, with deltas.
   coordinator        Show which coordinator this host administers (identity); reload it (reload).
   backlog            Inspect and control coordinator workflows; deprecated offline file helpers.
   diagnose <run>     Join graph, task, assignment, worker journal and wait evidence.
@@ -257,7 +258,7 @@ func dispatch(args []string) error {
 			return cmdUIArchive(g, sub)
 		}
 		return cmdArchive(g, sub)
-	case "backlog", "diagnose", "worker", "campaign", "coordinator", "models", "triage":
+	case "backlog", "diagnose", "worker", "campaign", "coordinator", "models", "triage", "quota":
 		// Sub-commands parse their own arguments; only --config and
 		// --dry-run style globals are shared, taken from the environment here.
 		paths, err := config.DefaultPaths()
@@ -288,6 +289,9 @@ func dispatch(args []string) error {
 		}
 		if cmd == "triage" {
 			return cmdTriage(g, sub)
+		}
+		if cmd == "quota" {
+			return cmdQuota(g, sub)
 		}
 		if cmd == "diagnose" {
 			sub = append([]string{"diagnose"}, sub...)
@@ -459,7 +463,7 @@ var dispatchedVerbs = []string{
 // order a did-you-mean suggestion prefers them.
 var topLevelFamilies = []string{
 	"campaign", "task", "review", "policy", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "lease", "models", "triage",
-	"diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
+	"quota", "diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
 }
 
 // unknownCommand refuses a top-level word dispatch does not route, naming the
@@ -828,6 +832,7 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store) 
 	}
 	configureNodeWaitTransport(waits, cfg, logger)
 	waits.NodeSummary = newNodeSummarySource(cfg)
+	waits.NodeSummaryRecord = recordNodeSummary(store)
 	// What this daemon is doing about node wakes, written where a command that
 	// registers one can read it. Without it no command can establish that the
 	// daemon which has to deliver the wake is running at all.

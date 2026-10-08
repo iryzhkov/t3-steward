@@ -46,7 +46,7 @@ func (s *Store) CommitGraphClone(ctx context.Context, c GraphCommit) (domain.Gra
 	if source.Run.GraphRevision != c.Request.ExpectedRevision || !reflect.DeepEqual(source.Run, c.Before) {
 		return result, ErrStaleGraph
 	}
-	run := domain.WorkflowRun{ID: "run:clone:" + c.Request.ID, WorkflowID: source.Run.WorkflowID, GraphRevision: 1, Revision: 1, Progress: domain.ProgressQueued, CreatedAt: c.Now.UTC(), UpdatedAt: c.Now.UTC()}
+	run := domain.WorkflowRun{ID: domain.CloneRunID(c.Request.ID), WorkflowID: source.Run.WorkflowID, GraphRevision: 1, Revision: 1, Progress: domain.ProgressQueued, CreatedAt: c.Now.UTC(), UpdatedAt: c.Now.UTC()}
 	if err = domain.ValidateGraphTasks(run, c.Tasks); err != nil {
 		return result, err
 	}
@@ -89,7 +89,7 @@ func (s *Store) CommitGraphClone(ctx context.Context, c GraphCommit) (domain.Gra
 				return result, errors.New("clone input ownership mismatch")
 			}
 		}
-		a := domain.Attempt{ID: "attempt:" + task.ID + ":1", WorkflowRunID: run.ID, TaskID: task.ID, Number: 1, Revision: 1, Progress: domain.ProgressBlocked, Control: domain.ControlUnassigned, UpdatedAt: c.Now.UTC()}
+		a := domain.Attempt{ID: domain.FirstAttemptID("clone", task.ID), WorkflowRunID: run.ID, TaskID: task.ID, Number: 1, Revision: 1, Progress: domain.ProgressBlocked, Control: domain.ControlUnassigned, UpdatedAt: c.Now.UTC()}
 		if err = upsertJSON(ctx, tx, "clone attempt", a.ID, "INSERT INTO coordinator_attempts(id,workflow_run_id,task_id,number,revision,record) VALUES(?,?,?,?,?,?)", []any{a.ID, run.ID, task.ID, 1, 1}, a); err != nil {
 			return result, err
 		}

@@ -211,7 +211,7 @@ func (s *Store) CommitGraphAmendment(ctx context.Context, c GraphCommit) (domain
 	}
 	for id := range changed {
 		if _, ok := before[id]; !ok {
-			a := domain.Attempt{ID: "attempt:" + id + ":1", WorkflowRunID: run.ID, TaskID: id, Number: 1, Revision: 1, Progress: domain.ProgressBlocked, Control: domain.ControlUnassigned, UpdatedAt: c.Now.UTC()}
+			a := domain.Attempt{ID: domain.FirstAttemptID("graph", id), WorkflowRunID: run.ID, TaskID: id, Number: 1, Revision: 1, Progress: domain.ProgressBlocked, Control: domain.ControlUnassigned, UpdatedAt: c.Now.UTC()}
 			if err = upsertJSON(ctx, tx, "new graph attempt", a.ID, "INSERT INTO coordinator_attempts(id,workflow_run_id,task_id,number,revision,record) VALUES(?,?,?,?,?,?)", []any{a.ID, run.ID, id, 1, 1}, a); err != nil {
 				return result, err
 			}

@@ -338,8 +338,9 @@ func importCoordinatorWorkerResult(ctx context.Context, session coordinatorWorke
 	}
 	if errors.Is(err, backlog.ErrResultImportRejected) {
 		// Retrying cannot help, and leaving it unacknowledged blocks every other
-		// result this worker holds. It is discarded loudly and once; the attempt
-		// itself stays visible as unsettled rather than being quietly completed.
+		// result this worker holds. It is discarded loudly and once; the importer
+		// has already settled the attempt as failed with the reason, so the
+		// failure stays visible rather than the attempt being quietly completed.
 		slog.Error("worker result rejected and discarded", "manifest", upload.Manifest.ID,
 			"worker", upload.Manifest.WorkerID, "reason", err)
 		return report, session.Client.AcknowledgeArtifact(ctx, upload.Manifest.ID)
@@ -656,6 +657,7 @@ func newCoordinatorWorkerSession(
 		}
 		accepted, err := catalogClient.Catalog(ctx, workerruntime.CatalogRequest{Projection: projection, ExpectedRevision: expectedRevision})
 		if err != nil {
+			slog.Warn("worker did not accept the catalog", "worker", workerID, "revision", projection.Revision, "expected", expectedRevision, "error", err)
 			return coordinatorWorkerSession{}, err
 		}
 		if accepted["revision"] != binding.CatalogRevision || accepted["workerId"] != workerID {

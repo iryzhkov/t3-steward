@@ -35,18 +35,34 @@ func permanentCollectionIntent(failure string) bool {
 // failed intent is durable. Quiescence must be proven before the transition.
 // Journal or quiescence failures retain the flight; they never rerun finalization.
 func (r *Runtime) failCollection(id string, record AttemptRecord, flight *collectionFlight, failure *permanentCollectionFailure) error {
+	prefix := permanentCollectionFailurePrefix
+	if failure.secret != nil {
+		prefix = permanentSecretFailurePrefix
+	}
+	claimed, err := r.failFinishedCollection(id, record, flight, prefix+failure.Error()+
+		"; raw outputs, thread archive and capture retained in worker workspace/custody for this assignment; recover using the journal workspace path")
+	if err != nil || !claimed {
+		return err
+	}
+	return fmt.Errorf("collection failed permanently; bounded failure custody pending: %w", failure)
+}
+
+// failFinishedCollection records failure as the outcome of a finished
+// collection that cannot succeed, once quiescence is proven. It reports false
+// when the collection no longer decides the attempt.
+func (r *Runtime) failFinishedCollection(id string, record AttemptRecord, flight *collectionFlight, failure string) (bool, error) {
 	claimed, err := r.collectionClaimed(id, record)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !claimed {
 		releaseCollection(r.collectionFlightKey(record), flight)
-		return nil
+		return false, nil
 	}
 	ctx, cancel := context.WithTimeout(r.config.Lifetime, r.finalizationTimeout(record))
 	defer cancel()
 	if err := r.stopPreparation(ctx, record.Package.Package); err != nil {
-		return err
+		return false, err
 	}
 	err = r.journal.update(func(state *journalState) error {
 		current, ok := state.Attempts[id]
@@ -54,20 +70,15 @@ func (r *Runtime) failCollection(id string, record AttemptRecord, flight *collec
 			return nil
 		}
 		current.Phase = PhaseFailed
-		prefix := permanentCollectionFailurePrefix
-		if failure.secret != nil {
-			prefix = permanentSecretFailurePrefix
-		}
-		current.Failure = prefix + failure.Error() +
-			"; raw outputs, thread archive and capture retained in worker workspace/custody for this assignment; recover using the journal workspace path"
+		current.Failure = failure
 		current.UpdatedAt = r.now()
 		state.Attempts[id] = current
 		state.Sequence++
 		return nil
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	releaseCollection(r.collectionFlightKey(record), flight)
-	return fmt.Errorf("collection failed permanently; bounded failure custody pending: %w", failure)
+	return true, nil
 }
