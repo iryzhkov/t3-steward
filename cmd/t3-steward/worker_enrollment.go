@@ -22,6 +22,13 @@ import (
 )
 
 func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store, epoch int64, artifacts backlog.CoordinatorArtifactStore) backlogadmin.WorkerEnrollmentHandler {
+	return coordinatorEnrollmentHandlerWith(settings, store, epoch, artifacts, workerruntime.ProtocolResolver{})
+}
+
+// coordinatorEnrollmentHandlerWith is coordinatorEnrollmentHandler with the
+// protocol credential resolver injected, so a test can enroll a worker served
+// in-process.
+func coordinatorEnrollmentHandlerWith(settings config.BacklogV2, store *sqlite.Store, epoch int64, artifacts backlog.CoordinatorArtifactStore, resolver workerruntime.ProtocolCredentialResolver) backlogadmin.WorkerEnrollmentHandler {
 	return func(ctx context.Context, p backlogadmin.Principal, r domain.WorkerEnrollmentRequest) (domain.WorkerEnrollment, error) {
 		if prior, found, err := store.WorkerEnrollmentReplay(ctx, r, p.ID); err != nil || found {
 			return prior, err
@@ -41,9 +48,11 @@ func coordinatorEnrollmentHandler(settings config.BacklogV2, store *sqlite.Store
 		if err != nil {
 			return domain.WorkerEnrollment{}, err
 		}
-		session, err := newCoordinatorWorkerSession(ctx, settings, store, r.WorkerID, epoch, id, workerruntime.ProtocolResolver{}, time.Now(), nil, artifacts)
+		session, err := newCoordinatorWorkerSession(ctx, settings, store, r.WorkerID, epoch, id, resolver, time.Now(), nil, artifacts)
 		if err != nil {
-			return domain.WorkerEnrollment{}, err
+			// The worker's own refusal, such as a catalog change it cannot
+			// take while assignments are live, is the reason enrollment fails.
+			return domain.WorkerEnrollment{}, fmt.Errorf("worker %q did not accept this coordinator's catalog: %w", r.WorkerID, err)
 		}
 		if session.Close != nil {
 			defer session.Close()

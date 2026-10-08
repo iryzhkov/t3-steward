@@ -70,12 +70,40 @@ func (c Collector) Collect(workspace, temp string, running int) domain.WorkerTel
 				got.SwapUsedMB = &mb
 			}
 		}
+		if data, err := c.ReadFile("/proc/swaps"); err == nil {
+			got.ZramSwapUsedMB = zramSwapUsedMB(string(data))
+		}
 	}
 	if c.FreeBytes != nil {
 		got.WorkspaceFreeMB = freeMB(c.FreeBytes, workspace)
 		got.TempFreeMB = freeMB(c.FreeBytes, temp)
 	}
 	return got
+}
+
+// zramSwapUsedMB sums the used column of /proc/swaps over zram devices. Swap
+// there is compressed memory, not paging to disk, which is why placement may
+// discount it. A table that does not parse is unknown rather than zero.
+func zramSwapUsedMB(swaps string) *int64 {
+	var usedKB int64
+	for index, line := range strings.Split(swaps, "\n") {
+		fields := strings.Fields(line)
+		if index == 0 || len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 4 {
+			return nil
+		}
+		used, err := strconv.ParseInt(fields[3], 10, 64)
+		if err != nil || used < 0 {
+			return nil
+		}
+		if strings.HasPrefix(fields[0], "/dev/zram") {
+			usedKB += used
+		}
+	}
+	mb := usedKB / 1024
+	return &mb
 }
 
 func parseLoad(s string) *float64 {

@@ -66,6 +66,10 @@ func (e Exchange) handle(ctx context.Context, envelope workerproto.Envelope) (wo
 				collect = resourcetelemetry.New().Collect
 			}
 			telemetry := collect(e.Runtime.config.WorkspaceRoot, os.TempDir(), activeAttempts(snapshot.Assignments))
+			if !request.ZramSwapWanted {
+				// A coordinator that did not ask decodes telemetry strictly.
+				telemetry.ZramSwapUsedMB = nil
+			}
 			observations.Telemetry = &telemetry
 		}
 		if e.Usage != nil {

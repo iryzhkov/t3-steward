@@ -151,7 +151,8 @@ func (p ContainedT3) preparation(pkg workerproto.ExecutionPackage) (containedPre
 	}
 	if plan.Identity != pkg.Identity || plan.WorkerID != pkg.WorkerID ||
 		plan.Launch.ExecutionID != pkg.Identity.ThreadID || plan.Launch.Spec.WorkerID != pkg.WorkerID ||
-		!reflect.DeepEqual(plan.Launch.Spec.Directories, pkg.Environment.DirectoryBindings) {
+		!reflect.DeepEqual(plan.Launch.Spec.Directories, pkg.Environment.DirectoryBindings) ||
+		!reflect.DeepEqual(plan.Launch.Spec.Limits, containedLimits(pkg)) {
 		return plan, errors.New("contained preparation does not match package")
 	}
 	return plan, nil
@@ -195,6 +196,7 @@ func (p ContainedT3) PrepareExecution(ctx context.Context, pkg workerproto.Execu
 		spec := providercontainment.Spec{WorkerID: pkg.WorkerID, Directories: directoryresource.CloneBindings(pkg.Environment.DirectoryBindings),
 			RuntimePaths: append([]string(nil), p.Profile.RuntimePaths...), ProviderHosts: append([]string(nil), p.Profile.ProviderHosts...), ControlPort: 18881,
 			TaskEnvironment: pkg.Identity.TaskEnvironment(),
+			Limits:          containedLimits(pkg),
 			Command:         []string{"/steward", "worker", "contained-t3", "--node", p.Profile.Node, "--entry", p.Profile.T3Entry, "--port", "18881", "--opencode-binary", p.Profile.OpenCodeBinary, "--opencode-model", pkg.Route.Model}}
 		for _, name := range []string{"home", "control", "workspace"} {
 			dir := workspace
@@ -247,7 +249,7 @@ func (p ContainedT3) PrepareExecution(ctx context.Context, pkg workerproto.Execu
 	}
 	for {
 		if obs.Stopped || (obs.State != "active/running" && obs.State != "activating/start") {
-			return fmt.Errorf("%w: supervisor is %s", ErrContainedCustody, obs.State)
+			return containedFailure(obs)
 		}
 		client, e := t3api.NewContained(*plan.Launch.Spec.Control, p.Timeout)
 		if e == nil {
@@ -306,7 +308,11 @@ func (p ContainedT3) Quiesce(ctx context.Context, pkg workerproto.ExecutionPacka
 	if _, err = p.captured(pkg); errors.Is(err, os.ErrNotExist) {
 		capture := containedCapture{Identity: pkg.Identity, WorkerID: pkg.WorkerID, Archive: []byte("{}")}
 		record, e := p.load(pkg)
-		if e == nil {
+		if ended := p.endedRun(ctx, record, e, force); ended != nil {
+			// The provider is gone with its unit, so there is no outcome to
+			// capture; keep why it ended, then stop the unit below.
+			capture.Message = ended.Failure
+		} else if e == nil {
 			client, e := p.client(ctx, record)
 			if e != nil {
 				return e
@@ -394,12 +400,21 @@ func (p ContainedT3) stoppedControl(ctx context.Context, pkg workerproto.Executi
 	if err != nil {
 		return nil, err
 	}
-	return retainedT3{capture: capture}, nil
+	retained := retainedT3{capture: capture}
+	if capture.Thread == nil {
+		// No provider outcome was captured before the unit stopped; a cause
+		// recorded with the unit is then why the run ended.
+		retained.ended = endedWithCause(obs)
+	}
+	return retained, nil
 }
 
 type retainedT3 struct {
 	T3Control
 	capture containedCapture
+	// ended is the ContainedRunEndedError of a run that systemd ended with a
+	// known cause before any provider outcome was captured, or nil.
+	ended error
 }
 
 func (r retainedT3) GetThread(_ context.Context, id string) (*domain.Thread, error) {

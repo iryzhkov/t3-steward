@@ -66,7 +66,7 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 		return result, domain.ErrRerunSourceLive
 	}
 	run := domain.WorkflowRun{
-		ID: "run:rerun:" + c.Request.ID, WorkflowID: source.Run.WorkflowID,
+		ID: domain.RerunRunID(c.Request.ID), WorkflowID: source.Run.WorkflowID,
 		GraphRevision: 1, Revision: 1, Progress: domain.ProgressQueued,
 		CreatedAt: c.Now.UTC(), UpdatedAt: c.Now.UTC(),
 	}
@@ -89,7 +89,7 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 		if input.WorkflowRunID != run.ID || input.Kind != domain.ArtifactInput {
 			return result, errors.New("invalid rerun input")
 		}
-		correctedPrompt := c.Request.Prompt != "" && input.ID == "input:rerun:"+c.Request.ID+":prompt"
+		correctedPrompt := c.Request.Prompt != "" && input.ID == domain.RerunPromptInputID(c.Request.ID)
 		if !correctedPrompt {
 			// Match retained source content inside the transaction as well as in
 			// the verified opener. A reference is only a reference while its
@@ -128,7 +128,7 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 			}
 		}
 		attempt := domain.Attempt{
-			ID: "attempt:" + task.ID + ":1", WorkflowRunID: run.ID, TaskID: task.ID,
+			ID: domain.FirstAttemptID("rerun", task.ID), WorkflowRunID: run.ID, TaskID: task.ID,
 			Number: 1, Revision: 1, Progress: domain.ProgressBlocked,
 			Control: domain.ControlUnassigned, UpdatedAt: c.Now.UTC(),
 		}

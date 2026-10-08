@@ -38,7 +38,10 @@ func TestRoleResolutionPrecedesReadinessPlacement(t *testing.T) {
 	}
 }
 func TestRolePlacementAdvertisedFallbackKeepsStaticDemand(t *testing.T) {
-	v := viabilityView(t, nil)
+	v := viabilityView(t, func(v *view) {
+		// Static capacity is checked only for dimensions the worker declares.
+		v.workers[0].Inventory.Allocatable.MemoryMB = 8192
+	})
 	workers := v.viabilityWorkers()
 	match := v.roleWorkerEligible(viabilityCatalog(t), workers)
 	task := viabilityTaskRequest()

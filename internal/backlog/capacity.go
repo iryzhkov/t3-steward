@@ -177,6 +177,8 @@ func (r *ExecutorRegistry) Reserve(request ReservationRequest) (domain.ResourceR
 			request.WorkerID, string(pool.CPUClass), string(request.Demand.MinCPUClass), ErrCPUClassBelowMinimum)
 	}
 
+	// Sizes the pool declares no capacity for are not accounted against it.
+	request.Demand = domain.GoverningDemand(request.Demand, pool.Allocatable)
 	snapshot := r.snapshotLocked(request.WorkerID)
 	slotAt := -1
 	for index, slot := range r.slots[request.WorkerID] {
@@ -235,8 +237,8 @@ func (r *ExecutorRegistry) Reserve(request ReservationRequest) (domain.ResourceR
 // Fits reports every capacity dimension that would refuse this demand on this
 // worker, without changing anything. A worker with no configured executor pool
 // is not capacity-governed and returns no shortfall: unconfigured capacity is
-// unknown rather than exhausted, and placement already refuses a sized demand
-// against a worker that declares no allocatable capacity.
+// unknown rather than exhausted. A size the pool declares no capacity for is
+// not a shortfall either; the demand still needs a slot.
 func (r *ExecutorRegistry) Fits(workerID string, demand domain.ResourceDemand) []CapacityShortfall {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -245,6 +247,7 @@ func (r *ExecutorRegistry) Fits(workerID string, demand domain.ResourceDemand) [
 	if !configured {
 		return nil
 	}
+	demand = domain.GoverningDemand(demand, pool.Allocatable)
 	var shortfalls []CapacityShortfall
 	if demand.MinCPUClass != "" &&
 		(!pool.CPUClass.Valid() || pool.CPUClass.Compare(demand.MinCPUClass) < 0) {
@@ -335,12 +338,13 @@ func (r *ExecutorRegistry) adopt(owner CapacityOwner) error {
 	slot.UpdatedAt = moment
 	r.slots[owner.WorkerID][slotAt] = slot
 
+	demand := domain.GoverningDemand(owner.Demand, pool.Allocatable)
 	r.reservations[owner.AssignmentID] = domain.ResourceReservation{
 		ID: owner.AssignmentID, WorkerID: owner.WorkerID, PoolName: pool.Name,
 		SlotOrdinal: slot.Ordinal, SlotFencingToken: slot.FencingToken,
 		AssignmentID: owner.AssignmentID, AttemptID: owner.AttemptID,
-		CPUUnits: owner.Demand.CPUUnits, MemoryMB: owner.Demand.MemoryMB,
-		ScratchMB: owner.Demand.ScratchMB,
+		CPUUnits: demand.CPUUnits, MemoryMB: demand.MemoryMB,
+		ScratchMB: demand.ScratchMB,
 		State:     domain.ResourceReservationActive,
 		CreatedAt: moment, UpdatedAt: moment,
 	}

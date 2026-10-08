@@ -21,6 +21,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/compat"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/privatefile"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -69,9 +70,13 @@ type LocalDriverConfig struct {
 	// Authorization binds effects to the current authored routes, including empty revocations.
 	Authorization   *domain.WorkerInventory
 	CatalogRevision string
-	ArtifactRoot    string
-	RunsRoot        string
-	StopTimeout     time.Duration
+	// CompatibleCatalogRevisions are earlier revisions that differ from
+	// CatalogRevision only in executor capacity, whose packages stay
+	// executable because the worker adopted the change while busy.
+	CompatibleCatalogRevisions []string
+	ArtifactRoot               string
+	RunsRoot                   string
+	StopTimeout                time.Duration
 	// SnapshotTimeout bounds a work-in-progress snapshot of a failing
 	// attempt. Zero uses DefaultSnapshotTimeout.
 	SnapshotTimeout time.Duration
@@ -102,6 +107,9 @@ type LocalDriver struct {
 	// above all the removal of its identity record. Nil uses the default
 	// logger; nothing here is silent.
 	Log *slog.Logger
+	// revisions is the catalog revisions Prepare accepts, which a capacity
+	// change adopted in place updates. Nil means Config alone.
+	revisions *catalogRevisionSet
 }
 
 func (d *LocalDriver) logger() *slog.Logger {
@@ -143,6 +151,7 @@ func NewLocalDriver(driver LocalDriver) (*LocalDriver, error) {
 	driver.Workspace.RunsRoot = runsRoot
 	driver.Workspace.StorageRoot = artifactRoot
 	driver.Finalizer.StorageRoot = artifactRoot
+	driver.revisions = &catalogRevisionSet{current: driver.Config.CatalogRevision, previous: slices.Clone(driver.Config.CompatibleCatalogRevisions)}
 	return &driver, nil
 }
 
@@ -163,7 +172,7 @@ func (d *LocalDriver) Prepare(ctx context.Context, pkg workerproto.ExecutionPack
 	if d.containedManager(pkg) != nil && (len(environment.Setup.Commands) != 0 || len(environment.RequiredCredentials) != 0) {
 		return "", errors.New("contained preparation requires an empty setup profile and no host credentials")
 	}
-	if pkg.Environment.CatalogRevision != d.Config.CatalogRevision {
+	if !d.acceptsCatalogRevision(pkg.Environment.CatalogRevision) {
 		return "", errors.New("execution package catalog revision is stale")
 	}
 	if len(environment.RequiredCredentials) > 0 {
@@ -372,6 +381,9 @@ func (d *LocalDriver) ObserveThread(ctx context.Context, pkg workerproto.Executi
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return "", err
 	} else if scoped != nil {
+		if retained, ok := scoped.T3.(retainedT3); ok && retained.ended != nil {
+			return "", retained.ended
+		}
 		return scoped.ObserveThread(ctx, pkg)
 	}
 	if d.Config.DryRun {
@@ -571,20 +583,20 @@ func (d *LocalDriver) writeTaskIdentity(pkg workerproto.ExecutionPackage, worksp
 	if err != nil {
 		return err
 	}
-	directory := filepath.Join(workspace, domain.TaskIdentityDir)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create task identity directory: %w", err)
+	// The exclusion goes in first, so a record is never left in the worktree
+	// without it, whether the exclusion is refused or the worker stops between
+	// the two writes.
+	if err := excludeTaskIdentityFromGit(workspace); err != nil {
+		return err
 	}
-	path := filepath.Join(workspace, filepath.FromSlash(domain.TaskIdentityFile))
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	// The workspace is a repository checkout and containment does not exist
+	// yet, so a tracked link at the directory or the file must not redirect
+	// this write to a host file. A resumed attempt rewrites the record, which
+	// replaces it whole with its mode asserted.
+	if err := privatefile.WriteBelow(workspace, domain.TaskIdentityFile, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write task identity: %w", err)
 	}
-	// WriteFile leaves an existing file's mode alone, and a resumed attempt
-	// rewrites this one, so the mode is asserted rather than assumed.
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("restrict task identity: %w", err)
-	}
-	return excludeTaskIdentityFromGit(workspace, directory)
+	return nil
 }
 
 // writeProjectContext atomically materializes the canonical package-bound index.
@@ -596,45 +608,10 @@ func (d *LocalDriver) writeProjectContext(pkg workerproto.ExecutionPackage, work
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(workspace, filepath.FromSlash(domain.ProjectContextFile))
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create project context directory: %w", err)
-	}
-	file, err := os.CreateTemp(directory, ".index-*.tmp")
-	if err != nil {
-		return fmt.Errorf("stage project context: %w", err)
-	}
-	temporary := file.Name()
-	defer os.Remove(temporary)
-	if err := file.Chmod(0o444); err != nil {
-		file.Close()
-		return fmt.Errorf("restrict staged project context: %w", err)
-	}
-	if _, err := file.Write(content); err != nil {
-		file.Close()
-		return fmt.Errorf("write staged project context: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return fmt.Errorf("sync staged project context: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close staged project context: %w", err)
-	}
-	if err := os.Rename(temporary, path); err != nil {
+	// WriteBelow stages, syncs and renames the index, and refuses a tracked
+	// link at .t3 or .t3/context instead of writing through it.
+	if err := privatefile.WriteBelow(workspace, domain.ProjectContextFile, content, 0o444); err != nil {
 		return fmt.Errorf("publish project context: %w", err)
-	}
-	parent, err := os.Open(directory)
-	if err != nil {
-		return fmt.Errorf("open project context directory for sync: %w", err)
-	}
-	if err := parent.Sync(); err != nil {
-		parent.Close()
-		return fmt.Errorf("sync project context directory: %w", err)
-	}
-	if err := parent.Close(); err != nil {
-		return fmt.Errorf("close project context directory: %w", err)
 	}
 	return nil
 }
@@ -692,8 +669,8 @@ func verifyProjectContextFile(pkg workerproto.ExecutionPackage, workspace string
 // written, twice over. The self-ignoring .gitignore works in any layout and
 // travels with the directory; the repository's own exclude file covers a tool
 // that reads only that.
-func excludeTaskIdentityFromGit(workspace, directory string) error {
-	if err := os.WriteFile(filepath.Join(directory, ".gitignore"), []byte("# Steward task identity. Never commit this.\n*\n"), 0o600); err != nil {
+func excludeTaskIdentityFromGit(workspace string) error {
+	if err := privatefile.WriteBelow(workspace, domain.TaskIdentityDir+"/.gitignore", []byte("# Steward task identity. Never commit this.\n*\n"), 0o600); err != nil {
 		return fmt.Errorf("exclude task identity: %w", err)
 	}
 	gitDir, err := resolveGitDir(workspace)
@@ -844,7 +821,7 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	if err != nil {
 		return err
 	}
-	prompt = backlog.FirstTurnPrompt(prompt, pkg.Outputs)
+	prompt = backlog.FirstTurnPromptWithLimits(prompt, pkg.Outputs, backlog.ProcessLimitsFromContext(ctx))
 	if pkg.Recovery != nil {
 		prompt += "\n\n## Recovery supplement\nThis is a retry of the original task. Keep the original task contract, outputs, and verification authoritative. Read and apply the retained repair instructions at `" + pkg.Recovery.InstructionPath + "`."
 		for _, checkpoint := range pkg.Recovery.CheckpointPaths {

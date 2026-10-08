@@ -213,10 +213,25 @@ func New(baseURL string, tokens TokenSource, timeout time.Duration) *Client {
 	}
 	return &Client{
 		BaseURL:   strings.TrimRight(baseURL, "/"),
-		HTTP:      &http.Client{Timeout: timeout},
+		HTTP:      &http.Client{Timeout: timeout, CheckRedirect: refuseAuthenticatedRedirect},
 		Tokens:    tokens,
 		UserAgent: "t3-steward",
 	}
+}
+
+// refuseAuthenticatedRedirect stops any redirect of a request that carried the
+// T3 credential. Go keeps the Authorization header on a redirect to the same
+// host name whatever the port, so following one would hand the credential to
+// any other service on that host. Unauthenticated discovery keeps the default
+// policy.
+func refuseAuthenticatedRedirect(_ *http.Request, via []*http.Request) error {
+	if len(via) > 0 && via[0].Header.Get("Authorization") != "" {
+		return errors.New("refusing to follow a redirect of an authenticated T3 request")
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
 }
 
 // Descriptor fetches /.well-known/t3/environment without authentication.

@@ -270,15 +270,3 @@ func (b *boundedBuffer) Bytes() []byte {
 func (b *boundedBuffer) String() string {
 	return b.buffer.String()
 }
-
-func ServeOne(reader io.Reader, writer io.Writer, codec Codec, server *Server, handler Handler) error {
-	var request Envelope
-	if err := codec.Decode(reader, &request); err != nil {
-		return err
-	}
-	response, err := server.Handle(context.Background(), request, handler)
-	if err != nil {
-		return err
-	}
-	return codec.Encode(writer, response)
-}

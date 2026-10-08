@@ -93,10 +93,17 @@ func runWorkerHelper(t *testing.T) {
 		t.Fatal("worker response descriptor is missing")
 	}
 	defer output.Close()
-	if err := ServeOne(
-		context.Background(), os.Stdin, output, codec,
-		Exchange{Runtime: runtime, Server: server},
-	); err != nil {
+	// Answer exactly one envelope through the authenticated exchange, as a
+	// restricted-command worker does, and exit.
+	var request workerproto.Envelope
+	if err := codec.Decode(os.Stdin, &request); err != nil {
+		t.Fatal(err)
+	}
+	response, err := Exchange{Runtime: runtime, Server: server}.Handle(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := codec.Encode(output, response); err != nil {
 		t.Fatal(err)
 	}
 }

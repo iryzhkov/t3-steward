@@ -197,7 +197,7 @@ type ContinuationInput struct {
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs, PackageCapabilityFailedCommit}
+	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs, PackageCapabilityFailedCommit, PackageCapabilityContainedLimits}
 }
 
 // MarksCommitOutputs reports whether the package names its dependencies'
@@ -292,6 +292,10 @@ type ExecutionPackage struct {
 	ExpiresAt    *time.Time                   `json:"expiresAt,omitempty"`
 	Limits       ExecutionLimits              `json:"limits"`
 	CreatedAt    time.Time                    `json:"createdAt"`
+
+	// ResourceDemand is the demand the coordinator accounted for the attempt,
+	// which a contained run enforces. It requires PackageCapabilityContainedLimits.
+	ResourceDemand *domain.ResourceDemand `json:"resourceDemand,omitempty"`
 }
 
 type ExecutionPackageManifest struct {
@@ -413,12 +417,23 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 	if err := validatePackageArtifact(pkg.Prompt, pkg.Limits.MaxArtifactBytes, paths); err != nil {
 		return fmt.Errorf("execution package: prompt: %w", err)
 	}
+	// Every addition is guarded before it is made, as the transfer manifest
+	// does: a total that wraps past MaxInt64 would pass a check made after.
 	var total int64 = pkg.Prompt.Size
+	add := func(size int64) error {
+		if size > pkg.Limits.MaxTotalBytes-total {
+			return errors.New("execution package: inputs exceed total byte limit")
+		}
+		total += size
+		return nil
+	}
 	for _, artifact := range pkg.StaticInputs {
 		if err := validatePackageArtifact(artifact, pkg.Limits.MaxArtifactBytes, paths); err != nil {
 			return fmt.Errorf("execution package: static input: %w", err)
 		}
-		total += artifact.Size
+		if err := add(artifact.Size); err != nil {
+			return err
+		}
 	}
 	dependencies := make(map[string]struct{})
 	for _, dependency := range pkg.Dependencies {
@@ -451,7 +466,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 			if err := validatePackageArtifact(artifact, pkg.Limits.MaxArtifactBytes, paths); err != nil {
 				return fmt.Errorf("execution package: dependency input: %w", err)
 			}
-			total += artifact.Size
+			if err := add(artifact.Size); err != nil {
+				return err
+			}
 		}
 	}
 	bundles := make(map[string]struct{}, len(pkg.CommitBundles))
@@ -477,10 +494,9 @@ func ValidateExecutionPackage(pkg ExecutionPackage) error {
 		if err := validatePackageArtifact(*input.Bundle, pkg.Limits.MaxArtifactBytes, paths); err != nil {
 			return fmt.Errorf("execution package: commit bundle: %w", err)
 		}
-		total += input.Bundle.Size
-	}
-	if total > pkg.Limits.MaxTotalBytes {
-		return errors.New("execution package: inputs exceed total byte limit")
+		if err := add(input.Bundle.Size); err != nil {
+			return err
+		}
 	}
 	// Verification is evidence, not the gate. Success is an output-contract
 	// decision, so a task that declares outputs and no verification command is
@@ -603,6 +619,9 @@ func validatePackageCapabilities(pkg ExecutionPackage) error {
 	}
 	if pkg.Gate == nil && slices.Contains(pkg.RequiredCapabilities, PackageCapabilityWorkerOwnedGate) {
 		return errors.New("execution package: worker-owned-gate-v1 capability requires a gate")
+	}
+	if err := validateResourceDemand(pkg); err != nil {
+		return err
 	}
 	supported := append(SupportedPackageCapabilities(), CapabilityCampaignSupervision)
 	declared := make(map[string]struct{}, len(pkg.RequiredCapabilities))

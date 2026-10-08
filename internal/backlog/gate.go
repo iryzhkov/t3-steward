@@ -135,6 +135,7 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 			ID: fmt.Sprintf("verify-%s-gate-%d", req.Attempt.ID, index), Dir: req.WorkspaceDir, Program: "/bin/sh",
 			Args: []string{"-c", `umask 022 && exec "$0" "$@"`, "/bin/sh", "-c", command},
 			Log:  &log, MaxOutputBytes: gateLogLimit, Timeout: gate.Timeout, KillRemaining: true,
+			Limits: ProcessLimitsFromContext(ctx),
 		})
 		deadlineErr := commandCtx.Err()
 		cancel()

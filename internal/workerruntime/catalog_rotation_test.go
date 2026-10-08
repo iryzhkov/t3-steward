@@ -55,7 +55,12 @@ func TestCatalogCannotReplaceUnsettledCompletedExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := host.service.Exchange.Runtime.journal.update(func(state *journalState) error {
-		state.Attempts["retained"] = AttemptRecord{Phase: PhaseCompleted, SettlePending: true}
+		// The record is keyed by its own identity, as the journal requires of
+		// every record it publishes.
+		record := AttemptRecord{Phase: PhaseCompleted, SettlePending: true}
+		record.Assignment.ID = "retained"
+		record.Package.Package.Identity.AssignmentID = "retained"
+		state.Attempts["retained"] = record
 		return nil
 	}); err != nil {
 		t.Fatal(err)

@@ -79,8 +79,9 @@ larger filesystem, even if the tasks themselves write temporary files elsewhere.
 Placement keeps enrollment, capabilities, CPU class, executor capacity and slots
 as hard constraints. Fresh telemetry additionally rejects a worker when memory
 available is below task memory plus reserve, either filesystem is below task
-scratch plus reserve, or swap exceeds the configured limit. Remaining workers
-rank by normalized CPU and memory headroom before existing preference scores.
+scratch plus reserve, swap exceeds the configured limit, or, for build-class
+work, load is above the build ceiling (below). Remaining workers rank by
+normalized CPU and memory headroom before existing preference scores.
 CPU headroom is `(cores - max(load1, load5) - task CPU units) / cores`,
 clamped to [-1, 1]. Memory headroom is
 `(available - task memory - reserve) / (available + task memory + reserve)`.
@@ -91,9 +92,10 @@ unknown readings alone do not exclude a worker. Telemetry is fresh while its
 timestamp is within `telemetry_max_age` of the coordinator's clock in either
 direction, so a worker clock that leads the coordinator by less than that bound
 does not make its readings stale. Because any fresh, complete worker ranks ahead
-of any worker without such telemetry regardless of load, and CPU load never
-excludes a worker, an overloaded upgraded worker can be preferred over an idle
-worker that does not yet report telemetry until that worker is upgraded.
+of any worker without such telemetry regardless of load, and CPU load excludes
+a worker only from build-class work, an overloaded upgraded worker can be
+preferred over an idle worker that does not yet report telemetry until that
+worker is upgraded.
 
 Each offer cycle adds the expected needs of assignments already proposed in
 that cycle to the proposed worker's load, memory and disk readings, preventing
@@ -114,35 +116,93 @@ memory_weight: 1
 unsized_task_cpu_units: 1
 unsized_task_memory_mb: 1024
 unsized_task_scratch_mb: 0
+build_max_load_per_cpu: 1.5
+swap_ignore_zram: true
 ```
 
-Task resource presets supply expected CPU share, memory and scratch needs for
-the live telemetry floors, ranking and in-cycle reservation: `light` expects
-0.25 CPU units, 256 MiB memory and 512 MiB scratch; `build` expects 2 CPU
-units, 4096 MiB memory and 8192 MiB scratch. Build is intended for race tests
-and full review gates. Ingestion records the declared preset name on the task,
-and the expected needs follow that name, not the CPU classes. A build with
-`min_cpu_class: high` or `preferred_cpu_class: medium` therefore keeps build's
-memory and scratch needs. A task that declares classes without a preset, such
-as a bare `min_cpu_class: medium` or even build's own medium-and-high pair,
-uses the nominal unsized needs. Explicit `cpu_units`, `memory_mb` and
-`scratch_mb` override the expected needs per field. `campaign check` sends the
-preset name with each task so its live floors match placement. A review member's execution profile
-records its preset name too, and the member task inherits it. Tasks and review
-profiles stored before the preset name was recorded have none, so they use the
-nominal unsized needs unless they declare explicit sizes.
+Task resource presets have sizes, and one table defines them: `light` is 0.5
+CPU units, 1000 MB memory and 512 MB scratch; `build` is 4 CPU units, 6000 MB
+memory and 8192 MB scratch. Build is intended for race tests and full review
+gates. A preset expands to these sizes when the manifest is loaded, so
+`campaign plan` shows them on every task that uses it, and they are the task's
+resource demand: the reservation on a worker that declares capacity (below),
+the live need of the telemetry floors, ranking and in-cycle reservation, and
+the parallelism its processes are given. An explicit `cpu_units`, `memory_mb`
+or `scratch_mb`, on the task or inherited from the workflow, wins over the
+preset per field. Ingestion also records the preset name, so a build with
+`min_cpu_class: high` or `preferred_cpu_class: medium` keeps build's sizes. A
+task that declares classes without a preset, such as a bare
+`min_cpu_class: medium` or even build's own medium-and-high pair, is unsized
+and uses the nominal unsized needs. `campaign check` sends the preset name
+with each task so its live floors match placement. A review member's execution
+profile records its preset name too, and the member task inherits it. Tasks
+stored before presets were sized keep the demand they were ingested with; their
+live needs still follow the recorded preset name.
 
 With the defaults an unsized task therefore needs 2048 MiB of available memory
 (1024 MiB nominal need plus the 1024 MiB reserve). Setting all three
 `unsized_task_*` values to 0 removes the in-cycle reservation for unsized tasks,
 so a burst of them again fills the worker that looked idlest.
 
-A preset never reserves configured executor capacity. Only explicit
-`cpu_units`, `memory_mb` and `scratch_mb` are checked against a worker's
-configured `executors.cpu_units`, `memory_mb` and `scratch_mb`, so a
-fleet-managed worker that configures executor slots alone keeps receiving
-`light` and `build` tasks. A task with explicit sizes still needs a worker that
-configures those capacity dimensions.
+A task's sizes are checked only on the dimensions a worker declares under
+`executors`. A worker that declares neither `cpu_units` nor `memory_mb` counts a
+sized task as one executor slot, exactly as it counts an unsized one, and the
+placement evaluation notes "worker X declares no cpu/memory capacity; sized
+demand counted as one slot". A worker that declares `cpu_units`, `memory_mb` or
+`scratch_mb` reserves the task's size on each dimension it declares and refuses
+a task that no longer fits, with a `capacity-exhausted` rejection naming the
+dimension (`cpu-units`, `memory-mb` or `scratch-mb` in planning blockers). The
+same rule holds at assignment admission.
+
+For example, a worker configured with
+
+```yaml
+executors:
+  slots: 8
+  cpu_units: 9
+```
+
+runs two `build` tasks at once (8 of its 9 cpu units), refuses a third build
+with a cpu-units shortfall of 1 against 4, and meanwhile keeps accepting unsized
+agent tasks, which reserve no cpu units, until its eight slots are taken. A
+`light` task reserves half a cpu unit and fits beside the two builds.
+
+The build load ceiling is a soft limit on new build-class work, meaning a task
+whose expected need is two or more cpu units: with fresh, complete telemetry, a
+worker whose `max(load1, load5) / cpu_count` is above `build_max_load_per_cpu`
+is excluded for that task with the temporary rejection `resource-cpu-load`, for
+example "load 20 over 10 cpus exceeds build ceiling 1.5 per cpu". Light and
+unsized tasks are unaffected, stale or partial telemetry never triggers it,
+running work is never preempted, and `0` disables it. The rejection appears in
+`campaign check`, `backlog explain` and planning blockers like the other
+resource rejections.
+
+Swap held on zram is compressed memory, not paging to disk, so with
+`swap_ignore_zram: true` (the default) only the rest of a worker's swap counts
+against `max_swap_used_mb`. Workers of this release read the split from
+`/proc/swaps` and report it when the coordinator asks; a worker that does not
+report it has all of its swap counted, as before.
+
+A sized task's setup and verification commands, which run in a transient
+`systemd-run --user --scope`, are told its parallelism and limited to its
+reservation. With N the task's cpu units rounded up, and at least 1, the scope
+gets `GOMAXPROCS=N`, `GOFLAGS=-p=N` (appended to the worker's own GOFLAGS),
+`MAKEFLAGS=-jN` and `CARGO_BUILD_JOBS=N`, and the properties `CPUQuota=N*100%`
+and, with a memory size, `MemoryMax=<memory_mb>M` and `MemorySwapMax=0`. The
+first-turn instructions state the same values in one line, so the agent uses
+them for the builds and tests it runs itself. A user manager without the cpu and
+memory cgroup controllers delegated cannot enforce the properties; the worker
+then logs one warning and runs the commands with the environment alone. An
+unsized task, and every task from a coordinator older than this release, runs
+as before.
+
+Changing a worker's `cpu_class` or `executors` changes its catalog revision. A
+worker with active or parked assignments adopts such a capacity-only change in
+place, without disturbing them; the new capacity applies to new reservations.
+Any other catalog change while assignments are live is refused with the reason,
+which `worker enroll` prints, for example "worker "agent-a" has 4 active or
+parked assignments; catalog change touches projects; retry when idle". Both
+sides log the refusal.
 
 `backlog explain` and `campaign check` report the telemetry used, resource
 rejections, headroom score, ranking and selected worker. Explain preserves the

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -391,8 +392,7 @@ func TestProtocolHelperProcess(t *testing.T) {
 	if mode == "bad-auth" {
 		server.config.SignerSecret = []byte("abcdef0123456789abcdef0123456789")
 	}
-	err := ServeOne(os.Stdin, os.Stdout, Codec{MaxBytes: 64 << 10}, server, echoHandler)
-	if err != nil {
+	if err := serveOneForTest(os.Stdin, os.Stdout, Codec{MaxBytes: 64 << 10}, server, echoHandler); err != nil {
 		_, _ = os.Stderr.WriteString(err.Error())
 		os.Exit(2)
 	}
@@ -400,6 +400,20 @@ func TestProtocolHelperProcess(t *testing.T) {
 		_, _ = os.Stdout.WriteString("raw-artifact")
 	}
 	os.Exit(0)
+}
+
+// serveOneForTest answers exactly one envelope from reader on writer, which is
+// all the subprocess helper needs of a worker.
+func serveOneForTest(reader io.Reader, writer io.Writer, codec Codec, server *Server, handler Handler) error {
+	var request Envelope
+	if err := codec.Decode(reader, &request); err != nil {
+		return err
+	}
+	response, err := server.Handle(context.Background(), request, handler)
+	if err != nil {
+		return err
+	}
+	return codec.Encode(writer, response)
 }
 
 func TestProtocolDropHelperProcess(t *testing.T) {

@@ -196,6 +196,7 @@ func run(ctx context.Context, spec Spec, streams Streams) error {
 	}
 	environment := []string{"HOME=/home/agent", "USER=agent", "LOGNAME=agent", "PATH=/usr/bin:/bin", "LANG=C.UTF-8", "XDG_CONFIG_HOME=/home/agent/.config", "XDG_DATA_HOME=/home/agent/.local/share", "XDG_STATE_HOME=/home/agent/.local/state", "XDG_CACHE_HOME=/home/agent/.cache", "TMPDIR=/tmp", "T3_STEWARD_OUTPUT_DIR=/workspace"}
 	environment = append(environment, taskIdentityEnvironment(spec.TaskEnvironment)...)
+	environment = append(environment, spec.Limits.Environment()...)
 	command := append([]string(nil), spec.Command...)
 	if len(spec.ProviderHosts) > 0 {
 		gatewayCtx, cancel := context.WithCancel(ctx)

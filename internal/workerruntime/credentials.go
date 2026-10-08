@@ -9,14 +9,21 @@ import (
 	"os"
 	"strings"
 	"unicode"
+
+	"github.com/iryzhkov/t3-steward/internal/privatefile"
 )
 
 // CredentialFileSuffix is appended to a credential variable's name to name a
 // file that holds the value instead: T3_STEWARD_CREDENTIAL_<REF>_FILE=<path>.
 // The inline variable wins when both are set. The file is read at use, one
-// trailing newline is trimmed, and it is refused when missing or world-readable
-// with an error that names the variable and the path but never the content.
+// trailing newline is trimmed, and it is refused when missing, accessible to
+// group or others, or owned by another user, with an error that names the
+// variable and the path but never the content.
 const CredentialFileSuffix = "_FILE"
+
+// credentialFileOwner is the user a credential file must belong to. Tests
+// replace it to exercise the foreign-owner refusal without a second account.
+var credentialFileOwner = os.Getuid
 
 // ResolveCredentialVariable returns the value behind one credential variable:
 // the variable itself when it is set and non-empty, otherwise the content of
@@ -41,8 +48,13 @@ func ResolveCredentialVariable(lookup func(string) (string, bool), name string) 
 }
 
 // readCredentialFile reads a credential file named by variable. It refuses a
-// missing file, a symbolic link, anything but a regular file, and a file that
-// is readable by others; the error names the variable and the path only.
+// missing file, a symbolic link, anything but a regular file, a file with any
+// group or other permission bit and a file owned by another user. The checks
+// are made on the path, for a clear error, and again on the descriptor opened
+// without following links, which is what decides: a file swapped in between is
+// held to the same rules, and a credential rotated by renaming a new private
+// file over the old one is still read. The error names the variable and the
+// path only.
 func readCredentialFile(variable, path string) (string, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -51,16 +63,22 @@ func readCredentialFile(variable, path string) (string, error) {
 		}
 		return "", fmt.Errorf("%s names %s, which cannot be inspected: %w", variable, path, err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("%s names %s, which is a symbolic link; name the file itself", variable, path)
+	if err := checkCredentialFile(variable, path, info); err != nil {
+		return "", err
 	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s names %s, which is not a regular file", variable, path)
+	file, err := privatefile.OpenNoFollow(path)
+	if err != nil {
+		return "", fmt.Errorf("%s names %s, which cannot be read: %w", variable, path, err)
 	}
-	if info.Mode().Perm()&0o004 != 0 {
-		return "", fmt.Errorf("%s names %s, which is world-readable (mode %04o); chmod 0600 it", variable, path, info.Mode().Perm())
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("%s names %s, which cannot be inspected: %w", variable, path, err)
 	}
-	raw, err := os.ReadFile(path)
+	if err := checkCredentialFile(variable, path, opened); err != nil {
+		return "", err
+	}
+	raw, err := io.ReadAll(file)
 	if err != nil {
 		return "", fmt.Errorf("%s names %s, which cannot be read: %w", variable, path, err)
 	}
@@ -71,6 +89,28 @@ func readCredentialFile(variable, path string) (string, error) {
 		return "", fmt.Errorf("%s names %s, which is empty", variable, path)
 	}
 	return value, nil
+}
+
+// checkCredentialFile applies the credential file rules to one observation of
+// the file, from the path or from the opened descriptor.
+func checkCredentialFile(variable, path string, info os.FileInfo) error {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s names %s, which is a symbolic link; name the file itself", variable, path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s names %s, which is not a regular file", variable, path)
+	}
+	perm := info.Mode().Perm()
+	if perm&0o004 != 0 {
+		return fmt.Errorf("%s names %s, which is world-readable (mode %04o); chmod 0600 it", variable, path, perm)
+	}
+	if perm&0o077 != 0 {
+		return fmt.Errorf("%s names %s, which group or other users can access (mode %04o); chmod 0600 it", variable, path, perm)
+	}
+	if owner, ok := privatefile.Owner(info); !ok || owner != credentialFileOwner() {
+		return fmt.Errorf("%s names %s, which is owned by another user; it must belong to the user the worker runs as", variable, path)
+	}
+	return nil
 }
 
 // CredentialChecker resolves credential references only for availability. Secret

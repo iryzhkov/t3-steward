@@ -68,17 +68,30 @@ func runQualificationTopology(t *testing.T, clientDelay time.Duration) {
 		t.Fatal(err)
 	}
 
+	// The coordinator is waited for once, here, so that the socket wait can end
+	// as soon as it exits and its output is read only after it has.
+	exited := make(chan error, 1)
+	go func() { exited <- coordinator.Wait() }()
+
+	// A loaded host starts the coordinator slowly: on agent-a at load 20 the
+	// socket took longer than the 3 s this wait used to allow. The wait is
+	// generous, and a coordinator that exits ends it at once with its output.
 	socket := filepath.Join(root, "state.db.admin.sock")
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.NewTimer(qualificationSocketWait)
+	defer deadline.Stop()
 	for {
 		if _, err := os.Stat(socket); err == nil {
 			break
 		}
-		if time.Now().After(deadline) {
+		select {
+		case err := <-exited:
+			t.Fatalf("coordinator exited before creating its socket: %v\n%s", err, coordinatorOutput.String())
+		case <-deadline.C:
 			_ = coordinator.Process.Kill()
-			t.Fatalf("coordinator socket was not created\n%s", coordinatorOutput.String())
+			<-exited
+			t.Fatalf("coordinator socket was not created within %s\n%s", qualificationSocketWait, coordinatorOutput.String())
+		case <-time.After(10 * time.Millisecond):
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	time.Sleep(clientDelay)
 	clientOutput, err := qualificationProcess(t, root, "client").CombinedOutput()
@@ -143,10 +156,14 @@ func runQualificationTopology(t *testing.T, clientDelay time.Duration) {
 	if err := coordinator.Process.Signal(os.Interrupt); err != nil {
 		t.Fatal(err)
 	}
-	if err := coordinator.Wait(); err != nil {
+	if err := <-exited; err != nil {
 		t.Fatalf("coordinator process failed: %v\n%s", err, coordinatorOutput.String())
 	}
 }
+
+// qualificationSocketWait bounds how long the topology waits for the
+// coordinator's admin socket.
+const qualificationSocketWait = 30 * time.Second
 
 // TestBacklogV2AuthorizedMultiHostCanary is opt-in because it contacts the
 // explicitly authorized host named by T3_S19_REMOTE_HOST. The remote command

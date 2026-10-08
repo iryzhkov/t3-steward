@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"path/filepath"
 	"strings"
@@ -68,12 +69,16 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 		name            string
 		mutate          func(*workerproto.ArtifactUploadResponse)
 		terminalFailure bool
+		// rejected marks content that can never import: the attempt is
+		// settled failed through the dead-letter path, still before anything
+		// is published.
+		rejected bool
 	}{
 		{name: "custody checksum", mutate: func(response *workerproto.ArtifactUploadResponse) { response.Custody[0].RecordSHA256 = "bad" }},
 		{name: "wrong output media type", mutate: func(response *workerproto.ArtifactUploadResponse) {
 			response.Manifest.Objects[0].MediaType = "application/octet-stream"
 			response.Custody = resultCustody(t, response.Manifest, "coordinator")
-		}},
+		}, rejected: true},
 		{name: "unfinished marker", mutate: func(response *workerproto.ArtifactUploadResponse) {
 			object := resultObject("final-message-attempt-1", "results/final-message.md", "summary", "text/markdown", []byte("BACKLOG STATUS: continue\n"))
 			response.Manifest.TotalBytes += object.Size - response.Manifest.Objects[1].Size
@@ -85,7 +90,7 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 			response.Manifest.TotalBytes += object.Size - response.Manifest.Objects[2].Size
 			response.Manifest.Objects[2] = object
 			response.Custody = resultCustody(t, response.Manifest, "coordinator")
-		}},
+		}, rejected: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -127,7 +132,16 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(records.Artifacts) != 0 || records.Attempts[0].Progress != domain.ProgressVerifying {
+			wantProgress := domain.ProgressVerifying
+			if test.rejected {
+				wantProgress = domain.ProgressFailed
+				if !errors.Is(importErr, ErrResultImportRejected) {
+					t.Fatalf("permanent invalid evidence was not rejected: %v", importErr)
+				}
+			} else if errors.Is(importErr, ErrResultImportRejected) {
+				t.Fatalf("invalid custody was rejected rather than retried: %v", importErr)
+			}
+			if len(records.Artifacts) != 0 || records.Attempts[0].Progress != wantProgress {
 				t.Fatalf("records changed = %#v", records)
 			}
 		})

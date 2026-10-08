@@ -90,14 +90,16 @@ type WakeSummary struct {
 	sink bool
 }
 
-// WakeSummaryTask is one task row. An empty cell means the task declares no
-// such output; "?" means it does and the output could not be read.
+// WakeSummaryTask is one task row, with explicit statuses for its cells.
 type WakeSummaryTask struct {
 	Task          string `json:"task"`
 	TaskID        string `json:"taskId,omitempty"`
 	Progress      string `json:"progress"`
 	Failure       string `json:"failure,omitempty"`
 	Verdict       string `json:"verdict,omitempty"`
+	VerdictStatus string `json:"verdictStatus"`
+	HeadStatus    string `json:"headStatus"`
+	GateStatus    string `json:"gateStatus"`
 	VerdictSource string `json:"verdictSource,omitempty"`
 	Gate          string `json:"gate,omitempty"`
 	Head          string `json:"head,omitempty"`
@@ -173,8 +175,10 @@ type SummaryTask struct {
 	Progress domain.ProgressState
 	Failure  string
 	// Outputs are the task's declared outputs, in manifest order.
-	Outputs   []domain.ArtifactDeclaration
-	Artifacts []SummaryArtifact
+	Outputs       []domain.ArtifactDeclaration
+	Artifacts     []SummaryArtifact
+	ReviewOutput  *domain.ReviewOutput
+	ReviewVerdict *domain.ReviewVerdict
 }
 
 // SummaryArtifact is one retained artifact's metadata.
@@ -227,7 +231,7 @@ var summaryVerdicts = map[string]bool{"ACCEPT": true, "CHANGES_REQUESTED": true,
 const (
 	verdictUnrecognized = "unrecognized"
 	gateNoResult        = "gate.log: no RESULT line"
-	cellUnreadable      = "?"
+	summaryReadTimeout  = 3 * time.Second
 )
 
 // parseVerdictLine reads the verdict from the first line of a review.md.
@@ -378,18 +382,20 @@ type summaryBytes struct {
 }
 
 // read opens one artifact within the per-task and per-wake allowances and
-// returns its bounded bytes, or false when it could not be read.
-func (b *summaryBudget) read(ctx context.Context, source NodeSummarySource, opens *int, artifact SummaryArtifact, mode summaryRead) (summaryBytes, bool) {
+// returns its bounded bytes, its explicit read status.
+func (b *summaryBudget) read(ctx context.Context, source NodeSummarySource, opens *int, artifact SummaryArtifact, mode summaryRead) (summaryBytes, string) {
 	if *opens >= summaryOpensPerTask || b.opens <= 0 || ctx.Err() != nil {
-		return summaryBytes{}, false
+		return summaryBytes{}, "not-read"
 	}
 	if mode == readTail && (artifact.Size < 0 || artifact.Size > summaryGateMaxBytes) {
-		return summaryBytes{}, false
+		return summaryBytes{}, "unreadable"
 	}
 	*opens++
 	b.opens--
-	result, err := callWithin(ctx, func() (summaryBytes, error) {
-		body, err := source.OpenSummaryArtifact(ctx, artifact.ID)
+	readCtx, cancel := context.WithTimeout(ctx, summaryReadTimeout)
+	defer cancel()
+	result, err := callWithin(readCtx, func() (summaryBytes, error) {
+		body, err := source.OpenSummaryArtifact(readCtx, artifact.ID)
 		if err != nil {
 			return summaryBytes{}, err
 		}
@@ -399,10 +405,12 @@ func (b *summaryBudget) read(ctx context.Context, source NodeSummarySource, open
 			return readSummaryTail(io.LimitReader(body, artifact.Size))
 		default:
 			limit := int64(summaryHeadBytes)
+			extra := int64(1) // JSON records need a byte to detect truncation.
 			if mode == readBundle {
 				limit = summaryBundleBytes
+				extra = 0 // A bundle header needs no truncation probe beyond its allowance.
 			}
-			data, err := io.ReadAll(io.LimitReader(body, limit+1))
+			data, err := io.ReadAll(io.LimitReader(body, limit+extra))
 			if err != nil {
 				return summaryBytes{}, err
 			}
@@ -412,7 +420,10 @@ func (b *summaryBudget) read(ctx context.Context, source NodeSummarySource, open
 			return summaryBytes{data: data}, nil
 		}
 	})
-	return result, err == nil
+	if err != nil {
+		return summaryBytes{}, "unreadable"
+	}
+	return result, "known"
 }
 
 // readSummaryTail keeps the last summaryTailBytes of a stream.
@@ -470,7 +481,7 @@ func summaryTaskName(t SummaryTask) string {
 	case summaryName.MatchString(t.ID):
 		return t.ID
 	}
-	return cellUnreadable
+	return "unnamed task"
 }
 
 // summaryTaskState is the latest attempt's progress, skipped, or not started.
@@ -481,7 +492,7 @@ func summaryTaskState(t SummaryTask) string {
 	if summaryToken.MatchString(string(t.Progress)) {
 		return string(t.Progress)
 	}
-	return cellUnreadable
+	return "unknown state"
 }
 
 // summaryDisplayOutput is an output name safe to print as a head source.
@@ -503,62 +514,79 @@ func (b *summaryBudget) summarizeTask(ctx context.Context, source NodeSummarySou
 	if summaryName.MatchString(t.ID) {
 		row.TaskID = t.ID
 	}
-	if row.Task != cellUnreadable {
+	if row.Task != "unnamed task" {
 		row.Result = "t3-steward task result " + run + "/" + row.Task
 	}
 	opens := 0
-	// cell reads one output: "" when it is neither declared nor retained,
-	// "?" when it should be there and cannot be read.
-	cell := func(name string, mode summaryRead, parse func(summaryBytes) string) (string, bool) {
-		artifact, retained := t.artifact(name)
+	cell := func(s summarySource, declared bool) summaryCell {
+		artifact, retained := t.artifact(s.name)
 		if !retained {
-			if t.ran() && t.declares(name) {
-				return cellUnreadable, true
+			if !declared && !t.declares(s.name) {
+				return summaryCell{status: "none"}
 			}
-			return "", false
+			if !t.ran() {
+				return summaryCell{status: "not-run"}
+			}
+			return summaryCell{status: "missing"}
 		}
-		read, ok := b.read(ctx, source, &opens, artifact, mode)
-		if !ok {
-			return cellUnreadable, true
+		read, status := b.read(ctx, source, &opens, artifact, s.mode)
+		if status != "known" {
+			return summaryCell{status: status}
 		}
-		return parse(read), true
+		value := s.parse(read)
+		if value == "" || value == verdictUnrecognized || value == gateNoResult {
+			return summaryCell{value: value, status: "unrecognized"}
+		}
+		return summaryCell{value: value, status: "known"}
 	}
-	// firstAnswer consults an ordered source list and returns the first value
-	// a source yields, with that source's label. A source that is declared but
-	// missing, unreadable or malformed does not end the list: its "?" stands,
-	// labelled with the first such source, only when no later source answers.
-	firstAnswer := func(sources []summarySource) (value, label string) {
-		for _, source := range sources {
-			found, ok := cell(source.name, source.mode, source.parse)
-			if !ok {
+	firstAnswer := func(sources []summarySource, declared, head bool) (summaryCell, string) {
+		first := summaryCell{status: "none"}
+		label := ""
+		for _, s := range sources {
+			found := cell(s, declared)
+			if found.status == "none" {
 				continue
 			}
-			if found != "" && found != cellUnreadable {
-				return found, source.label
+			if found.status == "known" || (found.status == "unrecognized" && !head) {
+				return found, s.label
 			}
 			if label == "" {
-				value, label = cellUnreadable, source.label
+				first, label = found, s.label
 			}
 		}
-		return value, label
+		return first, label
 	}
-	// The verdict source list, in order. The rc.116 structured verdict (H1:
-	// review_output and Task.ReviewVerdict) is not on this base; at
-	// integration it goes first in this list, ahead of these fallbacks.
-	row.Verdict, row.VerdictSource = firstAnswer([]summarySource{
-		{name: "review.md", label: "review.md", mode: readHead, parse: func(r summaryBytes) string { return parseVerdictLine(r.data) }},
-		{name: "verdict.json", label: "verdict.json", mode: readHead, parse: func(r summaryBytes) string {
-			if r.truncated {
-				return verdictUnrecognized
+	var verdict summaryCell
+	if t.ReviewVerdict != nil {
+		verdict = summaryCell{value: parseVerdictJSON(mustVerdictJSON(t.ReviewVerdict.Verdict)), status: "known"}
+		if verdict.value == verdictUnrecognized {
+			verdict.status = "unrecognized"
+		}
+		row.VerdictSource = "review_output"
+	} else {
+		sources := []summarySource{
+			{name: "review.md", label: "review.md", mode: readHead, parse: func(r summaryBytes) string { return parseVerdictLine(r.data) }},
+			{name: "verdict.json", label: "verdict.json", mode: readHead, parse: func(r summaryBytes) string {
+				if r.truncated {
+					return verdictUnrecognized
+				}
+				return parseVerdictJSON(r.data)
+			}},
+		}
+		if t.ReviewOutput != nil {
+			name := t.ReviewOutput.Path()
+			parse := sources[0].parse
+			if t.ReviewOutput.Verdict != "" {
+				parse = sources[1].parse
 			}
-			return parseVerdictJSON(r.data)
-		}},
-	})
-	if gate, found := cell("gate.log", readTail, func(r summaryBytes) string { return parseGateTail(r.data, r.truncated) }); found {
-		row.Gate = gate
+			sources = []summarySource{{name: name, label: summaryDisplayOutput(name), mode: readHead, parse: parse}}
+		}
+		verdict, row.VerdictSource = firstAnswer(sources, t.ReviewOutput != nil, false)
 	}
-	// The head source list: the first declared campaign commit, then the
-	// retained bundles.
+	row.VerdictStatus = verdict.status
+	row.Verdict = verdict.text("verdict", "")
+	gate := cell(summarySource{name: "gate.log", mode: readTail, parse: func(r summaryBytes) string { return parseGateTail(r.data, r.truncated) }}, false)
+	row.GateStatus, row.Gate = gate.status, gate.text("gate", "")
 	var heads []summarySource
 	for _, output := range t.Outputs {
 		if output.Commit != nil {
@@ -574,13 +602,15 @@ func (b *summaryBudget) summarizeTask(ctx context.Context, source NodeSummarySou
 	for _, name := range summaryBundleNames(t) {
 		heads = append(heads, summarySource{name: name, label: summaryDisplayOutput(path.Base(name)), mode: readBundle, parse: func(r summaryBytes) string { return parseBundleHead(r.data) }})
 	}
-	row.Head, row.HeadSource = firstAnswer(heads)
+	head, label := firstAnswer(heads, false, true)
+	row.HeadSource, row.HeadStatus = label, head.status
+	row.Head = head.text("head", label)
 	return row
 }
 
 // summarySource is one entry of an ordered source list for a cell: the output
 // it reads, the label shown as the cell's source, and how it is read and
-// parsed. A parse that yields "" or "?" has not answered.
+// parsed. A head parse that yields an empty string is unrecognized.
 type summarySource struct {
 	name, label string
 	mode        summaryRead
@@ -713,15 +743,16 @@ func buildNodeSummary(ctx context.Context, source NodeSummarySource, w domain.No
 // lastKnown finds the last task in manifest order with a value in the given
 // cell. A task whose cell is unreadable, or tasks left out, make the answer
 // unknown: an earlier value never stands in for a later one.
-func (s WakeSummary) lastKnown(cell func(WakeSummaryTask) string) (WakeSummaryTask, bool) {
+func (s WakeSummary) lastKnown(cell func(WakeSummaryTask) summaryCell) (WakeSummaryTask, bool) {
 	if s.Truncated > 0 {
 		return WakeSummaryTask{}, false
 	}
 	for i := len(s.Tasks) - 1; i >= 0; i-- {
-		switch cell(s.Tasks[i]) {
-		case "":
+		switch cell(s.Tasks[i]).status {
+		case "none", "not-run":
 			continue
-		case cellUnreadable:
+		case "known", "unrecognized":
+		default:
 			return WakeSummaryTask{}, false
 		}
 		return s.Tasks[i], true
@@ -756,13 +787,15 @@ func (s WakeSummary) nodeHeadline() (string, string, string) {
 			status = s.Workflow + ": " + status
 		}
 		segments = append(segments, status)
-		if review, ok := s.lastKnown(func(t WakeSummaryTask) string { return t.Verdict }); ok && review.Task != cellUnreadable {
+		if review, ok := s.lastKnown(func(t WakeSummaryTask) summaryCell { return summaryCell{value: t.Verdict, status: t.VerdictStatus} }); ok && review.Task != "unnamed task" {
 			verdictAt = len(segments)
 			segments = append(segments, review.Task+" "+review.Verdict)
 			verdict = review.Verdict
 		}
-		if last, ok := s.lastKnown(func(t WakeSummaryTask) string { return t.Head }); ok {
-			head = last.Head
+		if last, ok := s.lastKnown(func(t WakeSummaryTask) summaryCell { return summaryCell{value: t.Head, status: t.HeadStatus} }); ok {
+			if summarySHA.MatchString(last.Head) {
+				head = last.Head
+			}
 		}
 	} else if len(s.Tasks) == 1 {
 		task := s.Tasks[0]
@@ -771,7 +804,7 @@ func (s WakeSummary) nodeHeadline() (string, string, string) {
 			name = s.Workflow + "/" + name
 		}
 		segments = append(segments, name+": "+task.Progress)
-		if task.Verdict != "" && task.Verdict != cellUnreadable {
+		if summaryCellAnswers(task.VerdictStatus) {
 			verdictAt = len(segments)
 			segments = append(segments, task.Verdict)
 			verdict = task.Verdict
@@ -780,7 +813,7 @@ func (s WakeSummary) nodeHeadline() (string, string, string) {
 			head = task.Head
 		}
 	}
-	if head != "" {
+	if summarySHA.MatchString(head) {
 		headAt = len(segments)
 		segments = append(segments, "head "+head[:7])
 	}
@@ -804,7 +837,7 @@ func (s WakeSummary) nodeHeadline() (string, string, string) {
 // firstFailed is the first failed task in manifest order.
 func (s WakeSummary) firstFailed() (WakeSummaryTask, bool) {
 	for _, task := range s.Tasks {
-		if task.Progress == string(domain.ProgressFailed) && task.Task != cellUnreadable {
+		if task.Progress == string(domain.ProgressFailed) && task.Task != "unnamed task" {
 			return task, true
 		}
 	}

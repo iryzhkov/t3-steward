@@ -33,7 +33,7 @@ func (r *Runtime) expireTask(ctx context.Context, id string, record AttemptRecor
 		r.log.Warn("task timeout stop remains unproven", "assignment", id, "error", r.loggedError(ctx, id, err))
 		return nil
 	}
-	observed, err := r.driver.ObserveThread(ctx, pkg)
+	observed, err := r.observeThread(ctx, id, pkg)
 	if err != nil || (observed != backlog.DispatchThreadStopped && observed != backlog.DispatchThreadMissing) {
 		return nil
 	}

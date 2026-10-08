@@ -345,7 +345,7 @@ func TestRerunMayReplaceOnlyTheFailedRootPrompt(t *testing.T) {
 			descendant = task
 		}
 	}
-	if root.PromptArtifactID != "input:rerun:rerun-corrected:prompt" {
+	if root.PromptArtifactID != domain.RerunPromptInputID("rerun-corrected") {
 		t.Fatalf("root prompt = %q", root.PromptArtifactID)
 	}
 	if descendant.PromptArtifactID == "" || descendant.PromptArtifactID == root.PromptArtifactID {

@@ -68,10 +68,15 @@ func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) er
 		}
 		// A wake may start and finish entirely between worker observations.
 		// Forget the old stopped fence when the coordinator removes a park, so
-		// that the resumed turn also requires a causally later statement.
+		// that the resumed turn also requires a causally later statement. A park
+		// may name an assignment this worker holds no record of, such as one
+		// already pruned; there is no fence to forget, and writing a record
+		// for it would make the journal unreadable.
 		for id := range state.Parked {
-			if _, parked := next[id]; !parked {
-				record := state.Attempts[id]
+			if _, parked := next[id]; parked {
+				continue
+			}
+			if record, exists := state.Attempts[id]; exists {
 				record.StopObservedSequence = 0
 				state.Attempts[id] = record
 			}

@@ -1,6 +1,7 @@
 package backlog
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -31,10 +32,10 @@ func TestWorkerAdmissionPolicyFailsClosedForOffersAndNewWorkCommands(t *testing.
 		{ID: "stop-closed", Kind: domain.WorkerCommandStop, AssignmentID: "assignment-closed"},
 	}
 	allowedCommands, withheldCommands := policy.filterCommands(assignments, nil, commands)
-	if got := admissionCommandIDs(allowedCommands); !equalStrings(got, []string{"collect-closed", "prepare-free", "prepare-open", "stop-closed"}) {
+	if got := admissionCommandIDs(allowedCommands); !slices.Equal(got, []string{"collect-closed", "prepare-free", "prepare-open", "stop-closed"}) {
 		t.Fatalf("allowed commands = %v", got)
 	}
-	if got := admissionCommandIDs(withheldCommands); !equalStrings(got, []string{"dispatch-closed", "prepare-missing"}) {
+	if got := admissionCommandIDs(withheldCommands); !slices.Equal(got, []string{"dispatch-closed", "prepare-missing"}) {
 		t.Fatalf("withheld commands = %v", got)
 	}
 	attempts := []domain.Attempt{{ID: "attempt-closed", AdminForceStart: true}}
@@ -43,10 +44,10 @@ func TestWorkerAdmissionPolicyFailsClosedForOffersAndNewWorkCommands(t *testing.
 		t.Fatalf("forced offers allowed=%+v withheld=%+v", allowedOffers, withheldOffers)
 	}
 	allowedCommands, withheldCommands = policy.filterCommands(assignments, attempts, commands)
-	if got := admissionCommandIDs(allowedCommands); !equalStrings(got, []string{"collect-closed", "dispatch-closed", "prepare-free", "prepare-open", "stop-closed"}) {
+	if got := admissionCommandIDs(allowedCommands); !slices.Equal(got, []string{"collect-closed", "dispatch-closed", "prepare-free", "prepare-open", "stop-closed"}) {
 		t.Fatalf("forced allowed commands = %v", got)
 	}
-	if got := admissionCommandIDs(withheldCommands); !equalStrings(got, []string{"prepare-missing"}) {
+	if got := admissionCommandIDs(withheldCommands); !slices.Equal(got, []string{"prepare-missing"}) {
 		t.Fatalf("forced withheld commands = %v", got)
 	}
 }

@@ -28,10 +28,12 @@ const ExtendedReadVersion = "backlog.admin/v1-extended-read"
 // rc117_extended_response_schema.txt for those strict clients.
 const RC117ReadVersion = "backlog.admin/v1-extended-read-rc117"
 
-// CurrentReadVersion opts any read but status into every field this release
-// answers with. A later release that adds fields freezes this shape the way
-// RC117ReadVersion is frozen and names a new version.
-const CurrentReadVersion = "backlog.admin/v1-extended-read-rc118"
+// RC118ReadVersion freezes the complete rc.118 read response, including role receipts.
+const RC118ReadVersion = "backlog.admin/v1-extended-read-rc118"
+
+// CurrentReadVersion adds ranked role receipts. Any future additive read change
+// must freeze this shape and negotiate a new version for strict older clients.
+const CurrentReadVersion = "backlog.admin/v1-extended-read-m17-2b"
 
 type QueryKind string
 

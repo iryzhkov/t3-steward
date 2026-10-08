@@ -401,22 +401,22 @@ type Report struct {
 type Backlog struct {
 	// Enabled is parseable for compatibility; true is rejected because file intake is retired.
 	Enabled bool `yaml:"enabled"`
-	// Dir is retained configuration metadata; no runner reads or creates it.
-	Dir string `yaml:"dir"`
-	// QuietFor is how long no interactive thread must have run before a
-	// gated task starts.
+	// Dir, QuietFor, Preamble and DefaultHost are decode-only: Markdown intake
+	// is retired, nothing reads them, and they remain so that configuration
+	// files written by older releases still decode strictly.
+	Dir      string   `yaml:"dir"`
 	QuietFor Duration `yaml:"quiet_for"`
 	// LongWindowCap is the usage ceiling on windows longer than a day
 	// (weekly limits), in percent.
 	LongWindowCap float64 `yaml:"long_window_cap_percent"`
 	// HistoryDays is how much history feeds the forecast.
 	HistoryDays int `yaml:"history_days"`
-	// Preamble precedes every task prompt; empty means the built-in text.
+	// Preamble is decode-only; see Dir.
 	Preamble string `yaml:"preamble"`
 	// HostName is how tasks refer to this machine (default: the OS host
 	// name). "local" and "localhost" always mean this machine.
 	HostName string `yaml:"host_name"`
-	// DefaultHost is retained configuration metadata; SSH file forwarding is retired.
+	// DefaultHost is decode-only; see Dir.
 	DefaultHost string `yaml:"default_host"`
 	// SafetyMargin is the percent of a window always left unused.
 	SafetyMargin float64 `yaml:"safety_margin_percent"`
@@ -916,7 +916,6 @@ func Default() Config {
 	c.Archive.RemoveLocal = true
 	c.Archive.MaxPerRun = 50
 	c.Archive.KeepTranscripts = Duration(14 * 24 * time.Hour)
-	c.Backlog.QuietFor = Duration(30 * time.Minute)
 	c.Backlog.LongWindowCap = 80
 	c.Backlog.HistoryDays = 56
 	c.Backlog.SafetyMargin = 10

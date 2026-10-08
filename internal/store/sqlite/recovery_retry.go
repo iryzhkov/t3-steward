@@ -118,7 +118,7 @@ func (s *Store) CommitRecoveryRetry(ctx context.Context, request domain.Recovery
 			return domain.RecoveryRetryReceipt{}, err
 		}
 	}
-	attemptID := "attempt:recovery:" + digest[:24]
+	attemptID := domain.RecoveryAttemptID(digest)
 	progress, err := recoveryRetryProgressTx(ctx, tx, request.RunID, source.TaskID)
 	if err != nil {
 		return domain.RecoveryRetryReceipt{}, err

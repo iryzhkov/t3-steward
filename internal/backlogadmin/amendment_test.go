@@ -318,7 +318,7 @@ func TestGraphAmendmentReplacesPromptOnlyForFutureUnassignedTask(t *testing.T) {
 			amended = task
 		}
 	}
-	if amended.PromptArtifactID != "input:graph:prompt-repair" {
+	if amended.PromptArtifactID != domain.GraphPromptInputID("prompt-repair") {
 		t.Fatalf("prompt artifact = %q", amended.PromptArtifactID)
 	}
 	records, err := store.LoadCoordinatorRecords(ctx)

@@ -5,6 +5,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -135,6 +136,70 @@ func TestCompiledManifestPinsTheRefRoutesAndEfforts(t *testing.T) {
 	}
 	if !strings.Contains(compiledFile(t, plan.Units[0], "prompts/review.md"), ".t3/dependencies/") {
 		t.Fatal("the review prompt does not say where the implementation arrives")
+	}
+}
+
+// The review task declares review.md's first line as its verdict, and the
+// two first lines its prompt asks for are exactly the ones the coordinator's
+// parser records as accept and changes-requested.
+func TestCompiledReviewDeclaresTheVerdictItsPromptAsksFor(t *testing.T) {
+	plan, err := ParseCompilePlan("plan.md", readCompileFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unit := range plan.Units {
+		manifest, err := backlog.ParseManifest([]byte(compiledFile(t, unit, "workflow.yaml")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		implement, review := manifest.Tasks["implement"], manifest.Tasks["review"]
+		if implement.ReviewOutput != nil {
+			t.Fatalf("%s: the implement task declares a review output %+v", unit.ID, implement.ReviewOutput)
+		}
+		if review.ReviewOutput == nil || review.ReviewOutput.VerdictLine != "review.md" || review.ReviewOutput.Verdict != "" {
+			t.Fatalf("%s: review output = %+v, want verdict_line: review.md", unit.ID, review.ReviewOutput)
+		}
+		prompt := compiledFile(t, unit, "prompts/review.md")
+		lines := regexp.MustCompile("`(VERDICT: [A-Z_]+)`").FindAllStringSubmatch(prompt, -1)
+		if len(lines) != 2 {
+			t.Fatalf("%s: the review prompt names %d verdict lines, want 2:\n%s", unit.ID, len(lines), prompt)
+		}
+		for i, want := range []string{"accept", "changes-requested"} {
+			got, err := backlog.ParseReviewVerdict(*review.ReviewOutput, []byte(lines[i][1]+"\n\nreview body\n"))
+			if err != nil || got.Verdict != want {
+				t.Fatalf("%s: %q parses to %+v %v, want %s", unit.ID, lines[i][1], got, err, want)
+			}
+		}
+		if !strings.Contains(prompt, "The coordinator records that first line") {
+			t.Fatalf("%s: the review prompt does not say the first line is recorded:\n%s", unit.ID, prompt)
+		}
+	}
+}
+
+// The implement prompt points the executor at the affected-package loop for
+// iterating, pinned to the unit's base, and keeps the declared verification as
+// the one full run.
+func TestCompiledImplementPromptIteratesOnAffectedPackages(t *testing.T) {
+	plan, err := ParseCompilePlan("plan.md", readCompileFixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unit := range plan.Units {
+		prompt := compiledFile(t, unit, "prompts/implement.md")
+		for _, want := range []string{
+			"While iterating",
+			"`make test-affected BASE=" + plan.Ref + "`",
+			"Huyang `verify_run`",
+			"`test_scope=affected`",
+			"still runs once",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s prompts/implement.md does not contain %q:\n%s", unit.ID, want, prompt)
+			}
+		}
+		if strings.Contains(compiledFile(t, unit, "prompts/review.md"), "test-affected") {
+			t.Fatalf("%s: the review prompt names the executor's iteration loop", unit.ID)
+		}
 	}
 }
 

@@ -283,8 +283,8 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	}
 	// A strict older client rejects every field its release did not declare,
 	// so a v1 read keeps the shape v1 had, an ExtendedReadVersion read the
-	// shape it had in rc.116 and an RC117ReadVersion read the shape it had in
-	// rc.117; this release's clients ask for CurrentReadVersion.
+	// shape it had in rc.116, and rc.117/rc.118 reads their frozen schemas.
+	// This release's clients ask for CurrentReadVersion.
 	switch query.Version {
 	case Version:
 		if err := projectV1Response(&response); err != nil {
@@ -293,6 +293,10 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	case ExtendedReadVersion:
 		if err := projectRC116ExtendedResponse(&response); err != nil {
 			return Response{}, fmt.Errorf("project the rc.116 extended %s response: %w", query.Kind, err)
+		}
+	case RC118ReadVersion:
+		if err := projectRC118ExtendedResponse(&response); err != nil {
+			return Response{}, fmt.Errorf("project the rc.118 extended %s response: %w", query.Kind, err)
 		}
 	case RC117ReadVersion:
 		if err := projectRC117ExtendedResponse(&response); err != nil {
@@ -304,7 +308,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 
 func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	extendedRead := (query.Version == ExtendedReadVersion || query.Version == RC117ReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
+	extendedRead := (query.Version == ExtendedReadVersion || query.Version == RC117ReadVersion || query.Version == RC118ReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
 	if query.Version != Version && !intakeStatus && !extendedRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}

@@ -588,6 +588,7 @@ var pagesWithoutAParserSite = map[string]pageWithoutAParserSite{
 	"bucket":      {excuseBreadth, "family page"},
 	"campaign":    {excuseBreadth, "family page"},
 	"coordinator": {excuseBreadth, "family page"},
+	"quota":       {excuseBreadth, "family page"},
 	"schedules":   {excuseBreadth, "family page"},
 	"task":        {excuseBreadth, "family page"},
 	"thread":      {excuseBreadth, "family page"},

@@ -11,16 +11,20 @@ import (
 
 // A dry run is a projection, not a submission receipt or a readiness promise.
 type taskRunDryDocument struct {
-	Selection        *policySelection `json:"selection,omitempty"`
-	SchemaVersion    int              `json:"schemaVersion"`
-	DryRun           bool             `json:"dryRun"`
-	Project          string           `json:"project"`
-	Ref              string           `json:"ref"`
-	Fresh            bool             `json:"fresh"`
-	Route            taskRunRoute     `json:"route"`
-	IdempotencyKey   string           `json:"idempotencyKey"`
-	NotifyThread     string           `json:"notifyThread"`
-	PromptCharacters int              `json:"promptCharacters"`
+	Selection     *policySelection `json:"selection,omitempty"`
+	SchemaVersion int              `json:"schemaVersion"`
+	DryRun        bool             `json:"dryRun"`
+	Project       string           `json:"project"`
+	Ref           string           `json:"ref"`
+	Fresh         bool             `json:"fresh"`
+	Route         taskRunRoute     `json:"route"`
+	// Outputs is always present, [] when none is declared, because a dry run
+	// exists to show what a start would do and keeping only final-message.md
+	// is something it would do.
+	Outputs          []string `json:"outputs"`
+	IdempotencyKey   string   `json:"idempotencyKey"`
+	NotifyThread     string   `json:"notifyThread"`
+	PromptCharacters int      `json:"promptCharacters"`
 }
 
 func (c taskRunCLI) renderDryRun(parsed taskRunArgs, project, ref string, route taskRunRoute, key, thread string, prompts []taskRunPrompt, bundle campaign.Bundle) error {
@@ -33,7 +37,8 @@ func (c taskRunCLI) renderDryRun(parsed taskRunArgs, project, ref string, route 
 		task := bundle.Campaign.Manifest.Tasks[prompt.name]
 		size += compat.TurnInputLength(backlog.FirstTurnPrompt(body, task.OutputDeclarations()))
 	}
-	doc := taskRunDryDocument{Selection: parsed.selection, SchemaVersion: 1, DryRun: true, Project: project, Ref: ref, Fresh: parsed.fresh, Route: printedRoute(route), IdempotencyKey: key, NotifyThread: thread, PromptCharacters: size}
+	outputs := append([]string{}, parsed.outputs...)
+	doc := taskRunDryDocument{Selection: parsed.selection, SchemaVersion: 1, DryRun: true, Project: project, Ref: ref, Fresh: parsed.fresh, Route: printedRoute(route), Outputs: outputs, IdempotencyKey: key, NotifyThread: thread, PromptCharacters: size}
 	if !parsed.asJSON && parsed.selection != nil {
 		renderPolicySelection(c.stdout, *parsed.selection)
 	}
@@ -44,7 +49,7 @@ func (c taskRunCLI) renderDryRun(parsed taskRunArgs, project, ref string, route 
 	if notify == "" {
 		notify = "none (--no-notify)"
 	}
-	_, err := fmt.Fprintf(c.stdout, "dry run\nproject %s\nref %s\nfresh %t\nroute %s/%s (worker %s, pool %s)\nkey %s\nnotify %s\ncomposed prompt %d characters (limit %d) (total across %d task(s), limit per task, including completion contract)\n",
-		project, ref, parsed.fresh, doc.Route.Instance, doc.Route.Model, doc.Route.Worker, doc.Route.QuotaPool, key, notify, size, compat.MaxTurnInputLength, len(prompts))
+	_, err := fmt.Fprintf(c.stdout, "dry run\nproject %s\nref %s\nfresh %t\nroute %s/%s (worker %s, pool %s)\n%s\nkey %s\nnotify %s\ncomposed prompt %d characters (limit %d) (total across %d task(s), limit per task, including completion contract)\n",
+		project, ref, parsed.fresh, doc.Route.Instance, doc.Route.Model, doc.Route.Worker, doc.Route.QuotaPool, taskRunOutputsLine(outputs), key, notify, size, compat.MaxTurnInputLength, len(prompts))
 	return err
 }

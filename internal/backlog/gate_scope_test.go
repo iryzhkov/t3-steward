@@ -47,7 +47,7 @@ func TestSystemdScopeRunnerKillRemaining(t *testing.T) {
 // When the scope cannot be shown to be empty, a process may still be running
 // in it. Before the command that refuses to start it; after the command it
 // turns even a successful exit into an error that keeps the systemctl output.
-func TestSystemdScopeRunnerRefusesUnclearedScope(t *testing.T) {
+func TestSystemdScopeRunnerKillRemainingRefusesUnclearedScope(t *testing.T) {
 	for _, phase := range []string{"before", "after"} {
 		t.Run(phase, func(t *testing.T) {
 			root := t.TempDir()
@@ -66,6 +66,19 @@ func TestSystemdScopeRunnerRefusesUnclearedScope(t *testing.T) {
 				ProcessRequest{ID: "verify-attempt-1-gate-0", Dir: root, Program: "/bin/sh", Args: []string{"-c", "true"}, Log: &log, KillRemaining: true})
 			if err == nil {
 				t.Fatalf("Run succeeded with an uncleared scope; calls:\n%s", readAbsoluteTestFile(t, calls))
+			}
+			var cleanupErr *ScopeCleanupError
+			if !errors.As(err, &cleanupErr) || cleanupErr.Unit != processScopeUnit("verify-attempt-1-gate-0") {
+				t.Fatalf("Run error = %v, want a scope cleanup failure", err)
+			}
+			unit := processScopeUnit("verify-attempt-1-gate-0")
+			clear := "--user kill --kill-who=all --signal=KILL " + unit + "\n--user show --property=ActiveState --value " + unit
+			want := clear
+			if phase == "after" {
+				want = clear + "\nrun\n" + clear
+			}
+			if got := strings.TrimSpace(readAbsoluteTestFile(t, calls)); got != want {
+				t.Fatalf("calls:\n%s\nwant:\n%s", got, want)
 			}
 			var exitErr *ProcessExitError
 			if errors.As(err, &exitErr) || result.ExitCode != 0 {
@@ -99,6 +112,25 @@ func TestGateScopeCleanupFailureIsNotReportedAsTimeout(t *testing.T) {
 	cleanupImmutable(t, result.StorageDir)
 	if result.Completion.VerificationPassed || !strings.Contains(result.Completion.Failure, "could not be cleared: state active") {
 		t.Fatalf("scope cleanup failure reported as %q (passed=%v)", result.Completion.Failure, result.Completion.VerificationPassed)
+	}
+}
+
+// Keep the real clearScope typed error and its configured 20ms deadline
+// covered separately from the prestarted held-output systemctl operation.
+func TestSystemdScopeRunnerKillRemainingDirectClearScope20ms(t *testing.T) {
+	ctl := writeExecutable(t, t.TempDir(), "systemctl", "#!/bin/sh\nexec sleep 30\n")
+	runner := SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: 20 * time.Millisecond}
+	if runner.cleanupTimeout() != 20*time.Millisecond {
+		t.Fatal("configured cleanup timeout was not retained")
+	}
+	started := time.Now()
+	err := runner.clearScope("t3-steward-direct-20ms.scope")
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("direct clearScope took %s despite a 20ms cleanup bound", elapsed)
+	}
+	var cleanup *ScopeCleanupError
+	if !errors.As(err, &cleanup) || cleanup.Unit != "t3-steward-direct-20ms.scope" {
+		t.Fatalf("actual clearScope error = %v, want typed scope cleanup failure", err)
 	}
 }
 

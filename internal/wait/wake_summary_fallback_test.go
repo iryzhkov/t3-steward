@@ -61,8 +61,8 @@ func TestNodeSummaryVerdictStaysUnknownWhenNoSourceAnswers(t *testing.T) {
 		ID: "review", Name: "review",
 		Outputs: []domain.ArtifactDeclaration{{Name: "review.md"}, {Name: "verdict.json"}},
 	})
-	if row.Verdict != cellUnreadable || row.VerdictSource != "review.md" {
-		t.Fatalf("no retained verdict source must leave ?: %+v", row)
+	if row.Verdict != "review output missing" || row.VerdictStatus != "missing" || row.VerdictSource != "review.md" {
+		t.Fatalf("no retained verdict source must report missing: %+v", row)
 	}
 }
 
@@ -119,7 +119,7 @@ func TestNodeSummaryHeadStaysUnknownWhenNoSourceAnswers(t *testing.T) {
 		ID: "implementation", Name: "implementation",
 		Outputs: []domain.ArtifactDeclaration{{Name: "implementation", Commit: &domain.CommitOutput{}}, {Name: "unit.bundle"}},
 	})
-	if row.Head != cellUnreadable || row.HeadSource != "commit implementation" {
-		t.Fatalf("no retained head source must leave ?: %+v", row)
+	if row.Head != "head output missing" || row.HeadStatus != "missing" || row.HeadSource != "commit implementation" {
+		t.Fatalf("no retained head source must report missing: %+v", row)
 	}
 }

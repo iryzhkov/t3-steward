@@ -16,6 +16,12 @@ type V2ResourcePlacement struct {
 	UnsizedTaskCPUUnits  *float64 `yaml:"unsized_task_cpu_units"`
 	UnsizedTaskMemoryMB  *int     `yaml:"unsized_task_memory_mb"`
 	UnsizedTaskScratchMB *int     `yaml:"unsized_task_scratch_mb"`
+	// BuildMaxLoadPerCPU stops new build-class work (two or more cpu units)
+	// on a worker whose load per cpu is above it. 0 disables the ceiling.
+	BuildMaxLoadPerCPU *float64 `yaml:"build_max_load_per_cpu"`
+	// SwapIgnoreZram counts only non-zram swap against max_swap_used_mb on a
+	// worker that reports the split.
+	SwapIgnoreZram *bool `yaml:"swap_ignore_zram"`
 }
 
 // Policy resolves omitted values to the coordinator's safe defaults.
@@ -47,6 +53,12 @@ func (c V2ResourcePlacement) Policy() domain.ResourcePlacementPolicy {
 	}
 	if c.UnsizedTaskScratchMB != nil {
 		policy.UnsizedTaskScratchMB = *c.UnsizedTaskScratchMB
+	}
+	if c.BuildMaxLoadPerCPU != nil {
+		policy.BuildMaxLoadPerCPU = *c.BuildMaxLoadPerCPU
+	}
+	if c.SwapIgnoreZram != nil {
+		policy.SwapIgnoreZram = *c.SwapIgnoreZram
 	}
 	return policy
 }

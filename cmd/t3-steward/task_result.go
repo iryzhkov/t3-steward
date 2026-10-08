@@ -24,6 +24,11 @@ call, including worker gate evidence when present. The gate report is written
 to gate/report.json and its captured output to gate/log.txt. The gate report is
 inlined in JSON and summarized in text. Without a task, every task of the run is collected.
 
+A declared output the task did not leave behind is named once the task has
+ended, as "NAME is not there: declared output was not retained" in text and
+under missingOutputs in JSON; a running or skipped task reports none, and a
+declared commit is not checked here.
+
 The files are written under DIR, each under the name the task declared for it,
 and the directory is printed. The default is <state>/results/<run>/<task>/,
 outside every checkout, so collecting a result never changes a working tree;
@@ -101,6 +106,9 @@ type taskResultTask struct {
 	// Missing names what was expected and is not there, such as a final
 	// message a task that never ran cannot have produced.
 	Missing []string `json:"missing,omitempty"`
+	// MissingOutputs names the files the task declared as outputs and did not
+	// leave behind, once its attempt has ended; see missingDeclaredOutputs.
+	MissingOutputs []string `json:"missingOutputs,omitempty"`
 }
 
 // taskResultFile is one written file.
@@ -363,9 +371,24 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		collected.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
 		collected.ReviewGate = task.Attempt.ReviewGate
 	}
+	if err := resultDirectoryName(task.Task.Name); err != nil {
+		return taskResultTask{}, err
+	}
+	staging, err := stageResultDirectory(collected.Directory)
+	if err != nil {
+		return taskResultTask{}, err
+	}
+	published := false
+	defer func() {
+		// After publication staging may hold a retired generation whose rename
+		// failed. Keep it for readers and report it through the left mechanism.
+		if !published {
+			_ = os.RemoveAll(staging)
+		}
+	}()
 	final := false
 	for _, artifact := range detail.Artifacts {
-		if artifact.Metadata.TaskID != task.Task.ID {
+		if artifact.Metadata.TaskID != task.Task.ID || !ofSelectedAttempt(task, artifact) {
 			continue
 		}
 		switch artifact.Metadata.Kind {
@@ -389,7 +412,7 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 				artifact.Metadata.Name = "gate/report.json"
 			}
 		}
-		body, err := c.fetch(ctx, artifact, collected.Directory)
+		body, err := c.fetch(ctx, artifact, staging)
 		if err != nil {
 			return taskResultTask{}, err
 		}
@@ -413,9 +436,26 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 			collected.FinalMessage = string(body)
 		}
 	}
+	left, err := replaceResultDirectory(staging, collected.Directory)
+	if err != nil {
+		return taskResultTask{}, err
+	}
+	published = true
+	for _, path := range left {
+		if c.stderr != nil {
+			fmt.Fprintf(c.stderr, "warning: could not remove the previous collection at %s\n", path)
+		}
+	}
 	if !final {
 		collected.Missing = append(collected.Missing, finalMessageArtifactName)
 	}
+	var outputs []string
+	for _, file := range collected.Files {
+		if file.Kind == string(domain.ArtifactOutput) {
+			outputs = append(outputs, file.Name)
+		}
+	}
+	collected.MissingOutputs = missingDeclaredOutputs(task, outputs)
 	return collected, nil
 }
 
@@ -519,6 +559,9 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 		}
 		for _, missing := range task.Missing {
 			fmt.Fprintf(out, "    %s is not there: this task produced no result\n", missing)
+		}
+		for _, missing := range task.MissingOutputs {
+			fmt.Fprintf(out, "    %s is not there: declared output was not retained\n", printedOutputName(missing))
 		}
 	}
 	return nil

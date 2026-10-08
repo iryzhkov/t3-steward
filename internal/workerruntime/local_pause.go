@@ -441,7 +441,7 @@ func attemptLive(record AttemptRecord, now time.Time) (bool, string) {
 // it notices a thread that runs again by other means.
 func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record AttemptRecord, now time.Time) error {
 	pkg := record.Package.Package
-	threadState, observeErr := r.driver.ObserveThread(ctx, pkg)
+	threadState, observeErr := r.observeThread(ctx, id, pkg)
 	if observeErr != nil {
 		r.log.Warn("T3 observation unavailable; paused attempt waits", "assignment", id, "error", r.loggedError(ctx, id, observeErr))
 		return nil
@@ -625,6 +625,7 @@ type pausedCollector interface {
 // collectWithPauseEvidence collects through the driver, naming the most
 // recent local quota pause when the driver can carry it.
 func (r *Runtime) collectWithPauseEvidence(ctx context.Context, record AttemptRecord) error {
+	ctx = withAttemptProcessLimits(ctx, record)
 	pause := record.LastLocalThrottle
 	if pause == nil {
 		pause = record.LocalThrottle
