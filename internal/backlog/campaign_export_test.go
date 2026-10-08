@@ -60,6 +60,7 @@ func TestExportCommitBundleRefusesMalformedAndCorruptSources(t *testing.T) {
 		{"limit", "repair", raw, int64(len(raw) - 1)},
 		{"corrupt", "repair", append(append([]byte(nil), raw[:len(raw)-1]...), raw[len(raw)-1]^1), DefaultCommitBundleMaxBytes},
 		{"truncated", "repair", raw[:len(raw)-8], DefaultCommitBundleMaxBytes},
+		{"zero-byte-bundle", "repair", nil, DefaultCommitBundleMaxBytes},
 		{"wrong commit", "repair", bytes.Replace(raw, []byte(p.commit), []byte(strings.Repeat("a", 40)), 1), DefaultCommitBundleMaxBytes},
 	}
 	for _, tc := range cases {
@@ -73,6 +74,10 @@ func TestExportCommitBundleRefusesMalformedAndCorruptSources(t *testing.T) {
 	}
 	// Without retained metadata, the worker transport still must reject a corrupt pack.
 	p.provenance.Bundle = nil
+	if empty, err := ExportCommitBundle(context.Background(), p.provenance, "repair", bytes.NewReader(nil), DefaultCommitBundleMaxBytes); err == nil {
+		empty.Close()
+		t.Fatal("accepted zero-byte transport bundle without retained metadata")
+	}
 	broken := append([]byte(nil), raw...)
 	broken[len(broken)-1] ^= 1
 	b, err := ExportCommitBundle(context.Background(), p.provenance, "repair", bytes.NewReader(broken), DefaultCommitBundleMaxBytes)

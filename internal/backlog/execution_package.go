@@ -590,7 +590,7 @@ func requiredDefinitionArtifact(state executionPackageState, id string) (domain.
 
 func packageArtifact(artifact domain.Artifact, path, kind string) (workerproto.ArtifactObject, error) {
 	if artifact.ID == "" || artifact.Name == "" || artifact.MediaType == "" ||
-		artifact.Size <= 0 || artifact.SHA256 == "" {
+		artifact.Size < 0 || artifact.SHA256 == "" {
 		return workerproto.ArtifactObject{}, fmt.Errorf("artifact %q has incomplete immutable metadata", artifact.ID)
 	}
 	return workerproto.ArtifactObject{
