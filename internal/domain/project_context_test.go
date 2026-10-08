@@ -1,7 +1,6 @@
 package domain
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -35,24 +34,6 @@ func validProjectContext() ProjectContext {
 		}},
 		Setup: []string{"go version", "go mod download"}, Checks: []string{"go test ./..."},
 		CapabilityRefs: []string{"git-source"}, Freshness: ProjectContextFreshness{ObservedAt: now, FreshThrough: &fresh},
-	}
-}
-
-func TestProjectContextLookupIsBoundedDeterministicAndSupplementary(t *testing.T) {
-	index := validProjectContext()
-	first, err := LookupProjectContext(index, "cold", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := LookupProjectContext(index, "cold", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(first) != 2 || !reflect.DeepEqual(first, second) {
-		t.Fatalf("lookup is not stable and bounded: %#v %#v", first, second)
-	}
-	if len(index.RequiredReferences) != 1 || index.RequiredReferences[0] != "git-source" {
-		t.Fatal("lookup changed explicit required selection")
 	}
 }
 

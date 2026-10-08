@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 )
@@ -97,13 +96,6 @@ type ProjectContext struct {
 	Checks             []string                  `json:"checks" yaml:"checks"`
 	CapabilityRefs     []string                  `json:"capabilityRefs" yaml:"capability_refs"`
 	Freshness          ProjectContextFreshness   `json:"freshness" yaml:"freshness"`
-}
-
-type ProjectContextMatch struct {
-	Kind     string `json:"kind"`
-	ID       string `json:"id"`
-	Summary  string `json:"summary"`
-	Revision string `json:"revision,omitempty"`
 }
 
 var (
@@ -230,51 +222,4 @@ func validateProjectContextReference(ref ProjectContextReference) error {
 		}
 	}
 	return nil
-}
-
-// LookupProjectContext performs bounded deterministic lexical/topic lookup. Required
-// references are still selected explicitly; this helper only supplements them.
-func LookupProjectContext(index ProjectContext, query string, limit int) ([]ProjectContextMatch, error) {
-	if err := ValidateProjectContext(&index); err != nil {
-		return nil, err
-	}
-	if limit < 1 || limit > 64 {
-		return nil, errors.New("project context lookup limit must be between 1 and 64")
-	}
-	terms := strings.Fields(strings.ToLower(query))
-	if len(terms) == 0 || len(terms) > 16 {
-		return nil, errors.New("project context lookup requires 1 to 16 lexical terms")
-	}
-	var matches []ProjectContextMatch
-	add := func(kind, id, summary, revision string, topics []string) {
-		haystack := strings.ToLower(strings.Join(append([]string{id, summary, revision}, topics...), " "))
-		for _, term := range terms {
-			if !strings.Contains(haystack, term) {
-				return
-			}
-		}
-		matches = append(matches, ProjectContextMatch{Kind: kind, ID: id, Summary: summary, Revision: revision})
-	}
-	for _, ref := range index.References {
-		add("reference", ref.ID, ref.URI, ref.Revision, ref.Topics)
-	}
-	for _, decision := range index.Decisions {
-		add("decision", decision.ID, decision.Summary, "", decision.Topics)
-	}
-	for _, location := range index.CodeLocations {
-		add("code", location.Path, location.Path, location.Revision, location.Topics)
-	}
-	for _, location := range index.InputLocations {
-		add("input", location.Path, location.Path, location.Revision, location.Topics)
-	}
-	sort.Slice(matches, func(i, j int) bool {
-		if matches[i].Kind != matches[j].Kind {
-			return matches[i].Kind < matches[j].Kind
-		}
-		return matches[i].ID < matches[j].ID
-	})
-	if len(matches) > limit {
-		matches = matches[:limit]
-	}
-	return matches, nil
 }
