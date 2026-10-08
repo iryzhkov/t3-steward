@@ -223,7 +223,7 @@ func TestAPreviousCollectionThatCannotBeRemovedDoesNotFailTheNewOne(t *testing.T
 // replace the output directory itself, which --output . makes the caller's
 // checkout.
 func TestTaskResultRefusesATaskNameThatIsNotOneDirectory(t *testing.T) {
-	for _, name := range []string{"", ".", "..", "a/b", `a\b`} {
+	for _, name := range []string{"", ".", "..", "a/b", `a\b`, ".task-result-1"} {
 		t.Run(name, func(t *testing.T) {
 			f := newTaskResultFixture(t)
 			output := t.TempDir()

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // A reader of a task's result directory always finds a complete collection
@@ -60,6 +61,52 @@ func TestReadersAlwaysFindACompleteCollectionWhileANewOneIsPublished(t *testing.
 	}
 	if got := readFile(t, directory, "final-message.md"); got != "collection 500" {
 		t.Fatalf("final message = %q, want the last collection", got)
+	}
+}
+
+// A collection interrupted by a crash leaves its hidden staging directory, or
+// the earlier collection it had just exchanged out, beside the task's
+// directory. The next collection removes such a leftover once it is old enough
+// that no running collection can still own it, and leaves a recent one, which
+// may belong to a collection still fetching.
+func TestTheNextCollectionRemovesWhatAnInterruptedOneLeftBehind(t *testing.T) {
+	runDirectory := filepath.Join(t.TempDir(), "run-1")
+	directory := filepath.Join(runDirectory, "task")
+	interrupted := func(age time.Duration) string {
+		t.Helper()
+		staged, err := stageResultDirectory(directory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(staged, "old.txt"), []byte("old"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		when := time.Now().Add(-age)
+		if err := os.Chtimes(staged, when, when); err != nil {
+			t.Fatal(err)
+		}
+		return staged
+	}
+	stale := interrupted(2 * interruptedCollectionAge)
+	recent := interrupted(time.Minute)
+	staged, err := stageResultDirectory(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staged, "final-message.md"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if left, err := replaceResultDirectory(staged, directory); err != nil || len(left) != 0 {
+		t.Fatalf("left %v, err %v", left, err)
+	}
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Fatalf("the interrupted collection's leftover survived: %v", err)
+	}
+	if _, err := os.Lstat(recent); err != nil {
+		t.Fatalf("a recent staging directory, possibly still in use, was removed: %v", err)
+	}
+	if got := readFile(t, directory, "final-message.md"); got != "new" {
+		t.Fatalf("final message = %q", got)
 	}
 }
 

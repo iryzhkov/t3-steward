@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 )
@@ -25,10 +26,12 @@ func ofSelectedAttempt(task backlogadmin.TaskDetail, artifact backlogadmin.Artif
 
 // resultDirectoryName refuses a task name that is not one plain path element.
 // The task's result directory is replaced wholesale, so a name such as "" or
-// ".." would replace the run's directory or the one above it. The coordinator
-// validates task names, so this only stops a name it should never send.
+// ".." would replace the run's directory or the one above it, and a hidden name
+// could be taken for another collection's staging directory and removed. The
+// coordinator validates task names, so this only stops a name it should never
+// send.
 func resultDirectoryName(name string) error {
-	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) || filepath.Base(name) != name {
+	if name == "" || strings.HasPrefix(name, ".") || strings.ContainsAny(name, `/\`) || filepath.Base(name) != name {
 		return fmt.Errorf("task name %q cannot name a result directory", name)
 	}
 	return nil
@@ -42,8 +45,18 @@ func stageResultDirectory(directory string) (string, error) {
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return "", err
 	}
-	return os.MkdirTemp(parent, ".task-result-*")
+	return os.MkdirTemp(parent, resultStagingPrefix+"*")
 }
+
+// resultStagingPrefix begins the name of every directory a collection keeps
+// beside a task's directory: its staging directory and the earlier collections
+// it moves aside. No task name begins with it.
+const resultStagingPrefix = ".task-result-"
+
+// interruptedCollectionAge is how long a hidden staging directory beside a
+// task's directory must have been left untouched before a later collection
+// takes it for one a crash interrupted. No collection runs this long.
+const interruptedCollectionAge = 24 * time.Hour
 
 // replaceResultDirectoryRounds bounds how often a collection moves aside a
 // directory that another collection of the same task put in place meanwhile.
@@ -67,8 +80,47 @@ var swapDirectories = exchangeDirectories
 // one is exchanged with it, and the last collection to finish wins. Once the new
 // collection is in place, removing the earlier one, now at staged, is cleanup: a
 // removal that fails does not undo the collection, and the directory left
-// behind is returned for the caller to report.
+// behind is returned for the caller to report. So is removing what a collection
+// interrupted by a crash left beside directory.
 func replaceResultDirectory(staged, directory string) ([]string, error) {
+	left, err := publishResultDirectory(staged, directory)
+	if err != nil {
+		return nil, err
+	}
+	return append(left, removeInterruptedCollections(staged, directory, time.Now())...), nil
+}
+
+// removeInterruptedCollections removes the staging directories and moved-aside
+// collections beside directory that no collection has touched for
+// interruptedCollectionAge, which only a collection a crash interrupted leaves.
+// A recent one may belong to a collection of the same task still running, so
+// it is kept. It returns those it could not remove.
+func removeInterruptedCollections(staged, directory string, now time.Time) []string {
+	parent := filepath.Dir(directory)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil
+	}
+	var left []string
+	for _, entry := range entries {
+		path := filepath.Join(parent, entry.Name())
+		if !strings.HasPrefix(entry.Name(), resultStagingPrefix) || path == staged || strings.HasPrefix(path, staged+"-") {
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil || now.Sub(info.ModTime()) < interruptedCollectionAge {
+			continue
+		}
+		if err := os.RemoveAll(path); err != nil {
+			left = append(left, path)
+		}
+	}
+	return left
+}
+
+// publishResultDirectory puts staged in place of directory; see
+// replaceResultDirectory.
+func publishResultDirectory(staged, directory string) ([]string, error) {
 	entries, err := os.ReadDir(staged)
 	if err != nil {
 		return nil, err
