@@ -98,13 +98,13 @@ func (l *Limits) Properties() []string {
 	return append(properties, fmt.Sprintf("TasksMax=%d", limitTasksMax))
 }
 
-// Environment tells the build tools inside the sandbox how many CPUs they
-// have, so they do not start one job per host CPU and thrash in the quota.
+// Environment bounds build parallelism inside every sized sandbox. Memory-only
+// limits use one job so builds do not default to one job per host CPU.
 func (l *Limits) Environment() []string {
-	if l == nil || l.CPUs <= 0 {
+	if l == nil {
 		return nil
 	}
-	n := strconv.Itoa(l.CPUs)
+	n := strconv.Itoa(max(1, l.CPUs))
 	return []string{"GOMAXPROCS=" + n, "GOFLAGS=-p=" + n, "MAKEFLAGS=-j" + n, "CARGO_BUILD_JOBS=" + n}
 }
 

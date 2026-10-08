@@ -46,6 +46,7 @@ func TestLimitsForSizedAndUnsizedDemand(t *testing.T) {
 			name: "memory only", demand: domain.ResourceDemand{MemoryMB: 512},
 			want:       &Limits{MemoryMB: 512},
 			properties: []string{"MemoryMax=512M", "MemorySwapMax=0", "TasksMax=4096"},
+			env:        []string{"GOMAXPROCS=1", "GOFLAGS=-p=1", "MAKEFLAGS=-j1", "CARGO_BUILD_JOBS=1"},
 		},
 		{name: "unsized", demand: domain.ResourceDemand{}},
 		{name: "class only is unsized", demand: domain.ResourceDemand{MinCPUClass: "standard", ScratchMB: 100}},
@@ -67,6 +68,18 @@ func TestLimitsForSizedAndUnsizedDemand(t *testing.T) {
 				t.Fatalf("derived limits do not validate: %v", err)
 			}
 		})
+	}
+}
+
+func TestMemoryOnlyBuildEnvironment(t *testing.T) {
+	demand := domain.ResourceDemand{MemoryMB: 1000}
+	if err := demand.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	limits := LimitsFor(demand)
+	want := []string{"GOMAXPROCS=1", "GOFLAGS=-p=1", "MAKEFLAGS=-j1", "CARGO_BUILD_JOBS=1"}
+	if got := limits.Environment(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("memory-sized launch environment %q; want %q", got, want)
 	}
 }
 
