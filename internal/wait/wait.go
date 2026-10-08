@@ -213,6 +213,9 @@ type Runner struct {
 	// wake is built and before its payload is frozen. A wake whose summary
 	// cannot be built within the bound is still delivered, without it.
 	NodeSummary NodeSummarySource
+	// NodeSummaryRecord stores the exact summary after its wake claim succeeds.
+	// A recording failure is logged and does not prevent delivery.
+	NodeSummaryRecord func(context.Context, string, WakeSummary) error
 	// DisableQuotaChecks bypasses quota-based wake holds, independently of DryRun.
 	DisableQuotaChecks bool
 
