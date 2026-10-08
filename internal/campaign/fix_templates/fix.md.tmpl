@@ -1,0 +1,9 @@
+Implement {{.Name}} from the recorded preceding review.
+Read .t3/inputs/inputs/fix/rules.md first and follow it, then the original brief and context. List .t3/dependencies/ and inspect the retained commit, handoff and review artifacts. The original reviewed commit is {{.Commit}}; continue from the commit consumed by this task.
+{{if .IsSecondFix}}
+Read the preceding review's verdict.json. If it says accept, check out the preceding fix commit unchanged, declare it as fix, and write the one-line no-op handoff and verification.log described in the shared rules. Still write continuation.md. Otherwise reproduce and repair every blocking finding.
+{{else}}
+Reproduce and repair the source review's blocking findings.
+{{end}}
+Write continuation.md, handoff.md and verification.log. Commit the fix as HEAD (declared commit name fix). Run focused checks and the self-review swarm and test-integrity check before finishing. Leave the tracked tree clean.
+{{if .HasGate}}{{if eq .Name .LastFix}}The worker executes the declared final gate after your verification; do not run a separate agent gate.{{end}}{{end}}

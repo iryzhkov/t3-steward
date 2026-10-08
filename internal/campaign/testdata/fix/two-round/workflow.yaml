@@ -1,0 +1,247 @@
+version: 2
+name: fix-source
+class: surplus
+placement:
+    hosts: []
+    requires: []
+resources:
+    preset: ""
+    min_cpu_class: ""
+    preferred_cpu_class: ""
+    cpu_units: null
+    memory_mb: null
+    scratch_mb: null
+preflight:
+    steps: []
+environment:
+    project: project
+    type: git
+    scope: task
+    ref: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+inputs:
+    - inputs/fix/brief/prompt.md
+    - inputs/fix/lineage.json
+    - inputs/fix/rules.md
+routes: []
+tasks:
+    fix1:
+        review_output: null
+        review_requirements: null
+        directories: []
+        class: ""
+        prompt_file: prompts/fix1.md
+        needs:
+            - run-source/implement
+            - run-source/review
+        inputs_from:
+            run-source/implement:
+                - implementation
+                - handoff.md
+            run-source/review:
+                - review.md
+                - verdict.json
+        context: null
+        outputs:
+            - continuation.md
+            - handoff.md
+            - verification.log
+        commits:
+            - name: fix
+              revision: HEAD
+        verify:
+            - go test ./...
+            - git diff --quiet && git diff --cached --quiet
+        gate: null
+        placement:
+            hosts:
+                - worker
+            requires: []
+        resources:
+            preset: build
+            min_cpu_class: ""
+            preferred_cpu_class: ""
+            cpu_units: null
+            memory_mb: null
+            scratch_mb: null
+        preflight:
+            steps: []
+        routes:
+            - host: ""
+              instance: codex
+              model: model
+              options:
+                effort: medium
+              quota_pool: pool
+        resource_locks: []
+        importance: 0
+        difficulty: 0
+        estimated_cost: null
+        max_turns: 8
+        not_before: null
+        deadline: null
+        expires_at: null
+    fix2:
+        review_output: null
+        review_requirements: null
+        directories: []
+        class: ""
+        prompt_file: prompts/fix2.md
+        needs:
+            - fix1
+            - review2
+        inputs_from:
+            fix1:
+                - fix
+                - handoff.md
+            review2:
+                - review.md
+                - verdict.json
+        context: null
+        outputs:
+            - continuation.md
+            - handoff.md
+            - verification.log
+        commits:
+            - name: fix
+              revision: HEAD
+        verify:
+            - go test ./...
+            - git diff --quiet && git diff --cached --quiet
+        gate:
+            commands:
+                - make check-review
+            timeout: 30m0s
+        placement:
+            hosts:
+                - worker
+            requires: []
+        resources:
+            preset: build
+            min_cpu_class: ""
+            preferred_cpu_class: ""
+            cpu_units: null
+            memory_mb: null
+            scratch_mb: null
+        preflight:
+            steps: []
+        routes:
+            - host: ""
+              instance: codex
+              model: model
+              options:
+                effort: medium
+              quota_pool: pool
+        resource_locks: []
+        importance: 0
+        difficulty: 0
+        estimated_cost: null
+        max_turns: 8
+        not_before: null
+        deadline: null
+        expires_at: null
+    review2:
+        review_output:
+            verdict: verdict.json
+        review_requirements: null
+        directories: []
+        class: ""
+        prompt_file: prompts/review2.md
+        needs:
+            - fix1
+        inputs_from:
+            fix1:
+                - fix
+                - handoff.md
+                - verification.log
+        context: null
+        outputs:
+            - continuation.md
+            - review.md
+            - verdict.json
+        commits: []
+        verify:
+            - 'head -1 review.md | grep -Eq ''^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'''
+        gate: null
+        placement:
+            hosts: []
+            requires: []
+        resources:
+            preset: ""
+            min_cpu_class: ""
+            preferred_cpu_class: ""
+            cpu_units: null
+            memory_mb: null
+            scratch_mb: null
+        preflight:
+            steps: []
+        routes:
+            - host: ""
+              instance: claude
+              model: review-model
+              options: {}
+              quota_pool: ""
+        resource_locks: []
+        importance: 0
+        difficulty: 0
+        estimated_cost: null
+        max_turns: 5
+        not_before: null
+        deadline: null
+        expires_at: null
+    review3:
+        review_output:
+            verdict: verdict.json
+        review_requirements: null
+        directories: []
+        class: ""
+        prompt_file: prompts/review3.md
+        needs:
+            - fix2
+            - review2
+        inputs_from:
+            fix2:
+                - fix
+                - handoff.md
+                - verification.log
+                - gate/log.txt
+            review2:
+                - review.md
+                - verdict.json
+        context: null
+        outputs:
+            - continuation.md
+            - review.md
+            - verdict.json
+        commits: []
+        verify:
+            - 'head -1 review.md | grep -Eq ''^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'''
+        gate: null
+        placement:
+            hosts: []
+            requires: []
+        resources:
+            preset: ""
+            min_cpu_class: ""
+            preferred_cpu_class: ""
+            cpu_units: null
+            memory_mb: null
+            scratch_mb: null
+        preflight:
+            steps: []
+        routes:
+            - host: ""
+              instance: claude
+              model: review-model
+              options: {}
+              quota_pool: ""
+        resource_locks: []
+        importance: 0
+        difficulty: 0
+        estimated_cost: null
+        max_turns: 5
+        not_before: null
+        deadline: null
+        expires_at: null
+supervision: null
+gates: {}
+ledger: null

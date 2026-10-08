@@ -1,0 +1,16 @@
+{
+  "schema": "steward.fix-lineage/v1",
+  "rootRun": "run-source",
+  "rootProducingTask": "implement",
+  "rootReviewTask": "review",
+  "round_limit": 4,
+  "roundsUsedBefore": 0,
+  "roundsDeclared": 2,
+  "gate": {
+    "commands": [
+      "make check-review"
+    ],
+    "timeout": 1800000000000
+  },
+  "history": null
+}
