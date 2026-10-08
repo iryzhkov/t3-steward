@@ -168,6 +168,21 @@ func TestCancelledRunReleasesLauncherOutputBeforeReturning(t *testing.T) {
 	}
 }
 
+// Bounding systemctl's output pipes only applies once the cleanup context
+// ends: a systemctl that answers and exits while a child it left behind still
+// holds its output has still answered, so a scope it reports inactive is
+// cleared rather than reported as a containment failure.
+func TestKillRemainingCleanupAcceptsAnAnswerWhoseChildHoldsOutput(t *testing.T) {
+	root := t.TempDir()
+	run := writeExecutable(t, root, "run", "#!/bin/sh\nexit 0\n")
+	ctl := writeExecutable(t, root, "ctl", "#!/bin/sh\nif [ \"$2\" = show ]; then echo inactive; fi\nsleep 0.3 &\nexit 0\n")
+	result, err := (SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: 5 * time.Second}).Run(
+		context.Background(), ProcessRequest{ID: "kill-remaining-linger", Dir: root, Program: "true", KillRemaining: true})
+	if err != nil {
+		t.Fatalf("run error = %v (output %q), want the scope cleared", err, result.Output)
+	}
+}
+
 // Clearing a scope before and after a KillRemaining command is bounded by
 // the cleanup timeout even when systemctl leaves a child holding its output,
 // and still fails explicitly because the scope was not shown to be empty.

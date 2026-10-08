@@ -5,6 +5,7 @@ package procgroup
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"time"
 	"unicode/utf8"
@@ -19,6 +20,19 @@ func CommandContext(ctx context.Context, waitDelay time.Duration, name string, a
 	isolate(command)
 	command.WaitDelay = waitDelay
 	return command
+}
+
+// ProgramResult is the program's own result given the error Run, Output,
+// CombinedOutput or Wait returned for a command from CommandContext. Go also
+// starts the WaitDelay timer when the program exits, so a program that exits 0
+// while a child it left in the background holds its output is reported as
+// exec.ErrWaitDelay; while ctx is still live that is the program's success,
+// and only the pipes were cut short. Every other error is returned unchanged.
+func ProgramResult(ctx context.Context, err error) error {
+	if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
+		return nil
+	}
+	return err
 }
 
 // TailBuffer keeps the last Limit bytes written to it and discards the rest as

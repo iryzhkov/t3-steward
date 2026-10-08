@@ -254,7 +254,7 @@ func (r SystemdScopeRunner) killScope(ctx context.Context, log io.Writer, unit s
 	command := r.systemctlCommand(ctx, args...)
 	command.Stdout = log
 	command.Stderr = log
-	if err := command.Run(); err != nil {
+	if err := procgroup.ProgramResult(ctx, command.Run()); err != nil {
 		fmt.Fprintf(log, "! %v\n", err)
 		return err
 	}
@@ -280,12 +280,14 @@ func (r SystemdScopeRunner) clearScope(unit string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), r.cleanupTimeout())
 	defer cancel()
 	killOutput, killErr := r.systemctlCommand(ctx, "--user", "kill", "--kill-who=all", "--signal=KILL", unit).CombinedOutput()
+	killErr = procgroup.ProgramResult(ctx, killErr)
 	// observed is the last state the user manager answered with. The deadline
 	// can expire while a query is running, and the query is then killed; that
 	// is still the deadline, not a user manager that stopped answering.
 	observed := ""
 	for {
 		out, err := r.systemctlCommand(ctx, "--user", "show", "--property=ActiveState", "--value", unit).CombinedOutput()
+		err = procgroup.ProgramResult(ctx, err)
 		state := strings.TrimSpace(string(out))
 		if err == nil && (state == "inactive" || state == "failed") {
 			return nil
@@ -348,7 +350,9 @@ func (r SystemdScopeRunner) systemdRun() string {
 // bounded by its cleanup context: when the context ends the call is killed
 // with any child it started, and its output pipes are closed after
 // scopeCleanupPoll even if something else still holds them, so a user
-// manager that stops answering cannot outlast the cleanup timeout.
+// manager that stops answering cannot outlast the cleanup timeout. Callers
+// pass the call's error through procgroup.ProgramResult, so an answer whose
+// child lingers is still an answer.
 func (r SystemdScopeRunner) systemctlCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return procgroup.CommandContext(ctx, scopeCleanupPoll, r.systemctl(), args...)
 }
