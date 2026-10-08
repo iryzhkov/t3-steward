@@ -777,6 +777,12 @@ func (r *Recorder) withStagedWork(ctx context.Context, open []openWork, result *
 		key := event.Work.Key()
 		at, listed := position[key]
 		if !listed {
+			// Durable open work has first claim on the rotating finish budget.
+			// Excess staged work still commits with the audit watermark and
+			// becomes eligible through openWorkAfter on subsequent ticks.
+			if len(open) >= openBatch {
+				continue
+			}
 			// Not in this tick's batch of open work: it is new, or open and
 			// outside the batch, or already finished.
 			item := openWork{key: key}
@@ -816,9 +822,9 @@ func workKey(assignmentID string, epoch int64) string {
 	return assignmentID + ":" + strconv.FormatInt(epoch, 10)
 }
 
-// collectFinishes re-reads up to openBatch open assignments by id, and every
-// assignment this tick dispatched or started, and records a finish, with its
-// check events, for each one that has ended.
+// collectFinishes re-reads at most openBatch assignments across durable open
+// work and this tick's staged dispatches/starts. It records a finish and check
+// events for each selected assignment that has ended.
 func (r *Recorder) collectFinishes(ctx context.Context, now time.Time, meta Meta, result *tickResult) error {
 	open, cursor, err := r.store.openWorkAfter(ctx, meta.OpenCursor, openBatch)
 	if err != nil {
@@ -864,12 +870,12 @@ func (r *Recorder) collectFinishes(ctx context.Context, now time.Time, meta Meta
 			}
 		case assignment.State == domain.AssignmentReleased:
 			work.Outcome, finishedAt = string(domain.AssignmentReleased), assignment.UpdatedAt
-		case assignment.State == domain.AssignmentCompleted:
-			work.Outcome, finishedAt, withChecks = string(domain.AssignmentCompleted), assignment.UpdatedAt, attemptFound
-			if attemptFound {
-				work.Outcome = string(attempt.Progress)
-			}
+		case assignment.State == domain.AssignmentCompleted && !attemptFound:
+			work.Outcome, finishedAt = string(domain.AssignmentCompleted), assignment.UpdatedAt
 		default:
+			// A completed assignment can precede result import. Keep a known
+			// nonterminal attempt open until its reports and terminal projection
+			// are published, then use that attempt's final outcome and time.
 			continue
 		}
 		if finishedAt.IsZero() {

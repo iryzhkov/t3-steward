@@ -72,7 +72,7 @@ TIME  KIND  ROUTE  EFFORT  TYPE(derived)  TASK  DURATION  DETAIL
 | `reading` | a distinct quota reading is seen | the reading's `observedAt` |
 | `dispatch` | the audit stream shows `assignment-offered` | the offer |
 | `start` | the audit stream shows `assignment-claimed` | the claim |
-| `finish` | an open assignment's attempt is terminal, or the assignment is released, completed or superseded by a later epoch | the attempt's `completedAt`, otherwise the assignment's `updatedAt` |
+| `finish` | an open assignment's attempt is terminal, or the assignment is released, superseded by a later epoch, or completed with no retained attempt | the attempt's `completedAt`, otherwise the assignment's `updatedAt` |
 | `check` | a finish is recorded and the attempt has verification or gate reports | the command's completion |
 | `recorder` | the store begins coverage (`started`), or a span could not be recorded (`gap`) | the recorder's clock |
 
@@ -84,7 +84,12 @@ with outcome `superseded` at the later epoch's offer, records no checks, and
 takes its route and worker from the binding frozen with its own dispatch; when
 none was frozen they are left empty with `routeUnknown: true`, never copied
 from the later epoch. An attempt parked on an external wait keeps its assignment open; its
-finish comes when the attempt ends.
+finish comes when the attempt ends. A completed assignment with a known
+nonterminal attempt stays open through result import, so the finish includes
+the final outcome, completion time and available check reports. Each tick
+re-reads at most 200 assignments for finishes, combining retained open work
+with new dispatches and starts. Remaining work is retained and scanned in
+later batches; the scan cursor persists across restarts.
 
 ## JSON schema
 
