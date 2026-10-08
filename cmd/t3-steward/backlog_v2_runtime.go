@@ -965,15 +965,15 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	roleSchedules := coordinatorRoleScheduleStore{Store: store, admin: service}
 	service.SetScheduleTriggerResolver(roleSchedules.ResolveScheduleTrigger)
 	service.SetViability(backlogadmin.ViabilitySettings{
-		ResolveRoles:      roleResolver.Resolve,
-		ResourcePolicy:    cfg.BacklogV2.Coordinator.ResourcePlacement.Policy(),
-		ReviewRoutes:      cfg.BacklogV2.ReviewRoutes,
-		Projects:          fleetProjects,
-		SetupProfiles:     fleetProfiles,
-		DefaultedProjects: cfg.DefaultedFleetProjects(),
-		ProjectWorkers:    projectWorkers,
-		MaxBundleBytes:    cfg.BacklogV2.MessageLimits.MaxBytes,
-		MaxBundleFiles:    cfg.BacklogV2.MessageLimits.MaxFiles,
+		ResolveRankedRoles: roleResolver.ResolveWithQuota,
+		ResourcePolicy:     cfg.BacklogV2.Coordinator.ResourcePlacement.Policy(),
+		ReviewRoutes:       cfg.BacklogV2.ReviewRoutes,
+		Projects:           fleetProjects,
+		SetupProfiles:      fleetProfiles,
+		DefaultedProjects:  cfg.DefaultedFleetProjects(),
+		ProjectWorkers:     projectWorkers,
+		MaxBundleBytes:     cfg.BacklogV2.MessageLimits.MaxBytes,
+		MaxBundleFiles:     cfg.BacklogV2.MessageLimits.MaxFiles,
 		// Repository reachability is observed on the candidate worker, over the
 		// worker protocol, under the credential references the real task would
 		// use. Without this the readiness check reported nothing at all about the

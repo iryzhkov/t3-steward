@@ -75,19 +75,22 @@ resolves roles afresh for each occurrence; replay keeps the original selection.
 Manifests without role keep their existing explicit-route behavior.
 
 Review-type role tasks (review or critical-review, or tasks with review_output:)
-prefer the first eligible candidate outside every known local producer family.
+prefer the first usable candidate in the winning quota band outside every known local producer family.
 Producers come from inputs_from, or local needs when inputs_from is empty.
-If none qualifies, the first eligible candidate is used with a diversity
+If none qualifies, the highest ranked eligible candidate is used with a diversity
 fallback reason. Unknown producer families do not apply the preference.
 Explicit routes always stay as written. This preference is also applied to
 schedule occurrences and never grants eligibility or review authority.
 
-Until M17-2b, campaign and schedule role resolution uses policy order, with
-the review diversity preference above, and not the quota ranking
-(route-ranking/v1) that task run --role and review --role use. When the first
-eligible candidate's quota pool is exhausted or gated, that route is still
-selected, and quota admission refuses the submission rather than falling
-through to a later candidate. Name an explicit route to use another pool.
+Campaign and schedule roles use route-ranking/v1 after policy, catalog and
+worker eligibility checks, using a coherent coordinator quota snapshot.
+Healthy authorized candidates rank ahead of exhausted, gated or unknown pools.
+Equal bands retain policy order, with review diversity soft within a usable band.
+Receipts retain ranking version, candidate bands, pools and reasons. Missing or
+stale quota cannot supply headroom; explicitly disabled checks remain disabled.
+Ranking never grants admission: submission and occurrence admission still check
+quota atomically, including changes after resolution. Explicit pins stay literal.
+New occurrences read fresh quota; prior run selections and templates stay fixed.
 
 
 Multi-task work is authored as a static version 2 DAG. Every task declared in
@@ -698,19 +701,22 @@ resolves roles afresh for each occurrence; replay keeps the original selection.
 Manifests without role keep their existing explicit-route behavior.
 
 Review-type role tasks (review or critical-review, or tasks with review_output:)
-prefer the first eligible candidate outside every known local producer family.
+prefer the first usable candidate in the winning quota band outside every known local producer family.
 Producers come from inputs_from, or local needs when inputs_from is empty.
-If none qualifies, the first eligible candidate is used with a diversity
+If none qualifies, the highest ranked eligible candidate is used with a diversity
 fallback reason. Unknown producer families do not apply the preference.
 Explicit routes always stay as written. This preference is also applied to
 schedule occurrences and never grants eligibility or review authority.
 
-Until M17-2b, campaign and schedule role resolution uses policy order, with
-the review diversity preference above, and not the quota ranking
-(route-ranking/v1) that task run --role and review --role use. When the first
-eligible candidate's quota pool is exhausted or gated, that route is still
-selected, and quota admission refuses the submission rather than falling
-through to a later candidate. Name an explicit route to use another pool.
+Campaign and schedule roles use route-ranking/v1 after policy, catalog and
+worker eligibility checks, using a coherent coordinator quota snapshot.
+Healthy authorized candidates rank ahead of exhausted, gated or unknown pools.
+Equal bands retain policy order, with review diversity soft within a usable band.
+Receipts retain ranking version, candidate bands, pools and reasons. Missing or
+stale quota cannot supply headroom; explicitly disabled checks remain disabled.
+Ranking never grants admission: submission and occurrence admission still check
+quota atomically, including changes after resolution. Explicit pins stay literal.
+New occurrences read fresh quota; prior run selections and templates stay fixed.
 
 
 
