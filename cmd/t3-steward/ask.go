@@ -17,6 +17,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 const askUsage = `Usage:
@@ -62,10 +63,18 @@ The owner is notified (needs-input) when the ask is registered and again at
 half its deadline; "t3-steward triage" lists every open ask with its
 ready-to-run answer command.
 
+On a worker that cannot reach the coordinator (no coordinator client) the
+ask is refused with ask-relay-unavailable: the task is not parked and no
+question was sent. Decide with the brief's safe default or end the task
+failed naming that reason. A campaign whose tasks may ask declares
+placement.requires: [ask-relay-v1] so they run only on workers that relay
+asks; "campaign check" names a fleet without one as capability-missing.
+
 Exit codes:
   0  registered (the task is parked) or answered
   1  refused: outside a task, a bad option, an ask that already settled or
      needs the approver, or the coordinator refused it
+  3  ask-relay-unavailable: this worker has no route to the coordinator
 `
 
 // askSpec is a parsed `t3-steward ask`.
@@ -214,9 +223,37 @@ func cmdAsk(g globalFlags, args []string) error {
 	return runAsk(context.Background(), cfg, spec, identity, os.Stdout)
 }
 
+// askRelayUnavailableCode is the typed reason an ask is refused on a worker
+// that cannot reach the coordinator. It is the stable first word of the error,
+// so the agent, its handoff and the parent all name the same thing.
+const askRelayUnavailableCode = "ask-relay-unavailable"
+
+// askCoordinatorReach answers whether this host can carry an ask to the
+// coordinator. Tests replace it.
+var askCoordinatorReach = hostCoordinatorReach
+
+// errAskRelayUnavailable is the typed block for an ask on a worker without a
+// coordinator client. Without it the ask failed with a bare transport error
+// that read like a broken installation, and an agent could carry on as though
+// it had asked. The block says the task is not parked, what to do instead, and
+// how a campaign keeps such tasks off such workers.
+func errAskRelayUnavailable(reach error) error {
+	return &backlogadmin.TransportError{
+		Class: backlogadmin.ClassClientConfiguration,
+		Err: fmt.Errorf("%s: this task is NOT parked and no question was sent, because the worker running it "+
+			"cannot reach the coordinator (%v). Do not wait for an answer: decide with the safe default your brief "+
+			"gives, or end the task failed naming %s, and record which in your handoff. A campaign whose tasks may ask "+
+			"declares placement.requires: [%s], so they run only on workers that relay asks",
+			askRelayUnavailableCode, reach, askRelayUnavailableCode, workerproto.CapabilityAskRelay),
+	}
+}
+
 // runAsk registers the ask on the coordinator, which parks the attempt in the
 // same transaction, and tells the agent to end its turn.
 func runAsk(ctx context.Context, cfg config.Config, spec askSpec, identity taskIdentity, out io.Writer) error {
+	if reach := askCoordinatorReach(cfg); reach != nil {
+		return errAskRelayUnavailable(reach)
+	}
 	transport, err := newCoordinatorTransport(cfg)
 	if err != nil {
 		return err

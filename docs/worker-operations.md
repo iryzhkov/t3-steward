@@ -240,6 +240,44 @@ assignment outstanding, so the same activation is offered again once the worker
 is back on a capable release. Unsupervised campaigns are unaffected and require
 no capability at all.
 
+## Host capabilities
+
+A third kind of capability describes what the host can do for a task right now,
+rather than what it was configured with or what its build understands. The
+persistent worker observes these on every snapshot and advertises the ones that
+hold, without any configuration:
+
+| Capability | Advertised when |
+| --- | --- |
+| `coordinator-client-v1` | a `backlog_v2.coordinator_client` is configured and its credential resolves on this host, or the host is the coordinator |
+| `ask-relay-v1` | `coordinator-client-v1` holds and the host's steward has a worker identity (bootstrap or `backlog_v2.local_worker.id`), so it delivers ask relay threads and wakes |
+| `git-push-<project>` | push credentials for the project's repository are present: an SSH identity in the agent or `~/.ssh` for an SSH remote, a credential helper answer for an HTTPS remote, a writable directory for a local one |
+| `huyang-trusted-v1` | a `[trust] roots` entry in `$XDG_CONFIG_HOME/huyang/config.toml` is the task workspace root or one of its ancestors |
+
+Every check is local. None of them dials the coordinator or a repository: the
+coordinator's SSH rate limit already counts this host's connections, and a
+snapshot must not wait on the network. So `coordinator-client-v1` proves that
+the credential the coordinator authenticates is present, not that a request
+succeeded, and `git-push-<project>` proves that credentials are present, not
+that the remote grants write access. A push-credential answer is kept for five
+minutes.
+
+A task asks for one with `placement.requires`. Placement then chooses a worker
+that reports it. When none does, `campaign check` reports a temporary
+`capability-missing` naming the worker and the capability, submission is
+accepted, and the run waits rather than starting a task that would fail late.
+A host capability an operator also lists in the worker's configured
+capabilities is held to the observation, and its absence degrades the worker as
+any configured capability does.
+
+`t3-steward ask` on a host without a route to the coordinator is refused as
+`ask-relay-unavailable` (exit 3) before anything is sent: the message says the
+task is not parked and no question was asked, so the agent decides with its
+brief's safe default or ends the task failed naming the reason. Relaying asks
+through the worker channel is not implemented: that channel is opened by the
+coordinator and carries no client verbs, and the wake that delivers the answer
+also needs the coordinator client. Declare `ask-relay-v1` for tasks that may ask.
+
 ## Turns that end while their commands still run
 
 Ending a turn completes a task, so a turn that ends while a command the task

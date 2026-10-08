@@ -60,8 +60,11 @@ func graphTaskValidator(settings config.BacklogV2) func(domain.Workflow, domain.
 				refusals = append(refusals, fmt.Sprintf("%s: %v", id, err))
 				continue
 			}
+			// Permanence is read from the reason rather than its code: a missing
+			// host capability is a temporary capability-missing, because
+			// configuration cannot say whether a host will provide it.
 			permanent := slices.IndexFunc(reasons, func(reason backlogadmin.ViabilityReason) bool {
-				return backlogadmin.PermanentViabilityReason(reason.Code)
+				return reason.Permanent
 			})
 			if permanent < 0 {
 				return nil

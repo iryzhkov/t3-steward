@@ -8,12 +8,18 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
 type HostInventoryProbe struct {
 	DataDir    string
 	Capability func(context.Context, string) bool
+	// Observed are host capabilities the host reported for itself
+	// (workerproto.HostObservedCapability). They are advertised in addition to
+	// the configured list, and their absence never degrades the worker: a
+	// task that needs one waits for a capable worker instead.
+	Observed []string
 	// ProjectAvailable must observe the local T3 project catalog.
 	ProjectAvailable func(context.Context, string) (bool, error)
 }
@@ -38,6 +44,11 @@ func (p HostInventoryProbe) Observe(ctx context.Context, wanted domain.WorkerInv
 		} else {
 			result.Health = domain.WorkerHealthDegraded
 			result.AcceptBacklog = false
+		}
+	}
+	for _, name := range p.Observed {
+		if !slices.Contains(capabilities, name) {
+			capabilities = append(capabilities, name)
 		}
 	}
 	result.Capabilities = capabilities

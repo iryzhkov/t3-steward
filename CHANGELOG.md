@@ -16,6 +16,20 @@ or rc.115 coordinator.
 
 ### Added
 
+- Capability check before dispatch (W1). Workers advertise host
+  capabilities observed on every snapshot: `coordinator-client-v1`,
+  `ask-relay-v1`, `git-push-<project>` and `huyang-trusted-v1`. A task
+  requires one with `placement.requires`; placement picks a worker that
+  reports it, and `campaign check` and submission report a missing one as a
+  temporary `capability-missing` naming worker and capability, so the run
+  waits instead of starting where it would fail late. A missing build or
+  configured capability stays permanent. Placement exclusions gain a
+  `capability` field naming the missing capability. `t3-steward ask` on a
+  worker without a route to the coordinator is refused as
+  `ask-relay-unavailable` (exit 3) and says the task is not parked; relaying
+  asks over the worker channel is a follow-up. See "Host capabilities" in
+  docs/worker-operations.md and `t3-steward campaign help readiness`.
+
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first

@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // RepositoryObserver answers whether one worker can read one repository and
@@ -813,7 +814,15 @@ func WorkerMatchReasons(task domain.Task, project string, inventory domain.Worke
 	var reasons []ViabilityReason
 	for _, evaluation := range placement.Evaluations {
 		for _, exclusion := range evaluation.Exclusions {
-			reasons = append(reasons, newViabilityReason(placementReasonCode(exclusion.Code), exclusion.Detail))
+			reason := newViabilityReason(placementReasonCode(exclusion.Code), exclusion.Detail)
+			if exclusion.Code == backlog.ExclusionMissingCapability && workerproto.HostObservedCapability(exclusion.Capability) {
+				// A host capability is observed on every snapshot and can be
+				// supplied without a release, so its absence is a wait for a
+				// capable worker rather than a refusal of the campaign.
+				reason.Permanent = false
+				reason.Detail += "; it is a host capability the worker reports when its host provides it"
+			}
+			reasons = append(reasons, reason)
 		}
 	}
 	return append(reasons, routeReasons(task, inventory, pools)...), nil
