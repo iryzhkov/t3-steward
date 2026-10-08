@@ -690,7 +690,9 @@ reclaim only generations retired at least five seconds ago and outside the
 newest 16; bursts can retain more within the grace window. After that window,
 cleanup retains 16. Publication and cleanup share a parent-directory lock, with
 protected exchange names preserving publication order and reader protection even
-after crashes or failed retirement renames. Unpublished preparations are removed
+after crashes or failed retirement renames. Grace age is recorded after exchange,
+separately from reserved order; an unknown age receives a fresh five-second window
+when recovery first observes it. Unpublished preparations are removed
 after 24 hours and do not count toward the newest 16. Empty collections still
 remove the public directory.
 

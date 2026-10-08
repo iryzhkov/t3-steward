@@ -66,6 +66,15 @@ const resultRetiredPrefix = resultStagingPrefix + "retired-"
 const resultRetirementGrace = 5 * time.Second
 const resultRetainedGenerations = 16
 
+// Separate wall-clock age from the monotonic publication-order reservation.
+// Tests advance this clock at exact exchange boundaries without sleeping.
+var resultRetirementNow = time.Now
+var renameResultRetirement = os.Rename
+
+func resultAgeName(path string, now time.Time) string {
+	return fmt.Sprintf("%s-age-%020d", path, now.UnixNano())
+}
+
 func retiredResultPrefix(directory string) string {
 	return fmt.Sprintf("%s%x-", resultRetiredPrefix, sha256.Sum256([]byte(filepath.Base(directory))))
 }
@@ -109,7 +118,7 @@ func prepareResultExchange(staged, directory string) (prepared, retired string, 
 		return "", "", err
 	}
 	prefix := retiredResultPrefix(directory)
-	order := time.Now().UnixNano()
+	order := resultRetirementNow().UnixNano()
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Name(), prefix) {
 			continue
@@ -140,7 +149,8 @@ func prepareResultExchange(staged, directory string) (prepared, retired string, 
 // its incoming inode. Once exchange succeeds it contains the previous public
 // inode, so even a failed final retirement rename uses the age AND count gates.
 func unpublishedResult(path string) (bool, error) {
-	_, inode, ok := strings.Cut(filepath.Base(path), "-staged-")
+	name, _, _ := strings.Cut(filepath.Base(path), "-age-")
+	_, inode, ok := strings.Cut(name, "-staged-")
 	if !ok {
 		return false, nil
 	}
@@ -158,7 +168,9 @@ func unpublishedResult(path string) (bool, error) {
 // removeRetiredResults keeps the newest K and every generation within the grace
 // window. Rapid publishers can temporarily retain more than K; after the window,
 // the next publish or sweep reduces retention to K. Retirement time comes from
-// the name, never from the old collection's potentially ancient mtime.
+// the explicit age suffix, never from the order reservation or old mtime.
+// Unknown ages (crash, failed rename, or legacy names) start a fresh grace
+// window when first observed. Failed recovery renames remain protected.
 // The caller must hold the parent-directory lock.
 func removeRetiredResults(directory string, now time.Time) []string {
 	parent := filepath.Dir(directory)
@@ -199,7 +211,28 @@ func removeRetiredResults(directory string, now time.Time) []string {
 			}
 			continue
 		}
-		generations = append(generations, retired{entry.Name(), time.Unix(0, nanos)})
+		name := entry.Name()
+		_, age, known := strings.Cut(name, "-age-")
+		ageNanos, ageErr := strconv.ParseInt(age, 10, 64)
+		when := now
+		if known && ageErr == nil {
+			when = time.Unix(0, ageNanos)
+		} else {
+			// The lock proves exchange has finished. Observation is a
+			// conservative lower bound on age, including after process death.
+			// A caller may have sampled now before being descheduled. Never
+			// start recovery age earlier than observation under this lock.
+			if observed := resultRetirementNow(); observed.After(when) {
+				when = observed
+			}
+			recovered := resultAgeName(path, when)
+			if err := renameResultRetirement(path, recovered); err != nil {
+				left = append(left, path)
+			} else {
+				name = filepath.Base(recovered)
+			}
+		}
+		generations = append(generations, retired{name, when})
 	}
 	sort.Slice(generations, func(i, j int) bool { return generations[i].name > generations[j].name })
 	for i, generation := range generations {
@@ -296,7 +329,9 @@ func removeInterruptedCollections(staged, directory string, now time.Time) []str
 // expose an exchanged generation to the abandoned-staging sweep. The inode
 // distinguishes unpublished preparations, which are cleaned up after 24 hours
 // and do not count toward the newest K. Retirement order is reserved under the
-// lock and is monotonic even if the wall clock moves backwards.
+// lock and is monotonic even if the wall clock moves backwards. Grace age is
+// recorded separately AFTER exchange. Unknown ages after a crash or failed
+// rename receive a fresh full grace window at recovery, never preparation age.
 // A raw-path reader completing before K (resultRetainedGenerations) further
 // publications sees a complete file. Reclamation requires BOTH retirement age
 // >= resultRetirementGrace and exclusion from the newest K retired generations.
@@ -312,7 +347,7 @@ func publishResultDirectory(staged, directory string) (left []string, err error)
 	defer lock.Close()
 	defer func() {
 		if err == nil {
-			left = append(left, removeRetiredResults(directory, time.Now())...)
+			left = append(left, removeRetiredResults(directory, resultRetirementNow())...)
 		}
 	}()
 	entries, err := os.ReadDir(staged)
@@ -339,7 +374,7 @@ func publishResultDirectory(staged, directory string) (left []string, err error)
 		exchangeErr := swapDirectories(prepared, directory)
 		switch {
 		case exchangeErr == nil:
-			if err := os.Rename(prepared, retired); err != nil {
+			if err := renameResultRetirement(prepared, resultAgeName(retired, resultRetirementNow())); err != nil {
 				return []string{prepared}, nil
 			}
 			return nil, nil

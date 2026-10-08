@@ -18,7 +18,7 @@ import (
 // on-disk naming and reclamation rules.
 func retiredResultFixture(t *testing.T, directory string, when time.Time, content string) string {
 	t.Helper()
-	path := filepath.Join(filepath.Dir(directory), retiredResultPrefix(directory)+fmt.Sprintf("%020d-fixture", when.UnixNano()))
+	path := resultAgeName(filepath.Join(filepath.Dir(directory), retiredResultPrefix(directory)+fmt.Sprintf("%020d-fixture", when.UnixNano())), when)
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -245,10 +245,11 @@ func TestResultCollectionKeepsRetirementWhenItsRenameFails(t *testing.T) {
 		if err := os.Chmod(base, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if left := removeInterruptedCollections("", filepath.Join(base, task.Task.Name), time.Now().Add(2*interruptedCollectionAge)); len(left) != 0 {
+		recoveryTime := time.Now().Add(2 * interruptedCollectionAge)
+		if left := removeInterruptedCollections("", filepath.Join(base, task.Task.Name), recoveryTime); len(left) != 0 {
 			t.Fatal(left)
 		}
-		if got := readFile(t, old, "final-message.md"); got != "the job" {
+		if got := readFile(t, resultAgeName(old, recoveryTime), "final-message.md"); got != "the job" {
 			t.Fatalf("failed-rename retirement lost to sweep: %q", got)
 		}
 	}

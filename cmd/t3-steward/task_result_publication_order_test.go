@@ -103,6 +103,8 @@ func TestResultPublicationProcessHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Close()
+	// Model a preparation older than both grace and interrupted-staging age.
+	resultRetirementNow = func() time.Time { return time.Now().Add(-3 * interruptedCollectionAge) }
 	prepared, _, err := prepareResultExchange(staged, directory)
 	if err != nil {
 		t.Fatal(err)
@@ -148,8 +150,12 @@ func TestResultCrashAfterExchangeUsesBothRetirementGates(t *testing.T) {
 	if unpublished, err := unpublishedResult(protected); err != nil || unpublished {
 		t.Fatalf("exchanged generation classified as staging: %v, %v", unpublished, err)
 	}
-	// Even synthetic expiry of both age thresholds cannot bypass newest K.
+	// Recovery starts a fresh age; expire that age in a second sweep to
+	// prove that neither age threshold can bypass newest K.
 	if left := removeInterruptedCollections("", directory, now.Add(2*interruptedCollectionAge)); len(left) != 0 {
+		t.Fatal(left)
+	}
+	if left := removeInterruptedCollections("", directory, now.Add(3*interruptedCollectionAge)); len(left) != 0 {
 		t.Fatal(left)
 	}
 	readHeldResult(t, old, "old whole file")
@@ -157,10 +163,10 @@ func TestResultCrashAfterExchangeUsesBothRetirementGates(t *testing.T) {
 	for n := 0; n < resultRetainedGenerations; n++ {
 		publishResultFixture(t, directory, "later whole file")
 	}
-	if left := removeInterruptedCollections("", directory, now.Add(2*interruptedCollectionAge)); len(left) != 0 {
+	if left := removeInterruptedCollections("", directory, now.Add(4*interruptedCollectionAge)); len(left) != 0 {
 		t.Fatal(left)
 	}
-	if _, err := os.Stat(protected); !os.IsNotExist(err) {
+	if _, err := os.Stat(resultAgeName(protected, now.Add(2*interruptedCollectionAge))); !os.IsNotExist(err) {
 		t.Fatalf("eligible crash retirement survived: %v", err)
 	}
 }
