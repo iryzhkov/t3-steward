@@ -24,9 +24,10 @@ type SinkTask struct {
 }
 
 type SinkResult struct {
-	FailedTaskIDs    []string `json:"failedTaskIds"`
-	CancelledTaskIDs []string `json:"cancelledTaskIds"`
-	SkippedTaskIDs   []string `json:"skippedTaskIds"`
+	FixLoops         []FixLoopSummary `json:"fixLoops,omitempty"`
+	FailedTaskIDs    []string         `json:"failedTaskIds"`
+	CancelledTaskIDs []string         `json:"cancelledTaskIds"`
+	SkippedTaskIDs   []string         `json:"skippedTaskIds"`
 }
 
 func SinkTaskID(runID string) string { return "sink:" + runID }
@@ -165,6 +166,7 @@ func CloneSink(sink *SinkTask) *SinkTask {
 	copy.Needs = append([]string{}, sink.Needs...)
 	if sink.Result != nil {
 		result := *sink.Result
+		result.FixLoops = append([]FixLoopSummary(nil), sink.Result.FixLoops...)
 		result.FailedTaskIDs = append([]string{}, result.FailedTaskIDs...)
 		result.CancelledTaskIDs = append([]string{}, result.CancelledTaskIDs...)
 		result.SkippedTaskIDs = append([]string{}, result.SkippedTaskIDs...)
@@ -262,6 +264,11 @@ func ProjectSupervisedRunSink(run WorkflowRun, tasks []Task, attempts []Attempt,
 		}
 	}
 	result := &SinkResult{FailedTaskIDs: []string{}, CancelledTaskIDs: []string{}, SkippedTaskIDs: []string{}}
+	result.FixLoops = SummarizeFixLoops(tasks, attempts)
+	exhausted := false
+	for _, loop := range result.FixLoops {
+		exhausted = exhausted || loop.Exhausted
+	}
 	allSucceeded := true
 	for _, id := range run.Sink.Needs {
 		attempt, ok := current[id]
@@ -274,11 +281,14 @@ func ProjectSupervisedRunSink(run WorkflowRun, tasks []Task, attempts []Attempt,
 		case ProgressCancelled:
 			result.CancelledTaskIDs = append(result.CancelledTaskIDs, id)
 		case ProgressSkipped:
+			if attempt.Failure == VerdictBranchSkipped {
+				continue
+			}
 			result.SkippedTaskIDs = append(result.SkippedTaskIDs, id)
 		}
 		allSucceeded = allSucceeded && attempt.Progress == ProgressSucceeded
 	}
-	if verdict := SupervisionSettlementBarrier(barrier, len(result.FailedTaskIDs) > 0 || len(result.CancelledTaskIDs) > 0); !verdict.Settles {
+	if verdict := SupervisionSettlementBarrier(barrier, len(result.FailedTaskIDs) > 0 || exhausted || len(result.CancelledTaskIDs) > 0); !verdict.Settles {
 		return run, nil
 	}
 	if now.IsZero() {
@@ -286,13 +296,13 @@ func ProjectSupervisedRunSink(run WorkflowRun, tasks []Task, attempts []Attempt,
 	}
 	completed := now.UTC()
 	run.Sink.Progress = ProgressSucceeded
-	if len(result.FailedTaskIDs) > 0 {
+	if len(result.FailedTaskIDs) > 0 || exhausted {
 		run.Sink.Progress = ProgressFailed
 	}
 	run.Sink.Result = result
 	run.Sink.CompletedAt = &completed
 	switch {
-	case len(result.FailedTaskIDs) > 0:
+	case len(result.FailedTaskIDs) > 0 || exhausted:
 		run.Progress = ProgressFailed
 	case len(result.CancelledTaskIDs) > 0:
 		run.Progress = ProgressCancelled

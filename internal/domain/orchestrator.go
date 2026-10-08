@@ -219,6 +219,8 @@ type TaskGate struct {
 
 // Task is an immutable node in a workflow definition.
 type Task struct {
+	NeedsVerdict       map[string]string       `json:"needsVerdict,omitempty"`
+	FixLoop            *FixLoopTask            `json:"fixLoop,omitempty"`
 	Role               string                  `json:"role,omitempty"`
 	RoleEffort         string                  `json:"roleEffort,omitempty"`
 	RoleSelection      *RoleSelection          `json:"roleSelection,omitempty"`

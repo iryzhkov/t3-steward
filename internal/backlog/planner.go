@@ -764,6 +764,11 @@ func planningTimeKey(value *time.Time) string {
 }
 
 func clonePlanningTask(task domain.Task) domain.Task {
+	task.NeedsVerdict = cloneStringMap(task.NeedsVerdict)
+	if task.FixLoop != nil {
+		copy := *task.FixLoop
+		task.FixLoop = &copy
+	}
 	task.ReviewOutput = domain.CloneReviewOutput(task.ReviewOutput)
 	task.ReviewRequirements = domain.CloneTaskReview(task.ReviewRequirements)
 	task.Needs = append([]string(nil), task.Needs...)

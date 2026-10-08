@@ -36,20 +36,21 @@ var manifestNamePattern = regexp.MustCompile(`^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$
 // Manifest is the version 2 workflow.yaml submission format. ParseManifest
 // applies defaults so callers receive a complete, validated definition.
 type Manifest struct {
-	Role         string                  `yaml:"role,omitempty"`
-	Options      map[string]string       `yaml:"options,omitempty"`
-	Review       *review.Round           `yaml:"review,omitempty"`
-	Version      int                     `yaml:"version"`
-	Name         string                  `yaml:"name"`
-	Class        domain.TaskClass        `yaml:"class"`
-	Placement    ManifestPlacement       `yaml:"placement"`
-	Resources    ManifestResources       `yaml:"resources"`
-	Preflight    ManifestPreflight       `yaml:"preflight"`
-	Environment  ManifestEnvironment     `yaml:"environment"`
-	Inputs       []string                `yaml:"inputs"`
-	PinnedInputs bool                    `yaml:"pinned_inputs,omitempty"` // Opt into bounded, digest-bound evidence.
-	Routes       []ManifestRoute         `yaml:"routes"`
-	Tasks        map[string]ManifestTask `yaml:"tasks"`
+	Role         string                     `yaml:"role,omitempty"`
+	Options      map[string]string          `yaml:"options,omitempty"`
+	Review       *review.Round              `yaml:"review,omitempty"`
+	Version      int                        `yaml:"version"`
+	Name         string                     `yaml:"name"`
+	Class        domain.TaskClass           `yaml:"class"`
+	Placement    ManifestPlacement          `yaml:"placement"`
+	Resources    ManifestResources          `yaml:"resources"`
+	Preflight    ManifestPreflight          `yaml:"preflight"`
+	Environment  ManifestEnvironment        `yaml:"environment"`
+	Inputs       []string                   `yaml:"inputs"`
+	PinnedInputs bool                       `yaml:"pinned_inputs,omitempty"` // Opt into bounded, digest-bound evidence.
+	Routes       []ManifestRoute            `yaml:"routes"`
+	Tasks        map[string]ManifestTask    `yaml:"tasks"`
+	FixLoops     map[string]ManifestFixLoop `yaml:"fix_loops,omitempty"`
 	// Supervision declares the optional campaign overseer. A nil pointer is the
 	// unsupervised case and is exactly today's behaviour; no empty record is
 	// ever created for it.
@@ -98,6 +99,8 @@ type ManifestTask struct {
 	Class              domain.TaskClass            `yaml:"class"`
 	PromptFile         string                      `yaml:"prompt_file"`
 	Needs              ManifestNeeds               `yaml:"needs"`
+	NeedsVerdict       map[string]string           `yaml:"needs_verdict,omitempty"`
+	FixLoop            *domain.FixLoopTask         `yaml:"-"`
 	InputsFrom         map[string][]string         `yaml:"inputs_from"`
 	Context            *domain.ProjectContext      `yaml:"context"`
 	Outputs            []string                    `yaml:"outputs"`
@@ -198,6 +201,7 @@ var manifestGoTypePattern = regexp.MustCompile(`in type (?:\*?[A-Za-z0-9_]+\.)?(
 var manifestObjects = map[string]string{
 	"Manifest":                      "the workflow",
 	"ManifestTask":                  "a task",
+	"ManifestFixLoop":               "a fix loop",
 	"ManifestRoute":                 "a route",
 	"ManifestEnvironment":           "the environment",
 	"ManifestPlacement":             "a placement",
@@ -287,6 +291,9 @@ func ParseManifest(raw []byte) (Manifest, error) {
 		return manifest, err
 	}
 	applyManifestDefaults(&manifest)
+	if err := expandManifestFixLoops(&manifest); err != nil {
+		return manifest, err
+	}
 	if err := validateManifest(manifest); err != nil {
 		return manifest, err
 	}
@@ -770,6 +777,9 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 			return fmt.Errorf("%s repeats dependency %q", prefix, dependency)
 		}
 		needs[dependency] = struct{}{}
+	}
+	if err := validateNeedsVerdict(name, task, tasks); err != nil {
+		return err
 	}
 	for producer, artifacts := range task.InputsFrom {
 		if _, ok := needs[producer]; !ok {

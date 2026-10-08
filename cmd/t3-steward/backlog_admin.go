@@ -1395,6 +1395,21 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 	fmt.Fprintf(out, "run: %s\nworkflow: %s (%s)\nproject: %s\nclass: %s\nprogress: %s\nrevision: %d\n",
 		summary.Run.ID, summary.Workflow.Name, summary.Workflow.ID, summary.Workflow.Project,
 		summary.Workflow.Class, summary.Run.Progress, summary.Run.Revision)
+	var loopTasks []domain.Task
+	var loopAttempts []domain.Attempt
+	for _, item := range detail.Tasks {
+		loopTasks = append(loopTasks, item.Task)
+		if item.Attempt != nil {
+			loopAttempts = append(loopAttempts, *item.Attempt)
+		}
+	}
+	for _, loop := range domain.SummarizeFixLoops(loopTasks, loopAttempts) {
+		fmt.Fprintf(out, "fix loop %s: rounds=%d/%d final verdict=%s", loop.Name, loop.Rounds, loop.MaxRounds, loop.FinalVerdict)
+		if loop.Exhausted {
+			fmt.Fprintf(out, " escalation=%s", loop.Escalation)
+		}
+		fmt.Fprintln(out)
+	}
 	taskNames := make(map[string]string, len(detail.Tasks))
 	for _, task := range detail.Tasks {
 		taskNames[task.Task.ID] = task.Task.Name

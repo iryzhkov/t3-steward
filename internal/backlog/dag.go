@@ -187,6 +187,9 @@ func (e *DAGExecution) RetryTask(taskID, attemptID string, now time.Time) error 
 	if _, err := e.attemptIndex(attemptID); err == nil {
 		return fmt.Errorf("retry task %q: duplicate attempt ID %q", taskID, attemptID)
 	}
+	if e.state.Tasks[taskIndex].FixLoop != nil {
+		return fmt.Errorf("fix loop retries require campaign rerun from %s so stopped descendants get fresh attempts", e.state.Tasks[taskIndex].Name)
+	}
 	current := e.state.Attempts[e.currentAttemptIndex(taskID)]
 	if current.Progress != domain.ProgressFailed && current.Progress != domain.ProgressCancelled {
 		return fmt.Errorf("retry task %q: progress is %q, want failed or cancelled", taskID, current.Progress)
@@ -242,6 +245,17 @@ func (e *DAGExecution) indexAndValidate() error {
 				return fmt.Errorf("task %q repeats dependency %q", task.Name, dependency)
 			}
 			seen[dependency] = struct{}{}
+		}
+		for producer, verdict := range task.NeedsVerdict {
+			if _, ok := seen[producer]; !ok {
+				return fmt.Errorf("task %s verdict producer %s is not a dependency", task.Name, producer)
+			}
+			if verdict != "accept" && verdict != "changes-requested" {
+				return fmt.Errorf("task %s has invalid verdict condition %q", task.Name, verdict)
+			}
+			if e.state.Tasks[e.taskByName[producer]].ReviewOutput == nil {
+				return fmt.Errorf("task %s verdict producer %s has no review output", task.Name, producer)
+			}
 		}
 	}
 	if err := e.validateAcyclic(); err != nil {
@@ -329,6 +343,7 @@ func (e *DAGExecution) validateAcyclic() error {
 }
 
 func (e *DAGExecution) refresh(now time.Time, touch bool) {
+	e.refreshVerdictBranches(now)
 	for _, task := range e.state.Tasks {
 		if e.taskSucceeded(task.ID) {
 			continue
@@ -341,7 +356,7 @@ func (e *DAGExecution) refresh(now time.Time, touch bool) {
 		for _, dependency := range task.Needs {
 			dependencyTask := e.state.Tasks[e.taskByName[dependency]]
 			terminalLens := task.ReviewJudge && e.state.Attempts[e.currentAttemptIndex(dependencyTask.ID)].Progress.Terminal()
-			if !e.taskSucceeded(dependencyTask.ID) && !terminalLens {
+			if (!e.taskSucceeded(dependencyTask.ID) && !terminalLens) || !e.verdictSatisfied(task, dependencyTask) {
 				blockers = append(blockers, dependency)
 			}
 		}
@@ -389,7 +404,8 @@ func (e *DAGExecution) runProgress() domain.ProgressState {
 	anyActive, anyReady, anyNeedsInput := false, false, false
 	anyFailed, anyCancelled, anySkipped := false, false, false
 	for _, task := range e.state.Tasks {
-		if e.taskSucceeded(task.ID) {
+		current := e.state.Attempts[e.currentAttemptIndex(task.ID)]
+		if e.taskSucceeded(task.ID) || (current.Progress == domain.ProgressSkipped && current.Failure == domain.VerdictBranchSkipped) {
 			continue
 		}
 		allSucceeded = false
@@ -410,6 +426,12 @@ func (e *DAGExecution) runProgress() domain.ProgressState {
 			anyCancelled = true
 		case domain.ProgressSkipped:
 			anySkipped = true
+		}
+	}
+	for _, loop := range domain.SummarizeFixLoops(e.state.Tasks, e.state.Attempts) {
+		if loop.Exhausted {
+			anyFailed = true
+			allSucceeded = false
 		}
 	}
 	switch {
@@ -499,6 +521,11 @@ func cloneDAGState(state DAGState) DAGState {
 		task := &cloned.Tasks[index]
 		task.ReviewOutput = domain.CloneReviewOutput(source.ReviewOutput)
 		task.ReviewRequirements = domain.CloneTaskReview(source.ReviewRequirements)
+		task.NeedsVerdict = cloneStringMap(source.NeedsVerdict)
+		if source.FixLoop != nil {
+			copy := *source.FixLoop
+			task.FixLoop = &copy
+		}
 		task.Needs = append([]string(nil), source.Needs...)
 		task.ExternalNeeds = append([]domain.NodeRef(nil), source.ExternalNeeds...)
 		task.InputArtifactIDs = append([]string(nil), source.InputArtifactIDs...)
