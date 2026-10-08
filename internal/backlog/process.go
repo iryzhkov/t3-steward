@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/iryzhkov/t3-steward/internal/procgroup"
 )
 
 type ProcessRequest struct {
@@ -150,16 +153,31 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 			return ProcessResult{}, err
 		}
 	}
-	output := boundedBuffer{limit: request.MaxOutputBytes}
-	command := exec.Command(r.systemdRun(), args...)
-	command.Stdout = &output
-	command.Stderr = &output
-	if err := command.Start(); err != nil {
+	// The run owns the read end of the launcher's output pipe and the one
+	// goroutine copying from it, rather than leaving them to exec.Cmd, so that
+	// a cancelled run can close the pipe and join the copy before it returns
+	// even when a process outside the launcher still holds the write end.
+	outputReader, outputWriter, err := os.Pipe()
+	if err != nil {
 		fmt.Fprintf(log, "! %v\n", err)
 		return ProcessResult{}, err
 	}
+	defer outputReader.Close()
+	output := boundedBuffer{limit: request.MaxOutputBytes}
+	command := exec.Command(r.systemdRun(), args...)
+	command.Stdout = outputWriter
+	command.Stderr = outputWriter
+	err = command.Start()
+	_ = outputWriter.Close()
+	if err != nil {
+		fmt.Fprintf(log, "! %v\n", err)
+		return ProcessResult{}, err
+	}
+	// waited delivers the launcher's exit only once its output has been read
+	// to the end, as exec.Cmd.Wait does with a writer it copies to.
 	waited := make(chan error, 1)
 	go func() {
+		_, _ = io.Copy(&output, outputReader)
 		waited <- command.Wait()
 	}()
 
@@ -212,13 +230,15 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 		case <-waited:
 		case <-reap.C:
 			// A process outside the launcher still holds its output open
-			// after the scope kill: the scope is not shown to be empty, and
-			// the output cannot be read while it is still being written.
+			// after the scope kill, so the scope is not shown to be empty.
+			// Closing the read end ends the copy, and the killed launcher is
+			// reaped, before the output is read and the run returns.
 			if killErr == nil {
 				killErr = errors.New("launcher output still held open after the cleanup timeout")
 			}
+			_ = outputReader.Close()
+			<-waited
 			fmt.Fprintf(log, "! %v\n", killErr)
-			return ProcessResult{}, errors.Join(ctx.Err(), fmt.Errorf("kill process scope %s: %w", unit, killErr))
 		}
 		_, _ = io.WriteString(log, output.String())
 		if killErr != nil {
@@ -231,10 +251,9 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 func (r SystemdScopeRunner) killScope(ctx context.Context, log io.Writer, unit string) error {
 	args := []string{"--user", "kill", "--kill-who=all", "--signal=KILL", unit}
 	fmt.Fprintf(log, "$ %s %s\n", r.systemctl(), strings.Join(args, " "))
-	command := exec.CommandContext(ctx, r.systemctl(), args...)
+	command := r.systemctlCommand(ctx, args...)
 	command.Stdout = log
 	command.Stderr = log
-	command.WaitDelay = scopeCleanupPoll
 	if err := command.Run(); err != nil {
 		fmt.Fprintf(log, "! %v\n", err)
 		return err
@@ -260,13 +279,13 @@ const scopeCleanupPoll = 20 * time.Millisecond
 func (r SystemdScopeRunner) clearScope(unit string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), r.cleanupTimeout())
 	defer cancel()
-	killOutput, killErr := exec.CommandContext(ctx, r.systemctl(), "--user", "kill", "--kill-who=all", "--signal=KILL", unit).CombinedOutput()
+	killOutput, killErr := r.systemctlCommand(ctx, "--user", "kill", "--kill-who=all", "--signal=KILL", unit).CombinedOutput()
 	// observed is the last state the user manager answered with. The deadline
 	// can expire while a query is running, and the query is then killed; that
 	// is still the deadline, not a user manager that stopped answering.
 	observed := ""
 	for {
-		out, err := exec.CommandContext(ctx, r.systemctl(), "--user", "show", "--property=ActiveState", "--value", unit).CombinedOutput()
+		out, err := r.systemctlCommand(ctx, "--user", "show", "--property=ActiveState", "--value", unit).CombinedOutput()
 		state := strings.TrimSpace(string(out))
 		if err == nil && (state == "inactive" || state == "failed") {
 			return nil
@@ -323,6 +342,15 @@ func (r SystemdScopeRunner) systemdRun() string {
 		return r.SystemdRunBinary
 	}
 	return "systemd-run"
+}
+
+// systemctlCommand is every systemctl call the runner makes. Each one is
+// bounded by its cleanup context: when the context ends the call is killed
+// with any child it started, and its output pipes are closed after
+// scopeCleanupPoll even if something else still holds them, so a user
+// manager that stops answering cannot outlast the cleanup timeout.
+func (r SystemdScopeRunner) systemctlCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return procgroup.CommandContext(ctx, scopeCleanupPoll, r.systemctl(), args...)
 }
 
 func (r SystemdScopeRunner) systemctl() string {
