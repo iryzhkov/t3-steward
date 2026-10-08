@@ -263,8 +263,14 @@ fields are `version`, `name`, `class`, `placement`, `environment`,
 - Each task declares `prompt_file`; optional fields include `needs`,
   `inputs_from`, `outputs`, `commits`, `verify`, placement, routes,
   `resource_locks`, class, `importance`, `difficulty`,
-  `estimated_cost`, `max_turns`, `not_before`, `deadline`, and
+  `estimated_cost`, `max_turns`, `retry`, `not_before`, `deadline`, and
   `expires_at`.
+- `retry` (workflow or task level) declares the automatic retry budget for
+  infrastructure failures: `infrastructure` (0..5, default 2) and `backoff`
+  (default 2m, at most 1h, doubled for each later retry). A task's block
+  overrides the fields it names. Code, protocol, policy, cancelled and unknown
+  failures are never retried automatically. See
+  [failure classification](failure-classification.md).
 - `commits` declares Git commits a task produces for its successors. Each entry
   has a `name`, which must be one safe path component, and an optional
   `revision` resolved in the producing workspace, defaulting to `HEAD`. A

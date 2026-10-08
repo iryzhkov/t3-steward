@@ -96,6 +96,7 @@ type WakeSummaryTask struct {
 	TaskID        string `json:"taskId,omitempty"`
 	Progress      string `json:"progress"`
 	Failure       string `json:"failure,omitempty"`
+	FailureClass  string `json:"failureClass,omitempty"`
 	Verdict       string `json:"verdict,omitempty"`
 	VerdictStatus string `json:"verdictStatus"`
 	HeadStatus    string `json:"headStatus"`
@@ -174,6 +175,9 @@ type SummaryTask struct {
 	Attempt  string
 	Progress domain.ProgressState
 	Failure  string
+	// FailureClass is the failure's class and reason code, "class/code",
+	// empty when the attempt did not fail.
+	FailureClass string
 	// Outputs are the task's declared outputs, in manifest order.
 	Outputs       []domain.ArtifactDeclaration
 	Artifacts     []SummaryArtifact
@@ -511,6 +515,9 @@ func summaryText(s string, n int) string {
 // summarizeTask fills one row from the task's retained outputs.
 func (b *summaryBudget) summarizeTask(ctx context.Context, source NodeSummarySource, run string, t SummaryTask) WakeSummaryTask {
 	row := WakeSummaryTask{Task: summaryTaskName(t), Progress: summaryTaskState(t), Failure: summaryText(t.Failure, 1000)}
+	if t.Failure != "" {
+		row.FailureClass = summaryText(t.FailureClass, 100)
+	}
 	if summaryName.MatchString(t.ID) {
 		row.TaskID = t.ID
 	}
@@ -871,12 +878,12 @@ func (s WakeSummary) nodeProse(rows *int) string {
 	if s.Workflow != "" {
 		subject = s.Workflow + " (" + s.Run + ")"
 	}
-	failure := ""
+	failure, class := "", ""
 	if sink {
 		b.WriteString(subject + " " + s.Progress)
 		if failed, ok := s.firstFailed(); ok && s.Progress == string(domain.ProgressFailed) {
 			b.WriteString(" at " + failed.Task)
-			failure = failed.Failure
+			failure, class = failed.Failure, failed.FailureClass
 		}
 	} else if len(s.Tasks) == 1 {
 		task := s.Tasks[0]
@@ -885,9 +892,12 @@ func (s WakeSummary) nodeProse(rows *int) string {
 			subject = s.Workflow + "/" + subject
 		}
 		b.WriteString(subject + " " + task.Progress)
-		failure = task.Failure
+		failure, class = task.Failure, task.FailureClass
 	}
 	if failure != "" {
+		if class != "" {
+			b.WriteString(" (" + class + ")")
+		}
 		b.WriteString(": " + annotationQuote(failure, summaryFailureClip))
 	}
 	b.WriteString(".\n")

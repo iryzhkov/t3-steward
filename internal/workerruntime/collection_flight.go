@@ -350,6 +350,13 @@ func (r *Runtime) finishCollection(id string, record AttemptRecord, flight *coll
 		if errors.As(flight.err, &permanent) {
 			return r.failCollection(id, record, flight, permanent)
 		}
+		var preserved *PreservedResultError
+		if errors.As(flight.err, &preserved) {
+			// The work the turn left cannot be proven, so no later collection
+			// can capture it either; the attempt fails as infrastructure.
+			_, err := r.failFinishedCollection(id, record, flight, preserved.Error())
+			return err
+		}
 		var ended *ContainedRunEndedError
 		if errors.As(flight.err, &ended) {
 			// The run is gone, so no later collection can capture an outcome.

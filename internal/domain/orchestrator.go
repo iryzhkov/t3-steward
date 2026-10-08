@@ -271,9 +271,12 @@ type Task struct {
 	Difficulty    int             `json:"difficulty"`
 	EstimatedCost *float64        `json:"estimatedCost,omitempty"`
 	MaxTurns      int             `json:"maxTurns"`
-	NotBefore     *time.Time      `json:"notBefore,omitempty"`
-	Deadline      *time.Time      `json:"deadline,omitempty"`
-	ExpiresAt     *time.Time      `json:"expiresAt,omitempty"`
+	// Retry is the declared automatic retry budget for infrastructure
+	// failures. Nil means the defaults (EffectiveRetryPolicy).
+	Retry     *TaskRetryPolicy `json:"retry,omitempty"`
+	NotBefore *time.Time       `json:"notBefore,omitempty"`
+	Deadline  *time.Time       `json:"deadline,omitempty"`
+	ExpiresAt *time.Time       `json:"expiresAt,omitempty"`
 }
 
 // Attempt is one try to complete a task in a workflow run.
@@ -312,6 +315,15 @@ type Attempt struct {
 	AdminNotBefore             *time.Time        `json:"adminNotBefore,omitempty"`
 	AdminForceStart            bool              `json:"adminForceStart,omitempty"`
 	Failure                    string            `json:"failure,omitempty"`
+	// FailureClass and FailureReason are the coordinator's classification of
+	// Failure (see ClassifyFailure), recorded once the attempt is terminal.
+	// Both are empty on an attempt that has not failed or was recorded before
+	// classification existed; ClassifyAttemptFailure covers that case.
+	FailureClass  FailureClass      `json:"failureClass,omitempty"`
+	FailureReason FailureReasonCode `json:"failureReason,omitempty"`
+	// AutomaticRetry is set on an attempt the coordinator created on its own
+	// to retry an infrastructure failure, and names the attempt it retries.
+	AutomaticRetry *AutomaticRetry `json:"automaticRetry,omitempty"`
 	// ReviewGate is the completion gate's decision for a review-declared
 	// task's finished turn: the heads compared and why it passed or failed.
 	ReviewGate  *ReviewCompletionGate `json:"reviewGate,omitempty"`

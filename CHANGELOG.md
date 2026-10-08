@@ -16,6 +16,34 @@ or rc.115 coordinator.
 
 ### Added
 
+- Failure classification and bounded automatic infrastructure retries.
+  Every failed or cancelled attempt now carries a typed failure class
+  (`infrastructure`, `protocol`, `code`, `policy`, `cancelled`, `unknown`)
+  and a machine-readable reason code, recorded by the coordinator on the
+  attempt as `failureClass` and `failureReason` and printed as
+  `failure class: class/code` by `task result`, `campaign show` and
+  `task show`, and after the failure in the wake summary (JSON
+  `failureClass`). The table that maps today's failure reasons to classes
+  is documented in `docs/failure-classification.md` and tested against the
+  code. Infrastructure failures of unsupervised runs are retried
+  automatically through an audited admin `retry` command
+  (`auto-retry-<attempt>`, principal `steward-coordinator/automatic-retry`)
+  after a backoff, within a budget declared by a new `retry` block at
+  workflow or task level (`infrastructure`, default 2, at most 5;
+  `backoff`, default 2m, doubled per retry, at most 1h) and capped by the
+  coordinator setting `backlog_v2.coordinator.automatic_retries.max_infrastructure`
+  (default 3, 0 disables). Code, protocol, policy, cancelled and unknown
+  failures are never retried automatically. The retry attempt carries an
+  `automaticRetry` receipt and still goes through quota admission and
+  verification; while a retry is due, the run's sink does not settle.
+- Preserved results for collection retries. When a collection captures a
+  finished turn's result, the worker records the digest of the declared
+  outputs and commits beside the workspace (`preserved-result.json`). A
+  collection retried after a failed publication reuses the workspace only
+  when the digest still matches; a changed workspace fails the attempt as
+  `preserved result digest mismatch` and a removed one as `workspace is
+  missing`, both infrastructure failures, instead of collecting work that
+  cannot be proven to be the turn's.
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first

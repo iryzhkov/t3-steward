@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/review"
 	"path/filepath"
 	"slices"
@@ -42,6 +43,9 @@ func (c *Config) validateBacklogV2() error {
 	}
 	if err := v.Coordinator.ResourcePlacement.Policy().Validate(); err != nil {
 		return fmt.Errorf("backlog_v2.coordinator.resource_placement: %w", err)
+	}
+	if limit := v.Coordinator.AutomaticRetries.MaxInfrastructure; limit != nil && (*limit < 0 || *limit > domain.MaxInfrastructureRetries) {
+		return fmt.Errorf("backlog_v2.coordinator.automatic_retries.max_infrastructure must be between 0 and %d", domain.MaxInfrastructureRetries)
 	}
 	v.Mode = strings.ToLower(strings.TrimSpace(v.Mode))
 	if v.Coordinator.LegacyFileIntakeEnabled {

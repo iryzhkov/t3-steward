@@ -442,6 +442,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 			Routes:         routes, ResourceLocks: append([]string(nil), taskManifest.ResourceLocks...),
 			Importance: taskManifest.Importance, Difficulty: taskManifest.Difficulty,
 			EstimatedCost: taskManifest.EstimatedCost, MaxTurns: taskManifest.MaxTurns,
+			Retry:     taskRetryPolicy(effectiveManifestRetry(manifest.Retry, taskManifest.Retry)),
 			NotBefore: taskManifest.NotBefore, Deadline: taskManifest.Deadline, ExpiresAt: taskManifest.ExpiresAt,
 		})
 		progress := domain.ProgressReady
