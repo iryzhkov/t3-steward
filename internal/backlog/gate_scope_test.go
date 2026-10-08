@@ -47,7 +47,7 @@ func TestSystemdScopeRunnerKillRemaining(t *testing.T) {
 // When the scope cannot be shown to be empty, a process may still be running
 // in it. Before the command that refuses to start it; after the command it
 // turns even a successful exit into an error that keeps the systemctl output.
-func TestSystemdScopeRunnerRefusesUnclearedScope(t *testing.T) {
+func TestSystemdScopeRunnerKillRemainingRefusesUnclearedScope(t *testing.T) {
 	for _, phase := range []string{"before", "after"} {
 		t.Run(phase, func(t *testing.T) {
 			root := t.TempDir()
@@ -66,6 +66,19 @@ func TestSystemdScopeRunnerRefusesUnclearedScope(t *testing.T) {
 				ProcessRequest{ID: "verify-attempt-1-gate-0", Dir: root, Program: "/bin/sh", Args: []string{"-c", "true"}, Log: &log, KillRemaining: true})
 			if err == nil {
 				t.Fatalf("Run succeeded with an uncleared scope; calls:\n%s", readAbsoluteTestFile(t, calls))
+			}
+			var cleanupErr *ScopeCleanupError
+			if !errors.As(err, &cleanupErr) || cleanupErr.Unit != processScopeUnit("verify-attempt-1-gate-0") {
+				t.Fatalf("Run error = %v, want a scope cleanup failure", err)
+			}
+			unit := processScopeUnit("verify-attempt-1-gate-0")
+			clear := "--user kill --kill-who=all --signal=KILL " + unit + "\n--user show --property=ActiveState --value " + unit
+			want := clear
+			if phase == "after" {
+				want = clear + "\nrun\n" + clear
+			}
+			if got := strings.TrimSpace(readAbsoluteTestFile(t, calls)); got != want {
+				t.Fatalf("calls:\n%s\nwant:\n%s", got, want)
 			}
 			var exitErr *ProcessExitError
 			if errors.As(err, &exitErr) || result.ExitCode != 0 {

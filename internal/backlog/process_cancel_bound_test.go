@@ -183,53 +183,47 @@ func TestKillRemainingCleanupAcceptsAnAnswerWhoseChildHoldsOutput(t *testing.T) 
 	}
 }
 
-// Clearing a scope before and after a KillRemaining command is bounded by
-// the cleanup timeout even when systemctl leaves a child holding its output,
-// and still fails explicitly because the scope was not shown to be empty.
+// Exercise the short cleanup deadline directly, so normal Run preflight does
+// not decide whether an intended post-command cleanup case is reached. Run's
+// before/after sequencing is covered separately in gate_scope_test.go.
 func TestKillRemainingCleanupReturnsWithinBoundWhenSystemctlChildHoldsOutput(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		// hangAfterRun makes systemctl answer normally until the command
-		// has run, so only the cleanup after it hangs.
-		hangAfterRun bool
-	}{
-		{name: "before the command"},
-		{name: "after the command", hangAfterRun: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			ranPath := filepath.Join(root, "ran")
-			run := writeExecutable(t, root, "run", fmt.Sprintf("#!/bin/sh\ntouch %q\n", ranPath))
-			// Without exec, the shell's sleep child keeps systemctl's output
-			// open after the shell itself is killed.
-			ctlScript := "#!/bin/sh\nsleep 5\n"
-			if tc.hangAfterRun {
-				ctlScript = fmt.Sprintf("#!/bin/sh\nif [ -e %q ]; then sleep 5; exit 0; fi\nif [ \"$2\" = show ]; then echo inactive; fi\n", ranPath)
-			}
-			ctl := writeExecutable(t, root, "ctl", ctlScript)
-			started := time.Now()
-			done := make(chan error, 1)
-			go func() {
-				_, err := (SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: 20 * time.Millisecond}).Run(
-					context.Background(), ProcessRequest{ID: "kill-remaining-bound", Dir: root, Program: "true", KillRemaining: true})
-				done <- err
-			}()
-			var err error
-			select {
-			case err = <-done:
-			case <-time.After(10 * time.Second):
-				t.Fatal("scope cleanup waited for systemctl's child")
-			}
-			if elapsed := time.Since(started); elapsed > time.Second {
-				t.Fatalf("scope cleanup took %s despite a 20ms cleanup bound", elapsed.Round(time.Millisecond))
-			}
-			var cleanupErr *ScopeCleanupError
-			if !errors.As(err, &cleanupErr) {
-				t.Fatalf("run error = %v, want a scope cleanup failure", err)
-			}
-			if _, statErr := os.Stat(ranPath); (statErr == nil) != tc.hangAfterRun {
-				t.Fatalf("command ran = %v, want %v", statErr == nil, tc.hangAfterRun)
-			}
-		})
+	root := t.TempDir()
+	childPath := filepath.Join(root, "child.pid")
+	// The child itself records readiness through systemctl's output pipe,
+	// then holds that pipe open for much longer than the cleanup deadline.
+	child := writeExecutable(t, root, "child", fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$$\" > %q\necho held-output-ready\nexec sleep 30\n", childPath))
+	// Bash monitor mode gives the background child its own process group
+	// on both Linux and macOS; killing systemctl cannot close its output.
+	ctl := writeExecutable(t, root, "ctl", fmt.Sprintf("#!/bin/bash\nset -m\nif [ \"$2\" = kill ]; then %q & wait; else exit 1; fi\n", child))
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		done <- (SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: 20 * time.Millisecond}).clearScope("t3-steward-held-output.scope")
+	}()
+	pid := waitForPID(t, childPath)
+	t.Cleanup(func() {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		waitForProcessExit(t, pid)
+	})
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("scope cleanup waited for systemctl's child")
+	}
+	var cleanupErr *ScopeCleanupError
+	if !errors.As(err, &cleanupErr) || cleanupErr.Unit != "t3-steward-held-output.scope" {
+		t.Fatalf("cleanup error = %v, want a scope cleanup failure", err)
+	}
+	// A deadline that expires before the child owns output is not evidence
+	// that held-output cleanup works.
+	if !strings.Contains(cleanupErr.Detail, "held-output-ready") {
+		t.Fatalf("cleanup never observed the child holding output: %v", err)
+	}
+	if group, groupErr := syscall.Getpgid(pid); groupErr != nil || group != pid {
+		t.Fatalf("held-output child group = %d, err = %v, want live separate group %d", group, groupErr, pid)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("scope cleanup took %s despite a 20ms cleanup bound", elapsed.Round(time.Millisecond))
 	}
 }
