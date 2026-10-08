@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -252,6 +253,23 @@ func setListenerLogOutput(w io.Writer) func() {
 	return func() { listenerLog = previous }
 }
 
+// stopTestListener joins every peer before the test reads its log or restores
+// listenerLog. It is safe both as a defer on early failure and on the success path.
+func stopTestListener(conn *net.Conn, cancel context.CancelFunc, done <-chan error) func() {
+	stopped := false
+	return func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		if *conn != nil {
+			(*conn).Close()
+		}
+		cancel()
+		<-done
+	}
+}
+
 // Only a refusal the handler marks as answered is sent. A handler that fails
 // after writing part of its reply, as an artifact stream can, must end the
 // stream so the peer retries, never deliver the part as a complete frame.
@@ -278,8 +296,11 @@ func TestWorkerListenerSendsOnlyAnsweredRefusals(t *testing.T) {
 			return []byte("header\nPARTIAL"), errors.New("artifact send: short object")
 		})
 	}()
+	var conn net.Conn
+	stop := stopTestListener(&conn, cancel, done)
+	defer stop()
 	frames := workerproto.FrameCodec{MaxBytes: 1 << 20}
-	conn, err := net.Dial("unix", listener.Addr().String())
+	conn, err = net.Dial("unix", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,8 +318,7 @@ func TestWorkerListenerSendsOnlyAnsweredRefusals(t *testing.T) {
 		t.Fatalf("a failed handler's partial reply was delivered: %q", reply)
 	}
 	// The log is read once the listener has stopped writing it.
-	cancel()
-	<-done
+	stop()
 	if !strings.Contains(logged.String(), "short object") || !strings.Contains(logged.String(), "busy") {
 		t.Fatalf("listener did not log both outcomes: %q", logged.String())
 	}
@@ -321,22 +341,34 @@ func TestWorkerListenerLogsAnOversizeFrame(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	handlerCalled := false
 	go func() {
-		done <- ServeWorkerListener(ctx, listener, 16, time.Minute, 1, func(context.Context, []byte) ([]byte, error) { return []byte("ok"), nil })
+		done <- ServeWorkerListener(ctx, listener, 16, time.Minute, 1, func(context.Context, []byte) ([]byte, error) {
+			handlerCalled = true
+			return []byte("ok"), nil
+		})
 	}()
-	conn, err := net.Dial("unix", listener.Addr().String())
+	var conn net.Conn
+	stop := stopTestListener(&conn, cancel, done)
+	defer stop()
+	conn, err = net.Dial("unix", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := (workerproto.FrameCodec{MaxBytes: 1 << 20}).Write(conn, bytes.Repeat([]byte("x"), 64)); err != nil {
+	// The server may reject the header before the client finishes the body.
+	if err := (workerproto.FrameCodec{MaxBytes: 1 << 20}).Write(conn, bytes.Repeat([]byte("x"), 64)); err != nil && !errors.Is(err, syscall.EPIPE) && !errors.Is(err, syscall.ECONNRESET) {
 		t.Fatal(err)
 	}
 	_, readErr := (workerproto.FrameCodec{MaxBytes: 1 << 20}).Read(conn)
-	conn.Close()
-	cancel()
-	<-done
+	stop()
 	if readErr == nil {
 		t.Fatal("oversize frame was answered")
+	}
+	if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, syscall.ECONNRESET) {
+		t.Fatalf("unexpected oversize rejection read error: %v", readErr)
+	}
+	if handlerCalled {
+		t.Fatal("oversize frame reached the handler")
 	}
 	if !strings.Contains(logged.String(), "stream frame exceeds limit") {
 		t.Fatalf("oversize frame not logged: %q", logged.String())
