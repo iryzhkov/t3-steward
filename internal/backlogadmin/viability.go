@@ -54,6 +54,12 @@ const (
 	// permanent for the same reason no-configured-route is: waiting does not
 	// change the answer, a configuration change does.
 	ReasonSupervisorClientMissing = "supervisor-client-missing"
+	// ReasonUnknownNode means a task needs a node of another run that the
+	// coordinator does not hold. Submission binds every cross-run need and
+	// refuses the campaign when one does not resolve, so waiting does not
+	// change the answer. The client adds it after looking each node up, so
+	// the viability request keeps the shape older coordinators decode.
+	ReasonUnknownNode = "unknown-node"
 )
 
 // Temporary reason codes. Every one of them is compatible with asynchronous
@@ -131,6 +137,7 @@ var permanentReasons = map[string]bool{
 	ReasonNoConfiguredRoute:       true,
 	ReasonNoRoute:                 true,
 	ReasonSupervisorClientMissing: true,
+	ReasonUnknownNode:             true,
 	ReasonTimingWindowClosed:      true,
 	ReasonMessageLimitExceeded:    true,
 }

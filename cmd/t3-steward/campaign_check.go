@@ -289,6 +289,9 @@ func (c campaignCLI) checkViability(ctx context.Context, plan campaign.Plan, bun
 			return matrix, fmt.Errorf("this coordinator does not support role:; upgrade the coordinator")
 		}
 	}
+	if err := c.addUnknownNodeReasons(ctx, plan, &matrix); err != nil {
+		return matrix, err
+	}
 	if only != "" {
 		selected := matrix.Tasks[:0]
 		for _, result := range matrix.Tasks {

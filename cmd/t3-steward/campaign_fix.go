@@ -143,6 +143,9 @@ func parseCampaignFixArgs(args []string) (campaignFixArgs, error) {
 	if a.key == "" {
 		return a, errors.New("campaign fix requires --idempotency-key KEY")
 	}
+	if err := validateIdempotencyKeyFlag(a.key); err != nil {
+		return a, err
+	}
 	if a.dryRun && a.out == "" {
 		return a, errors.New("--dry-run requires --out DIR")
 	}

@@ -73,6 +73,9 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 	if err = domain.ValidateGraphTasks(run, c.Tasks); err != nil {
 		return result, err
 	}
+	if err = validateDerivedRunIDs("rerun", "rerun", run.ID, c.Tasks); err != nil {
+		return result, err
+	}
 	graph := domain.GraphDefinition{
 		RunID: run.ID, Revision: 1, Actor: c.Actor, Reason: c.Request.Reason,
 		RequestID: c.Request.ID, CreatedAt: c.Now.UTC(), Tasks: c.Tasks,

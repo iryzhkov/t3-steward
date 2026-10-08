@@ -19,6 +19,14 @@ func ParseNodeRef(value string) (NodeRef, error) {
 	if !ok || run == "" || task == "" || strings.Contains(task, "/") {
 		return NodeRef{}, errors.New("node must be <run>/<task>")
 	}
+	// The run part names a directory in coordinator storage, so it is held to
+	// the storage-component rule; "../probe" or "-x/probe" is never a run.
+	if err := ValidateStorageComponent(run); err != nil {
+		return NodeRef{}, fmt.Errorf("node %q: run %w", value, err)
+	}
+	if ContainsControl(task) {
+		return NodeRef{}, fmt.Errorf("node %q: task must not contain control characters", value)
+	}
 	return NodeRef{RunID: run, TaskID: task}, nil
 }
 func (n NodeRef) String() string { return n.RunID + "/" + n.TaskID }

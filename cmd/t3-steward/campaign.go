@@ -895,6 +895,11 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 		// almost certainly meant.
 		return campaignArgs{}, fmt.Errorf("campaign %s requires --idempotency-key KEY", command)
 	}
+	if parsed.key != "" {
+		if err := validateIdempotencyKeyFlag(parsed.key); err != nil {
+			return campaignArgs{}, err
+		}
+	}
 	if parsed.unverified && parsed.reason == "" {
 		// The escape hatch is audited, and an audit record with no reason is a
 		// record that nobody can act on later.

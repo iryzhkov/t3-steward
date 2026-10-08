@@ -423,7 +423,12 @@ Permanent reason codes. Waiting cannot change any of them, so submit refuses:
   resources-impossible, directory-impossible, credential-missing,
   repository-syntax-invalid, repository-authentication-failed,
   repository-not-found, ref-not-found, no-route, no-configured-route,
-  supervisor-client-missing, timing-window-closed, message-limit-exceeded.
+  supervisor-client-missing, unknown-node, timing-window-closed,
+  message-limit-exceeded.
+
+unknown-node means a task needs <run>/<task> of another run that the
+coordinator does not hold. The client looks each cross-run need up with the
+workflow query; submission would refuse the campaign when it binds the need.
 
 no-route means a task declares no provider route (instance and model) at all.
 The coordinator never chooses one: declare routes in workflow.yaml, or start a

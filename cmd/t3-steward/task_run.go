@@ -445,6 +445,11 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if err := backlog.ValidateOutputPaths("--output", parsed.outputs); err != nil {
 		return err
 	}
+	if parsed.key != "" {
+		if err := validateIdempotencyKeyFlag(parsed.key); err != nil {
+			return err
+		}
+	}
 	prompts, err := c.prompts(parsed)
 	if err != nil {
 		return err
@@ -1290,7 +1295,7 @@ func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
 	fmt.Fprintf(out, "ref %s\n", ref)
 	fmt.Fprintf(out, "route %s\n", route)
 	fmt.Fprintln(out, taskRunOutputsLine(record.Outputs))
-	fmt.Fprintf(out, "idempotency-key %s (replayed: %t)\n", record.IdempotencyKey, record.Replayed)
+	fmt.Fprintf(out, "idempotency-key %s (replayed: %t)\n", displayValue(record.IdempotencyKey), record.Replayed)
 	if record.InputManifest != nil {
 		fmt.Fprintf(out, "input-manifest %s\n", record.InputManifest.Digest)
 		for _, entry := range record.InputManifest.Entries {

@@ -71,6 +71,11 @@ func parseSubmissionArgs(args []string) (archivePath, key string, asJSON bool, e
 	if archivePath == "" {
 		return "", "", false, errors.New("backlog submit needs a tar archive path")
 	}
+	if key != "" {
+		if err := validateIdempotencyKeyFlag(key); err != nil {
+			return "", "", false, err
+		}
+	}
 	return archivePath, key, asJSON, nil
 }
 

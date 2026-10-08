@@ -50,6 +50,9 @@ func (s *Store) CommitGraphClone(ctx context.Context, c GraphCommit) (domain.Gra
 	if err = domain.ValidateGraphTasks(run, c.Tasks); err != nil {
 		return result, err
 	}
+	if err = validateDerivedRunIDs("clone", "clone", run.ID, c.Tasks); err != nil {
+		return result, err
+	}
 	if len(c.Tasks) != len(source.Tasks) {
 		return result, errors.New("clone task count differs from source")
 	}

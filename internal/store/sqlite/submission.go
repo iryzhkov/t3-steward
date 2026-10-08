@@ -36,6 +36,12 @@ var ErrSubmissionConflict = domain.ErrSubmissionConflict
 // ReserveSubmission durably fixes request content and result identities before
 // the coordinator publishes files or workflow metadata.
 func (s *Store) ReserveSubmission(ctx context.Context, proposed domain.SubmissionRecord) (domain.SubmissionRecord, bool, error) {
+	// A new key is held to the whole rule the client applies offline; a
+	// record read back is held only to the length and trim rule it was
+	// written under, so a key accepted before the rule existed still decodes.
+	if err := domain.ValidateIdempotencyKey(proposed.Key); err != nil {
+		return domain.SubmissionRecord{}, false, err
+	}
 	if err := validateSubmissionRecord(proposed, false); err != nil {
 		return domain.SubmissionRecord{}, false, err
 	}
@@ -216,8 +222,8 @@ func decodeSubmission(key string, raw []byte) (domain.SubmissionRecord, error) {
 }
 
 func validateSubmissionRecord(record domain.SubmissionRecord, accepted bool) error {
-	if strings.TrimSpace(record.Key) != record.Key || record.Key == "" || len(record.Key) > 256 {
-		return errors.New("submission idempotency key must be 1-256 trimmed characters")
+	if strings.TrimSpace(record.Key) != record.Key || record.Key == "" || len(record.Key) > domain.MaxIdempotencyKeyBytes {
+		return errors.New(domain.IdempotencyKeyRule)
 	}
 	digest, err := hex.DecodeString(record.Digest)
 	if err != nil || len(digest) != 32 {

@@ -72,6 +72,55 @@ or rc.115 coordinator.
   `--use-commit` needs a coordinator of this release or newer
   (docs/architecture/adr-h5-recovery-provenance-and-evidence.md).
 
+### Changed
+
+- Release note for rc.119, which changed the shape of derived coordinator
+  identities: new reruns, clones, graph additions, scheduled attempts and
+  recovery retries are named `<kind>-<32 hex>` (for example
+  `run-0677c79b49a37db7d761f68d1a4773ff`) instead of the colon forms
+  `run:rerun:<key>`, `run:clone:<key>`, `task:rerun:<key>:<index>`,
+  `task:clone:...`, `task:graph:<key>`, `input:rerun:...`, `attempt:<task>:1`,
+  `attempt:<run>:<task>:1` and `attempt:recovery:<digest>`. Consumers that find
+  a rerun or clone by its `run:rerun:` or `run:clone:` prefix, or that parse the
+  key back out of an ID, must adapt: read the new run from the command's
+  `runId` JSON field or its first `run <id>` line, and the key from the
+  graph's `rerunOf.idempotencyKey`. Scripts and dashboards that grep feed or
+  log lines for `run:rerun:` no longer match new reruns; the qualification
+  harness (`scripts/qualification/recovery_provenance.py`) was adapted in
+  rc.119. Existing records keep their colon IDs and stay valid references.
+  See docs/safe-identities.md.
+
+### Fixed
+
+- Unsafe identifiers are refused before submission rather than accepted and
+  failing later. `campaign validate`, `campaign check`, `campaign submit` and
+  `task run` (including `--dry-run`) refuse an output path, an `inputs` path or
+  an `inputs_from` artifact name that contains a control character (U+0000 to
+  U+001F, U+007F) or has a component longer than 255 bytes, and a commit name
+  that is not a path-safe identity (1 to 128 letters, digits, `.`, `_` or
+  `-`, starting with a letter or digit). Each refusal names the field and
+  shows the value with Go escapes.
+- A cross-run reference (`needs:` or `inputs_from:` `<run>/<task>`, and every
+  other command that takes a node) must name a run that is one storage
+  component: not empty, `.` or `..`, no `/`, `\`, or control character, not
+  starting with `-`, at most 255 bytes. `needs: ["../probe"]` and
+  `["-x/probe"]` are refused offline. Colon run IDs written before rc.119,
+  such as `run:...`, stay accepted. `campaign check` (and the readiness check
+  of `campaign submit` and `task run`) now looks up each cross-run need and
+  reports a run or task the coordinator does not hold as the permanent reason
+  `unknown-node` instead of `ready`; the lookup uses the ordinary workflow
+  query, so the viability request keeps the shape older coordinators decode.
+- Submission idempotency keys are held to one rule, 1 to 256 trimmed bytes with
+  no control characters, with one message on the client and the coordinator:
+  `task run` (including `--dry-run`), `campaign submit`, `campaign fix` and
+  `backlog submit` refuse a bad `--idempotency-key` before contacting the
+  coordinator, and the coordinator refuses a new submission under such a key.
+  Records accepted before the rule still decode. The `task run` text record
+  and dry run print a key with Go escapes when it is not printable as is.
+- `domain.PathSafeID` is now enforced where derived identities are stored:
+  a rerun or clone whose run, task, input or first-attempt ID is not path-safe
+  is refused before anything is written.
+
 ## [0.11.0-rc.117] - 2026-10-07
 
 Database migrations V39 and V42 (schema 37 to 42). Every new worker
