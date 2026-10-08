@@ -109,7 +109,8 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		artifacts = append(artifacts, artifact)
 		if artifact.Kind == domain.ArtifactOutput {
 			if _, duplicate := outputs[artifact.Name]; duplicate {
-				return report, fmt.Errorf("result import repeats output %q", artifact.Name)
+				return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now,
+					&ResultValidationError{Err: fmt.Errorf("result import repeats output %q", artifact.Name)})
 			}
 			outputs[artifact.Name] = artifact.MediaType
 		}
@@ -144,7 +145,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	}
 	missingOutputs, err := validateDeclaredResultOutputs(task, outputs)
 	if err != nil {
-		return report, err
+		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, &ResultValidationError{Err: err})
 	}
 	if summaries != 1 || logs != 1 || verifications > len(task.Verification) {
 		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now,
@@ -174,18 +175,20 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 		payloads[index] = data
 	}
 	artifacts, payloads = keepContinuationCheckpoint(artifacts, payloads, attempt, manifest.CreatedAt)
+	// The payloads are now verified against their digests, so every error the
+	// two checks below return is about content the worker can never change:
+	// each one is settled rather than retried.
 	proposal, err := recoveryProposalFromResult(artifacts, payloads, attempt, assignment)
 	if err != nil {
-		return report, err
+		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, &ResultValidationError{Err: err})
 	}
 	ordinaryMissingOutputs := missingOutputs
 	failedRecords, artifacts, payloads, missingOutputs := admitFailedCommitRecords(task, attempt, artifacts, payloads, missingOutputs)
 	verificationPassed, failure, summary, err := evaluateResultEvidence(task, assignment.ThreadID, artifacts, payloads, missingOutputs)
 	if err != nil {
-		if errors.Is(err, ErrInvalidGateEvidence) {
-			return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, err)
-		}
-		return report, err
+		// Invalid gate evidence was the one case settled before; it still
+		// matches ErrInvalidGateEvidence through the wrapper.
+		return i.rejectResult(ctx, report, outcomeID, attempt, manifest.CreatedAt, now, &ResultValidationError{Err: err})
 	}
 	reviewVerdict, reviewErr := reviewVerdictFromResult(task, artifacts, payloads)
 	if reviewErr != nil {

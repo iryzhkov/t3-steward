@@ -363,9 +363,17 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		collected.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
 		collected.ReviewGate = task.Attempt.ReviewGate
 	}
+	if err := resultDirectoryName(task.Task.Name); err != nil {
+		return taskResultTask{}, err
+	}
+	staging, err := stageResultDirectory(collected.Directory)
+	if err != nil {
+		return taskResultTask{}, err
+	}
+	defer os.RemoveAll(staging)
 	final := false
 	for _, artifact := range detail.Artifacts {
-		if artifact.Metadata.TaskID != task.Task.ID {
+		if artifact.Metadata.TaskID != task.Task.ID || !ofSelectedAttempt(task, artifact) {
 			continue
 		}
 		switch artifact.Metadata.Kind {
@@ -389,7 +397,7 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 				artifact.Metadata.Name = "gate/report.json"
 			}
 		}
-		body, err := c.fetch(ctx, artifact, collected.Directory)
+		body, err := c.fetch(ctx, artifact, staging)
 		if err != nil {
 			return taskResultTask{}, err
 		}
@@ -411,6 +419,15 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		}
 		if inline && artifact.Metadata.Kind == domain.ArtifactSummary {
 			collected.FinalMessage = string(body)
+		}
+	}
+	left, err := replaceResultDirectory(staging, collected.Directory)
+	if err != nil {
+		return taskResultTask{}, err
+	}
+	for _, path := range left {
+		if c.stderr != nil {
+			fmt.Fprintf(c.stderr, "warning: could not remove the previous collection at %s\n", path)
 		}
 	}
 	if !final {
