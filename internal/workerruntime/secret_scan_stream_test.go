@@ -15,7 +15,7 @@ func TestSecretScanPatternsAndChunkBoundaries(t *testing.T) {
 	tokens := []string{"ghp_" + strings.Repeat("A", 36), "gho_" + strings.Repeat("B", 36), "ghs_" + strings.Repeat("C", 36), "github_pat_" + strings.Repeat("D", 82), "sk-ant-" + strings.Repeat("x", 80), "sk-" + strings.Repeat("y", 48), "AKIA" + strings.Repeat("A", 16), "CLOUDFLARE_API_TOKEN=" + strings.Repeat("a", 40), "-----BEGIN PRIVATE KEY-----", "AGE-SECRET-KEY-1" + strings.Repeat("A", 58)}
 	for _, token := range tokens {
 		scan := newResultScanner(SecretScanConfig{}, nil, nil)
-		input := strings.Repeat("x", (64<<10)-10) + token + "\n"
+		input := strings.Repeat("x", (64<<10)-11) + " " + token + "\n"
 		var finding *SecretScanError
 		if err := scan.scan("fixture", "commit", strings.NewReader(input)); !errors.As(err, &finding) {
 			t.Fatalf("missing token detector for %s", token[:4])

@@ -253,6 +253,11 @@ func persistentWorkerOptions(
 	usage *sqlite.Store,
 ) workerruntime.WorkerServiceOptions {
 	return workerruntime.WorkerServiceOptions{
+		// The catalog the coordinator publishes supplies every other setting.
+		// The result secret scan is worker-local policy no catalog carries, so
+		// it comes from this host's configuration; without it a warn policy
+		// set here had no effect.
+		Settings:            config.BacklogV2{ResultSecretScan: cfg.BacklogV2.ResultSecretScan},
 		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
 		Usage:               workerUsageSource(usage, logger),
 		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},

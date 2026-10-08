@@ -75,6 +75,9 @@ type secretPattern struct {
 	// expression runs; a case-insensitive expression has no literal prefix
 	// for the regexp engine to skip ahead with.
 	keywords []string
+	// leftBoundary makes a prefix detector report a match only where its
+	// prefix starts at a left boundary; see resultSecretPatterns.
+	leftBoundary bool
 }
 
 func (p secretPattern) mayMatch(data []byte) bool {
@@ -107,14 +110,32 @@ func containsFoldASCII(data []byte, needle string) bool {
 	return false
 }
 
+// resultSecretPatterns are the high-confidence detectors, in reporting order.
+//
+// A prefix detector (github, anthropic, openai, aws, age) reports a match only
+// when its prefix starts at a left boundary: the start of the scanned object or
+// text, or after a byte that is not an ASCII letter, digit, underscore or
+// hyphen (bytes 0x80 and above count as boundaries). A percent escape such as
+// %3D and a backslash escape \n, \t or \r right before the prefix also count,
+// so a key in an encoded query string or a JSON string stays detected. Without
+// the rule a prefix inside a longer identifier matched: a Steward task id, the
+// word task, a hyphen and 32 hex digits, contains the OpenAI prefix followed by
+// 32 key characters, and refused every commit that quoted one. The reported
+// offset and fingerprint are those of the token alone, so allowlist entries are
+// unchanged. RE2 has no lookbehind, so eachMatch checks the preceding bytes.
+//
+// cloudflare is exempt: it is anchored on its label, and a label inside a longer
+// environment name such as DEPLOY_CLOUDFLARE_API_TOKEN must stay detected; its
+// value already follows a separator. private-key is exempt: a PEM header begins
+// with hyphens and is never the suffix of an identifier.
 var resultSecretPatterns = []secretPattern{
-	{"github", regexp.MustCompile(`(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{60,255})`), nil},
-	{"anthropic", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{32,255}`), nil},
-	{"openai", regexp.MustCompile(`sk-[A-Za-z0-9_-]{32,255}`), nil},
-	{"aws", regexp.MustCompile(`AKIA[A-Z0-9]{16}`), nil},
-	{"cloudflare", regexp.MustCompile(`(?i)(?:cloudflare[_ -]*(?:api[_ -]*)?token|cf_api_token)[\t "'=:]{1,16}([A-Za-z0-9_-]{40})`), []string{"cloudflare", "cf_api_token"}},
-	{"private-key", regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----`), nil},
-	{"age", regexp.MustCompile(`AGE-SECRET-KEY-1[0-9A-Z]{58}`), nil},
+	{"github", regexp.MustCompile(`(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{60,255})`), nil, true},
+	{"anthropic", regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{32,255}`), nil, true},
+	{"openai", regexp.MustCompile(`sk-[A-Za-z0-9_-]{32,255}`), nil, true},
+	{"aws", regexp.MustCompile(`AKIA[A-Z0-9]{16}`), nil, true},
+	{"cloudflare", regexp.MustCompile(`(?i)(?:cloudflare[_ -]*(?:api[_ -]*)?token|cf_api_token)[\t "'=:]{1,16}([A-Za-z0-9_-]{40})`), []string{"cloudflare", "cf_api_token"}, false},
+	{"private-key", regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----`), nil, false},
+	{"age", regexp.MustCompile(`AGE-SECRET-KEY-1[0-9A-Z]{58}`), nil, true},
 }
 
 // minCanaryBytes is the shortest credential or encoded form matched exactly.
@@ -246,9 +267,27 @@ func (s *resultScanner) safeName(name string) string {
 	}
 	name = redacted.String()
 	for _, p := range resultSecretPatterns {
-		name = p.re.ReplaceAllString(name, "[redacted]")
+		name = p.redactMatches(name)
 	}
 	return name
+}
+
+// redactMatches replaces each whole match of p in text that eachMatch accepts,
+// keeping the bytes before it.
+func (p secretPattern) redactMatches(text string) string {
+	var redacted strings.Builder
+	kept := 0
+	p.eachMatch([]byte(text), nil, len(text), func(match []int) bool {
+		redacted.WriteString(text[kept:match[0]])
+		redacted.WriteString("[redacted]")
+		kept = match[1]
+		return true
+	})
+	if kept == 0 {
+		return text
+	}
+	redacted.WriteString(text[kept:])
+	return redacted.String()
 }
 func (s *resultScanner) scan(object, kind string, r io.Reader) error {
 	object = s.safeName(object)
@@ -260,6 +299,9 @@ func (s *resultScanner) scan(object, kind string, r io.Reader) error {
 	}
 	buf := make([]byte, 64<<10)
 	pending := make([]byte, 0, len(buf)+s.overlap)
+	// before holds the bytes that preceded pending[0], for the left-boundary
+	// rule; it is empty only at the start of the object.
+	var before []byte
 	var total, base int64
 	for {
 		n, err := r.Read(buf)
@@ -281,30 +323,31 @@ func (s *resultScanner) scan(object, kind string, r io.Reader) error {
 				if !p.mayMatch(pending) {
 					continue
 				}
-				for _, match := range p.re.FindAllSubmatchIndex(pending, -1) {
-					if match[0] >= cut {
-						continue
-					}
-					start, end := match[0], match[1]
-					if len(match) > 2 {
-						start, end = match[2], match[3]
-					}
+				var blocked *SecretScanError
+				p.eachMatch(pending, before, cut, func(match []int) bool {
+					start, end := secretTokenSpan(match)
 					fp := secretFingerprint(string(pending[start:end]))
 					if s.allow[fp] {
-						continue
+						return true
 					}
 					finding := &SecretScanError{Object: object, Detector: p.name, Offset: base + int64(start), Fingerprint: fp}
 					block := s.config.PatternPolicy == "block" || ((s.config.PatternPolicy == "" || s.config.PatternPolicy == "default") && (kind == "commit" || kind == "bundle"))
 					if block {
-						return finding
+						blocked = finding
+						return false
 					}
 					logger := s.config.Log
 					if logger == nil {
 						logger = slog.Default()
 					}
 					logger.Warn("result secret scan finding", "object", finding.Object, "detector", finding.Detector, "byte_offset", finding.Offset, "fingerprint", finding.Fingerprint)
+					return true
+				})
+				if blocked != nil {
+					return blocked
 				}
 			}
+			before = keepSecretBoundaryContext(before, pending[:cut])
 			copy(pending, pending[cut:])
 			pending = pending[:len(pending)-cut]
 			base += int64(cut)
