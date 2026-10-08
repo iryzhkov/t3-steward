@@ -355,6 +355,9 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 				return "", nil, err
 			}
 			h.retained = &next
+			// Catalogs carry no worker-local scanner policy. Preserve it for
+			// subsequent full activation as well as the current live service.
+			settings.ResultSecretScan = h.Options.Settings.ResultSecretScan
 			h.Options.Settings = settings
 			h.Options.CompatibleCatalogRevisions = slices.Clone(next.PreviousRevisions)
 			h.logger().Info("catalog capacity adopted while busy", "worker", h.Bootstrap.WorkerID, "revision", projection.Revision, "previous", next.PreviousRevisions)
