@@ -1,4 +1,4 @@
-# CLI route policy (Phase A)
+# CLI route policy
 
 The steward reads `$XDG_CONFIG_HOME/t3-steward/route-policy.yaml` (normally
 `~/.config/t3-steward/route-policy.yaml`), beside `coordinator-client.json`.
@@ -158,3 +158,70 @@ per-instance `windows`; aggregates must not be treated as a single quota window.
 Consumers comparing windows should use windows[]. The dispatcher/admission,
 failover, fleet policy installation and generated instructions
 remain later milestones.
+
+## Campaigns and schedules
+
+```yaml
+role: execute
+options: {effort: low}
+tasks:
+  implement:
+    prompt_file: implement.md
+    outputs: [unit.bundle]
+  review:
+    role: review
+    prompt_file: review.md
+    needs: [implement]
+    inputs_from: {implement: [unit.bundle]}
+```
+
+Roles for campaigns and schedules
+  role: execute
+  options: {effort: low}
+
+A workflow role is inherited by tasks that declare neither role nor routes.
+A task's own role replaces workflow routes and a task's own routes replaces
+the workflow role. role and routes are mutually exclusive on the same object.
+options without role is refused, even when the task inherits a workflow role.
+Role options accept only effort: low, medium or high; max and higher are refused.
+An override may lower the selected candidate's policy effort, never raise it.
+Unknown option keys and malformed role names are refused offline; an unknown
+coordinator role or unavailable policy is refused before submission. Manifest
+review: round members must use explicit routes.
+
+The coordinator reads its route policy at resolution and chooses one eligible
+concrete route per role task. validate and plan remain offline; a local policy
+is advisory, while check reports the coordinator's selection and provenance.
+Submission freezes that selection, and rerun reuses it. A registered schedule
+resolves roles afresh for each occurrence; replay keeps the original selection.
+Manifests without role keep their existing explicit-route behavior.
+
+Review-type role tasks (review or critical-review, or tasks with review_output:)
+prefer the first eligible candidate outside every known local producer family.
+Producers come from inputs_from, or local needs when inputs_from is empty.
+If none qualifies, the first eligible candidate is used with a diversity
+fallback reason. Unknown producer families do not apply the preference.
+Explicit routes always stay as written. This preference is also applied to
+schedule occurrences and never grants eligibility or review authority.
+
+Readiness counts ready eligible workers first. If none is ready, an enrolled
+project worker advertising a policy route permits acceptance with waiting for
+capacity. If no worker advertises any candidate, the coordinator refuses with
+candidate reasons. Worker placement and resources constrain eligibility.
+
+Selections retain the role, route, effective effort, raw-policy digest, candidate
+verdicts, provider-diversity outcome and resolution time. They appear in check
+and show, including JSON. Each schedule run retains its own selection. An
+unresolved occurrence is suppressed as `role-unresolved` and tries again at the
+next occurrence. Older coordinators must be upgraded to support `role:`;
+workers still receive ordinary concrete routes.
+
+Until M17-2b, campaign and schedule role resolution uses policy order, with
+the review diversity preference above, and not the quota ranking
+(`route-ranking/v1`) described above that `task run --role` and `review --role`
+use; planner adoption of the ranking remains M17-2b. The selected concrete
+route still passes the coordinator's quota admission at submission like any
+explicit route. When the first eligible candidate's quota pool is exhausted or
+gated, that route is still selected, and quota admission refuses the
+submission rather than falling through to a later candidate. Name an explicit
+route to use another pool.

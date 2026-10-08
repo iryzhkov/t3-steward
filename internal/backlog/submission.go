@@ -74,6 +74,7 @@ type SubmissionService struct {
 	NewKey            func() string
 	// Permanent refuses a permanently impossible manifest during ingestion.
 	Permanent      PermanentValidator
+	Roles          ManifestRoleResolver
 	QuotaAdmission *SubmissionQuotaAdmission
 	// MaxGateTimeout, when positive, refuses a task gate timeout above the
 	// coordinator's verification.command_timeout.
@@ -96,16 +97,24 @@ func (s *SubmissionService) validatePermanent(ctx context.Context, bundleDir str
 		return nil, nil
 	}
 	_ = root.Close()
+	selections, err := resolveManifestRoles(ctx, s.Roles, manifest)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := manifestWithRoleSelections(manifest, selections)
+	if err != nil {
+		return nil, err
+	}
 	if s.Permanent == nil {
 		if HasTaskReviewRequirements(manifest) {
 			return nil, fmt.Errorf("%w: configured admission validation required for review_requirements", ErrValidationUnavailable)
 		}
-		return nil, nil
+		return validatedManifestAdmission{digest: admissionDigest(manifest), selections: selections}, nil
 	}
-	if err := s.Permanent.ValidatePermanent(ctx, manifest); err != nil {
+	if err := s.Permanent.ValidatePermanent(ctx, resolved); err != nil {
 		return nil, err
 	}
-	return validatedManifestAdmission{digest: admissionDigest(manifest)}, nil
+	return validatedManifestAdmission{digest: admissionDigest(manifest), selections: selections}, nil
 }
 
 func (s *SubmissionService) SubmitDirectory(ctx context.Context, request DirectorySubmission) (SubmissionResult, error) {
@@ -178,6 +187,15 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 	finalDir := filepath.Join(s.StorageRoot, "workflows", record.WorkflowID)
 	if record.State == domain.SubmissionAccepted {
 		return SubmissionResult{Record: record, StorageDir: finalDir, Replay: true}, nil
+	}
+	if replay {
+		recovered, err := s.completeDurableRoleSubmission(ctx, &record, finalDir, contentDigest)
+		if err != nil {
+			return SubmissionResult{}, err
+		}
+		if recovered {
+			return SubmissionResult{Record: record, StorageDir: finalDir, Replay: true}, nil
+		}
 	}
 	if validationErr != nil {
 		return SubmissionResult{}, validationErr

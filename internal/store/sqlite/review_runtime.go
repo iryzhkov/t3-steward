@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/review"
@@ -41,6 +42,22 @@ func reviewChildCurrentTx(ctx context.Context, tx *sql.Tx, expected review.Froze
 		return state, ErrReviewRoundConflict
 	}
 	receipt, err := loadReviewJSONTx[ReviewMaterialization](ctx, tx, "SELECT record FROM coordinator_review_materializations WHERE checkpoint_id=? AND workflow_id=? AND run_id=?", cp.Key(), review.ChildWorkflowID(cp), cp.RoundID)
+	if errors.Is(err, sql.ErrNoRows) {
+		// An allocated checkpoint has no child custody yet. Do not let a missing
+		// or corrupt receipt hide a graph that was already materialized.
+		var childRows int
+		if err := tx.QueryRowContext(ctx, "SELECT (SELECT count(*) FROM coordinator_review_materializations WHERE checkpoint_id=? OR run_id=?) + (SELECT count(*) FROM coordinator_workflow_runs WHERE id=?) + (SELECT count(*) FROM coordinator_workflows WHERE id=?)", cp.Key(), cp.RoundID, cp.RoundID, review.ChildWorkflowID(cp)).Scan(&childRows); err != nil {
+			return state, err
+		}
+		if childRows != 0 || !round.Deadline.IsZero() {
+			return state, ErrReviewMaterialization
+		}
+		reason, err := reviewAllocatedParentDispositionTx(ctx, tx, f.Parent)
+		if err != nil {
+			return state, err
+		}
+		return reviewChildCurrent{checkpoint: cp, round: round, reason: reason}, nil
+	}
 	if err != nil {
 		return state, err
 	}
@@ -154,25 +171,106 @@ func storedReviewChildrenTx(ctx context.Context, tx *sql.Tx) ([]ReviewMaterializ
 	return receipts, rows.Err()
 }
 
-// ReconcileMaterializedReviewChildren runs before coordinator snapshots. Each
-// round commits independently; a later corrupt round fails closed, not atomically
-// with already reconciled rounds. The existing cancellation owner retains custody.
+// ReconcileMaterializedReviewChildren includes allocated-only rounds before
+// coordinator snapshots. Each round commits under its parent writer lock.
 func (s *Store) ReconcileMaterializedReviewChildren(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
+	// A damaged materialization index must not turn child custody into allocation.
 	receipts, err := storedReviewChildrenTx(ctx, tx)
-	tx.Rollback()
 	if err != nil {
+		tx.Rollback()
 		return fmt.Errorf("enumerate materialized reviews: %w", err)
 	}
+	rows, err := tx.QueryContext(ctx, "SELECT c.id,c.authority_id,c.round_id,c.number,c.record,a.record FROM coordinator_review_checkpoints c LEFT JOIN coordinator_review_authorities a ON a.id=c.authority_id ORDER BY c.id")
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	type issued struct {
+		f  review.FrozenAuthority
+		cp review.CheckpointAuthority
+	}
+	var checkpoints []issued
+	issuedByKey := map[string]issued{}
+	for rows.Next() {
+		var id, authority, round string
+		var number int
+		var cpRaw, fRaw []byte
+		if err = rows.Scan(&id, &authority, &round, &number, &cpRaw, &fRaw); err != nil {
+			break
+		}
+		var item issued
+		item.cp, err = decodeReviewChildRecord[review.CheckpointAuthority](cpRaw, []string{"AuthorityKey", "Checkpoint", "Number", "RoundID"})
+		if err != nil {
+			break
+		}
+		item.f, err = decodeReviewChildRecord[review.FrozenAuthority](fRaw, []string{"Parent", "Requirements", "RequirementsDigest"})
+		if err != nil {
+			break
+		}
+		if item.cp.Key() != id || item.cp.AuthorityKey != authority || item.cp.RoundID != round || item.cp.Number != number || item.f.Key() != authority {
+			err = ErrReviewAuthorityIdentity
+			break
+		}
+		checkpoints = append(checkpoints, item)
+		issuedByKey[id] = item
+	}
+	if err == nil {
+		err = rows.Err()
+	}
+	rows.Close()
+	tx.Rollback()
+	if err != nil {
+		return fmt.Errorf("enumerate review checkpoints: %w", err)
+	}
+	// Every materialization must still have its original checkpoint/authority.
+	// Enumeration of checkpoints alone must not silently skip orphan custody.
 	for _, receipt := range receipts {
-		if _, err = s.ReconcileReviewChildCancellation(ctx, receipt.Authority, receipt.Checkpoint); err != nil {
-			return fmt.Errorf("reconcile materialized review %s parent %s: %w", receipt.Checkpoint.Key(), receipt.Authority.Parent.AttemptID, err)
+		item, ok := issuedByKey[receipt.Checkpoint.Key()]
+		if !ok || item.cp != receipt.Checkpoint || !reflect.DeepEqual(item.f, receipt.Authority) {
+			return ErrReviewMaterialization
+		}
+	}
+	for _, item := range checkpoints {
+		if _, err = s.ReconcileReviewChildCancellation(ctx, item.f, item.cp); err != nil {
+			return fmt.Errorf("reconcile review %s parent %s: %w", item.cp.Key(), item.f.Parent.AttemptID, err)
 		}
 	}
 	return nil
+}
+
+// Allocated-only rounds use the same checked parent history and custody
+// classification as materialized rounds, without inventing child attempts.
+func reviewAllocatedParentDispositionTx(ctx context.Context, tx *sql.Tx, p review.ParentBinding) (string, error) {
+	parent, latest, err := reviewParentAttemptSnapshotTx(ctx, tx, p)
+	if err != nil {
+		return "", err
+	}
+	parents := map[string]domain.Attempt{}
+	err = scanReviewChildRows[domain.Attempt](ctx, tx, "SELECT id,workflow_run_id,task_id,record FROM coordinator_attempts", 3,
+		append(append([]string{}, reviewChildAttemptKeys...), "assignmentId", "threadId", "progress", "control", "completedAt"), func(_ []string, a domain.Attempt) error {
+			if a.WorkflowRunID == p.RunID && a.TaskID == p.TaskID {
+				if !reviewCancellationExecutionCoherent(a) || a.SupervisionActivationID != "" || a.SupervisionActivationEpoch != 0 {
+					return ErrReviewAuthorityIdentity
+				}
+				parents[a.ID] = a
+			}
+			return nil
+		})
+	if err != nil {
+		return "", err
+	}
+	assignments, err := reviewCancellationAssignmentsTx(ctx, tx, nil, parents, p.AssignmentID)
+	if err != nil {
+		return "", err
+	}
+	if err = reviewCancellationParentBindings(p, parents, assignments); err != nil {
+		return "", err
+	}
+	return reviewCancellationParentTx(ctx, tx, p, parent, latest, assignments)
 }
 
 // Retry shape is checked only for validated materialized ownership. Ordinary

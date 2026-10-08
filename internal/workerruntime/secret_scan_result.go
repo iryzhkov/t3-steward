@@ -97,6 +97,7 @@ func (s *CustodyStore) scanResult(ctx context.Context, pkg workerproto.Execution
 	for _, output := range pkg.Outputs {
 		if output.Commit != nil {
 			declarations[output.Name] = true
+			declarations[backlog.FailedCommitArtifactName(output.Name)] = true
 		}
 	}
 	var bundleRoot string

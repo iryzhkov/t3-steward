@@ -272,6 +272,12 @@ func (d adminDispatch) amendGraph(ctx context.Context, principal Principal, requ
 		return
 	}
 	response.GraphAmendment = &value
+	// Only a client of rc.118 or later sends useCommit, so it reads every
+	// field of this release, including the reused commits its rerun receipt
+	// prints. Every other request keeps the rc.115 shape.
+	if request.GraphAmendment.UseCommit {
+		return
+	}
 	if err := projectV1Answers(response); err != nil {
 		response.GraphAmendment = nil
 		response.Error = "project the graph amendment answer: " + err.Error()

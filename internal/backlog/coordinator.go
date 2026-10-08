@@ -186,9 +186,7 @@ func (c FleetCoordinator) reconcileWorkerCommands(
 	if transport == nil {
 		return WorkerDeliveryReport{}, errors.New("worker command transport is required")
 	}
-	if err := c.Store.ReconcileMaterializedReviewChildren(ctx); err != nil {
-		return WorkerDeliveryReport{}, fmt.Errorf("automatic review cancellation before worker planning: %w", err)
-	}
+
 	now := c.now()
 	epoch, err := c.Store.CoordinatorEpoch(ctx)
 	if err != nil {
@@ -196,6 +194,10 @@ func (c FleetCoordinator) reconcileWorkerCommands(
 	}
 	if snapshot.CoordinatorEpoch != epoch {
 		return WorkerDeliveryReport{}, fmt.Errorf("worker %q snapshot belongs to coordinator epoch %d, current %d", snapshot.WorkerID, snapshot.CoordinatorEpoch, epoch)
+	}
+	ctx = sqlite.WithCoordinatorEpochFence(ctx, snapshot.CoordinatorEpoch)
+	if err := c.Store.ReconcileMaterializedReviewChildren(ctx); err != nil {
+		return WorkerDeliveryReport{}, fmt.Errorf("automatic review cancellation before worker planning: %w", err)
 	}
 	records, err := c.Store.LoadCoordinatorRecords(ctx)
 	if err != nil {

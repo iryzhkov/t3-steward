@@ -53,7 +53,12 @@ func (s *Store) LatestReviewRoundHead(ctx context.Context, runID, taskID string)
 	if err != nil {
 		return zero, false, fmt.Errorf("load review round %q: %w", checkpoint.RoundID, err)
 	}
+	var roundsUsed int
+	if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM coordinator_review_checkpoints WHERE authority_id=?", frozen.Key()).Scan(&roundsUsed); err != nil {
+		return zero, false, err
+	}
 	head := domain.ReviewRoundHead{
+		RoundsUsed: roundsUsed, RoundLimit: frozen.Requirements.RoundLimit,
 		RoundID: checkpoint.RoundID, Number: checkpoint.Number, CheckpointID: checkpoint.Checkpoint.ID,
 		BaseCommit: frozen.Parent.BaseCommit, HeadCommit: checkpoint.Checkpoint.HeadCommit,
 		Verdict: round.CombinedVerdict(),

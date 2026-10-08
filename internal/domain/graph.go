@@ -35,6 +35,7 @@ func TasksForRun(run WorkflowRun, templates []Task) []Task {
 		tasks := append([]Task(nil), run.Graph.Tasks...)
 		for i := range tasks {
 			tasks[i].ReviewRequirements = CloneTaskReview(tasks[i].ReviewRequirements)
+			tasks[i] = taskWithRunSelection(run, tasks[i])
 		}
 		return tasks
 	}
@@ -42,10 +43,24 @@ func TasksForRun(run WorkflowRun, templates []Task) []Task {
 	for _, task := range templates {
 		if task.WorkflowID == run.WorkflowID && (task.RunID == "" || task.RunID == run.ID) {
 			task.ReviewRequirements = CloneTaskReview(task.ReviewRequirements)
+			task = taskWithRunSelection(run, task)
 			result = append(result, task)
 		}
 	}
 	return result
+}
+
+func taskWithRunSelection(run WorkflowRun, task Task) Task {
+	if task.Role != "" && len(task.Routes) == 0 {
+		if selection, ok := run.RouteSelections[task.ID]; ok {
+			return ApplyRoleSelection(task, selection)
+		}
+	}
+	if task.RoleSelection != nil {
+		selection := CloneRoleSelection(*task.RoleSelection)
+		task.RoleSelection = &selection
+	}
+	return task
 }
 
 func TaskForAttempt(attempt Attempt, runs []WorkflowRun, templates []Task) (Task, bool) {

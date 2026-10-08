@@ -23,10 +23,15 @@ const StatusIntakeVersion = "backlog.admin/v1-status-intake"
 // those releases.
 const ExtendedReadVersion = "backlog.admin/v1-extended-read"
 
+// RC117ReadVersion is the read version the clients of v0.11.0-rc.117 ask
+// for. Its answer keeps the shape recorded in
+// rc117_extended_response_schema.txt for those strict clients.
+const RC117ReadVersion = "backlog.admin/v1-extended-read-rc117"
+
 // CurrentReadVersion opts any read but status into every field this release
 // answers with. A later release that adds fields freezes this shape the way
-// ExtendedReadVersion is frozen and names a new version.
-const CurrentReadVersion = "backlog.admin/v1-extended-read-rc117"
+// RC117ReadVersion is frozen and names a new version.
+const CurrentReadVersion = "backlog.admin/v1-extended-read-rc118"
 
 type QueryKind string
 

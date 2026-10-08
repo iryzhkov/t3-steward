@@ -453,6 +453,7 @@ func (p coordinatorPlanner) tick(ctx context.Context, quota backlog.QuotaBridgeR
 	if p.now != nil {
 		now = p.now().UTC()
 	}
+	ctx = sqlite.WithCoordinatorEpochFence(ctx, p.epoch)
 	if err := p.store.ReconcileMaterializedReviewChildren(ctx); err != nil {
 		return backlog.AssignmentPlanningReport{}, fmt.Errorf("automatic review cancellation before planning snapshot: %w", err)
 	}
@@ -696,6 +697,9 @@ func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err er
 }
 
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) {
+	if c.supervision != nil && c.supervision.settings.CoordinatorEpoch > 0 {
+		ctx = sqlite.WithCoordinatorEpochFence(ctx, c.supervision.settings.CoordinatorEpoch)
+	}
 	if store, ok := c.projection.(interface{ ReconcileMaterializedReviewChildren(context.Context) error }); ok {
 		if err := store.ReconcileMaterializedReviewChildren(ctx); err != nil {
 			logTickFailure(ctx, c.logger, "automatic review cancellation failed; boundary stopped", err)
@@ -957,7 +961,11 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	service.SetWorkerAuthorization(coordinatorWorkerAuthorization(cfg))
 	service.SetCommitBundleOpener(coordinatorCommitBundleOpener(store,
 		newCoordinatorRepositoryObserver(cfg.BacklogV2, workerruntime.ProtocolResolver{}, epoch, nil)))
+	roleResolver := coordinatorRoleResolver{}
+	roleSchedules := coordinatorRoleScheduleStore{Store: store, admin: service}
+	service.SetScheduleTriggerResolver(roleSchedules.ResolveScheduleTrigger)
 	service.SetViability(backlogadmin.ViabilitySettings{
+		ResolveRoles:      roleResolver.Resolve,
 		ResourcePolicy:    cfg.BacklogV2.Coordinator.ResourcePlacement.Policy(),
 		ReviewRoutes:      cfg.BacklogV2.ReviewRoutes,
 		Projects:          fleetProjects,
@@ -1016,6 +1024,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		// Every gate command is bounded by command_timeout at dispatch, so a
 		// longer gate is refused here instead of being withheld forever.
 		MaxGateTimeout: cfg.BacklogV2.Verification.CommandTimeout.D(),
+		Roles:          coordinatorManifestRoleResolver{admin: service},
 		Audit: func(_ context.Context, audit backlog.SubmissionAudit) {
 			if !audit.Unverified {
 				return
@@ -1098,7 +1107,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			LongWindowCap:           cfg.Backlog.LongWindowCap,
 			SurplusHorizon:          24 * time.Hour,
 		}},
-		schedules: backlog.ScheduleTimer{Store: store, CatchUpMax: cfg.BacklogV2.Scheduling.CatchUpMax},
+		schedules: backlog.ScheduleTimer{Store: roleSchedules, CatchUpMax: cfg.BacklogV2.Scheduling.CatchUpMax},
 		planning: coordinatorPlanner{
 			planningSnapshot: planningSnapshot,
 			settings:         &cfg.BacklogV2,

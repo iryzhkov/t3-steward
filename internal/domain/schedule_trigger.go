@@ -13,13 +13,15 @@ const (
 // ScheduleTriggerRequest is a transport-neutral request to observe a schedule firing.
 // IDs are supplied by the caller so retries remain deterministic across restarts.
 type ScheduleTriggerRequest struct {
-	ScheduleID    string
-	TriggerID     string
-	WorkflowRunID string
-	NominalAt     time.Time
-	ObservedAt    time.Time
-	Source        ScheduleTriggerSource
-	Misfired      bool
+	RouteSelections     map[string]RoleSelection
+	RoleResolutionError string
+	ScheduleID          string
+	TriggerID           string
+	WorkflowRunID       string
+	NominalAt           time.Time
+	ObservedAt          time.Time
+	Source              ScheduleTriggerSource
+	Misfired            bool
 }
 
 // ScheduleTriggerResult is the durable outcome of observing a schedule firing.

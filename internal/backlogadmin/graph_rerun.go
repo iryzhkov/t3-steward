@@ -37,6 +37,11 @@ func (s *Service) rerunGraph(
 		return result, errors.New("rerun storage or artifact custody unavailable")
 	}
 	scope, err := domain.PlanRerun(source, records.Tasks, records.Attempts, r.TaskID)
+	var retained map[string]domain.Artifact
+	var reusedCommits []domain.ReusedCommit
+	if r.UseCommit {
+		scope, retained, reusedCommits, err = s.failedCommitRerun(ctx, records, source, r.TaskID)
+	}
 	if err != nil {
 		return result, err
 	}
@@ -59,7 +64,7 @@ func (s *Service) rerunGraph(
 	for index, task := range tasks {
 		idMap[task.ID] = fmt.Sprintf("task:rerun:%s:%d", r.ID, index)
 	}
-	builder := rerunReferences{service: s, request: r, source: source, runID: runID, records: records}
+	builder := rerunReferences{service: s, request: r, source: source, runID: runID, records: records, retained: retained}
 	for index := range tasks {
 		task := &tasks[index]
 		sourceTaskID := task.ID
@@ -114,6 +119,10 @@ func (s *Service) rerunGraph(
 		IdempotencyKey:  r.ID,
 		Reason:          r.Reason,
 	}
+	reusedCommits = inheritFailedCommitReceipts(source, tasks, reusedCommits)
+	if len(reusedCommits) != 0 {
+		provenance.ReusedCommits = &reusedCommits
+	}
 	// idMap is the only place the source-to-rerun task identity is known, so it
 	// travels to the store, which needs it to move inherited gate definitions
 	// onto the rerun's tasks.
@@ -125,13 +134,14 @@ func (s *Service) rerunGraph(
 
 // rerunReferences turns source artifacts into references the new run owns.
 type rerunReferences struct {
-	service *Service
-	request domain.GraphAmendment
-	source  domain.WorkflowRun
-	runID   string
-	records sqlite.CoordinatorRecords
-	inputs  []domain.Artifact
-	mapped  map[string]string
+	service  *Service
+	request  domain.GraphAmendment
+	source   domain.WorkflowRun
+	runID    string
+	records  sqlite.CoordinatorRecords
+	inputs   []domain.Artifact
+	mapped   map[string]string
+	retained map[string]domain.Artifact
 }
 
 // detach removes the edges that pointed at reused ancestors and replaces the
@@ -178,6 +188,9 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 			task.CarriedInputs = append(task.CarriedInputs, carried)
 			if backlog.DeclaresCommit(ancestor, name) {
 				backlog.RequireCarriedCommitCapabilities(task, ancestor)
+				if _, failed := b.retained[ancestor.ID+"\x00"+name]; failed {
+					backlog.RequireFailedCommitCapability(task)
+				}
 			}
 		}
 	}
@@ -193,10 +206,20 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 // A gated task keeps the gate report, log and outputs of every attempt,
 // including the failed ones before a retry. Its evidence must come from the one
 // attempt the rerun reuses, so the artifact order in the store never decides
-// which attempt a consumer sees.
+// which attempt a consumer sees. A task reused for its retained failed commit
+// carries its other outputs from that failed attempt.
 func (b *rerunReferences) output(task domain.Task, name string) (domain.Artifact, bool, error) {
+	if artifact, ok := b.retained[task.ID+"\x00"+name]; ok {
+		return artifact, true, nil
+	}
 	attemptID := ""
-	if task.Gate != nil {
+	for key, artifact := range b.retained {
+		if len(key) > len(task.ID) && key[:len(task.ID)+1] == task.ID+"\x00" {
+			attemptID = artifact.AttemptID
+			break
+		}
+	}
+	if attemptID == "" && task.Gate != nil {
 		var err error
 		if attemptID, err = b.authoritativeAttempt(task); err != nil {
 			return domain.Artifact{}, false, err

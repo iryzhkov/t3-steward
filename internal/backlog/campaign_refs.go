@@ -38,8 +38,9 @@ type CommitProvenance struct {
 	// It is absent for a commit equal to its base, which needs no bundle, for a
 	// producer whose build could not make one, and when BundleOmitted says why
 	// none was retained.
-	Bundle        *CommitBundleRecord `json:"bundle,omitempty"`
-	BundleOmitted string              `json:"bundleOmitted,omitempty"`
+	Bundle        *CommitBundleRecord  `json:"bundle,omitempty"`
+	BundleOmitted string               `json:"bundleOmitted,omitempty"`
+	FailedAttempt *FailedCommitAttempt `json:"failedAttempt,omitempty"`
 	// StagedAttempt names the attempt of a review-declared task that staged
 	// the commit, which is published only once a consumer the coordinator
 	// accepted the result for fetches it. A worker that imports the commit
@@ -72,8 +73,9 @@ type PublishCommitRequest struct {
 	// the one a gate attested. Publication refuses any other.
 	ExpectedCommit string
 	// Base is the commit the workspace was pinned to before the task ran.
-	Base      string
-	CreatedAt time.Time
+	Base          string
+	CreatedAt     time.Time
+	FailedAttempt *FailedCommitAttempt
 }
 
 // CampaignRefStore keeps campaign-scoped commits reachable for the campaign's
@@ -214,7 +216,14 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 	defer lock.Close()
 
 	ref := CampaignRef(request.WorkflowRunID, request.TaskID, request.Name)
-	if existing, found, err := s.head(ctx, gitDir, ref, log); err != nil {
+	if request.FailedAttempt != nil {
+		if err := validateFailedCommitAttempt(request.FailedAttempt); err != nil {
+			return CommitProvenance{}, err
+		}
+		ref = FailedCampaignRef(request.WorkflowRunID, request.TaskID, request.FailedAttempt.ID, request.Name)
+	}
+	existing, found, err := s.head(ctx, gitDir, ref, log)
+	if err != nil {
 		return CommitProvenance{}, err
 	} else if found && existing != commit {
 		return CommitProvenance{}, fmt.Errorf("campaign ref %s already names commit %s", ref, existing)
@@ -236,9 +245,15 @@ func (s CampaignRefStore) Publish(ctx context.Context, request PublishCommitRequ
 	provenance := CommitProvenance{
 		Version: CampaignCommitRecordVersion, WorkflowRunID: request.WorkflowRunID,
 		TaskID: request.TaskID, Name: request.Name, Repository: request.Repository,
-		Base: request.Base, Commit: commit, Ref: ref, CreatedAt: createdAt.UTC(),
+		Base: request.Base, Commit: commit, Ref: ref, CreatedAt: createdAt.UTC(), FailedAttempt: request.FailedAttempt,
 	}
 	if err := s.writeProvenance(provenance); err != nil {
+		if request.FailedAttempt != nil && !found {
+			// Publication and rollback hold the same lock, and the expected
+			// commit fence protects against removing another publication.
+			rollbackErr := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir, "update-ref", "-d", ref, commit)
+			return CommitProvenance{}, errors.Join(err, rollbackErr)
+		}
 		return CommitProvenance{}, err
 	}
 	return provenance, nil
@@ -318,22 +333,26 @@ func (s CampaignRefStore) fetchInto(ctx context.Context, workspaceDir string, pr
 	if workspaceDir == "" {
 		return errors.New("fetch campaign commit: consuming workspace is required")
 	}
-	if err := validateCommitTarget(provenance.WorkflowRunID, provenance.TaskID, provenance.Name); err != nil {
+	if err := ValidateCommitProvenance(provenance); err != nil {
 		return err
 	}
-	if !validGitObjectID(provenance.Commit) {
-		return fmt.Errorf("fetch campaign commit: %q is not a commit ID", provenance.Commit)
-	}
 	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
-	if provenance.Ref != "" && provenance.Ref != ref {
-		return fmt.Errorf("campaign commit record names ref %q, want %q", provenance.Ref, ref)
+	if provenance.FailedAttempt != nil {
+		ref = FailedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.FailedAttempt.ID, provenance.Name)
 	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {
 		return err
 	}
 	source := ref
-	if accepted {
+	if provenance.FailedAttempt != nil {
+		// A retained failed candidate lives only under its attempt's
+		// quarantine ref. It is never staged and never promoted to the
+		// task's campaign output, whatever the consumer's acceptance says.
+		if provenance.StagedAttempt != "" {
+			return fmt.Errorf("campaign commit record %s names both a failed attempt and a staging", ref)
+		}
+	} else if accepted {
 		if err := s.promote(ctx, gitDir, provenance, log); err != nil {
 			return err
 		}
@@ -558,8 +577,101 @@ func (s CampaignRefStore) Runs() ([]string, error) {
 			}
 		}
 	}
+	// A run whose first publication crashed between its ref and its record
+	// has no directory at all, and only its refs say that it holds a commit.
+	// Reading them is in addition to the directories: a repository that cannot
+	// list its refs must not hide the runs those name, and each of their
+	// releases then reports the repository's failure itself.
+	pinned, _ := s.refRuns(context.Background(), "")
+	for _, run := range pinned {
+		if !slices.Contains(runs, run) {
+			runs = append(runs, run)
+		}
+	}
 	sort.Strings(runs)
 	return runs, nil
+}
+
+// campaignRefNamespaces are the ref namespaces in which a run pins commits:
+// published, quarantined and staged. Each one names the run first.
+var campaignRefNamespaces = []string{"refs/campaigns/", "refs/campaigns-quarantine/", "refs/campaign-staged/"}
+
+// refRuns reports the workflow runs that hold a ref in this store, or whether
+// one run does when workflowRunID is set, read from the refs themselves rather
+// than from the records. Publication installs a ref before it writes the run's
+// first record, so a crash between the two leaves a run only its refs name. A
+// store whose repository was never created holds no ref, and it is not created
+// here.
+func (s CampaignRefStore) refRuns(ctx context.Context, workflowRunID string) ([]string, error) {
+	gitDir := filepath.Join(s.Root, "campaigns.git")
+	info, err := os.Lstat(gitDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect campaign ref store: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, fmt.Errorf("campaign ref store path %q is not a directory", gitDir)
+	}
+	patterns := make([]string, 0, len(campaignRefNamespaces))
+	for _, namespace := range campaignRefNamespaces {
+		if workflowRunID != "" {
+			namespace += workflowRunID + "/"
+		}
+		patterns = append(patterns, namespace)
+	}
+	names, err := s.listRefs(ctx, gitDir, nil, patterns...)
+	if err != nil {
+		return nil, fmt.Errorf("list campaign refs: %w", err)
+	}
+	var runs []string
+	for _, name := range names {
+		for _, namespace := range campaignRefNamespaces {
+			rest, ok := strings.CutPrefix(name, namespace)
+			if !ok {
+				continue
+			}
+			// Every ref the store writes names something under its run; one
+			// named by its run alone is outside the namespace a release sweeps.
+			run, under, nested := strings.Cut(rest, "/")
+			if nested && under != "" && safePathComponent(run) && !slices.Contains(runs, run) {
+				runs = append(runs, run)
+			}
+		}
+	}
+	return runs, nil
+}
+
+// listRefs names the refs of the store's repository under patterns. It reads
+// Git's standard output alone: Git reports a broken ref on standard error and
+// still succeeds, and that warning is not a ref name. A broken ref is skipped,
+// as Git skips it.
+func (s CampaignRefStore) listRefs(ctx context.Context, gitDir string, log io.Writer, patterns ...string) ([]string, error) {
+	if log == nil {
+		log = io.Discard
+	}
+	args := append([]string{"--git-dir", gitDir, "for-each-ref", "--format=%(refname)"}, patterns...)
+	fmt.Fprintf(log, "$ %s %s\n", s.git(), strings.Join(args, " "))
+	command := exec.CommandContext(ctx, s.git(), args...)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	command.WaitDelay = time.Second
+	err := command.Run()
+	_, _ = log.Write(stdout.Bytes())
+	_, _ = log.Write(stderr.Bytes())
+	if err != nil {
+		fmt.Fprintf(log, "! %v\n", err)
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return nil, fmt.Errorf("%w: %s", err, detail)
+		}
+		return nil, err
+	}
+	var names []string
+	for _, line := range strings.Split(stdout.String(), "\n") {
+		if line != "" {
+			names = append(names, line)
+		}
+	}
+	return names, nil
 }
 
 // ReleaseRun drops every campaign ref of one workflow run. It is the end of the
@@ -583,7 +695,7 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	// destroyed by the wholesale removal below and its ref left behind forever,
 	// so the list this acts on is read again under the lock that publication
 	// also takes.
-	if holds, err := s.holdsRun(workflowRunID); err != nil || !holds {
+	if holds, err := s.holdsRun(ctx, workflowRunID); err != nil || !holds {
 		return err
 	}
 	lock, err := acquireFileLock(ctx, s.Root, "campaign-refs")
@@ -591,16 +703,12 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 		return fmt.Errorf("lock campaign refs: %w", err)
 	}
 	defer lock.Close()
-	if holds, err := s.holdsRun(workflowRunID); err != nil || !holds {
+	if holds, err := s.holdsRun(ctx, workflowRunID); err != nil || !holds {
 		return err
 	}
 	records, err := s.List(workflowRunID)
 	if err != nil {
 		return err
-	}
-	staged, err := s.listRecords(filepath.Join(s.Root, "staged", workflowRunID))
-	if err != nil {
-		return fmt.Errorf("list staged campaign commits: %w", err)
 	}
 	gitDir, err := s.open(ctx, log)
 	if err != nil {
@@ -616,17 +724,17 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 	// they are found under the run's staging namespace. A campaign ref whose
 	// record a crashed promotion never wrote is found under the run's
 	// campaign namespace, so it is released with the run as well.
-	namespaces := []string{"refs/campaigns/" + workflowRunID + "/"}
-	if len(staged) != 0 {
-		namespaces = append(namespaces, "refs/campaign-staged/"+workflowRunID+"/")
-	}
-	for _, namespace := range namespaces {
-		names, err := runLoggedCommandOutput(ctx, log, "", s.git(), "--git-dir", gitDir,
-			"for-each-ref", "--format=%(refname)", namespace)
+	// A retained failed candidate's quarantine ref is swept the same way, so a
+	// ref whose record a crash never wrote is released too. Every namespace
+	// is swept even without records in it, because holdsRun also counts a run
+	// that only a ref names, and a run left listed would never be released.
+	for _, namespace := range campaignRefNamespaces {
+		namespace += workflowRunID + "/"
+		names, err := s.listRefs(ctx, gitDir, log, namespace)
 		if err != nil {
 			return fmt.Errorf("list campaign refs under %s: %w", namespace, err)
 		}
-		for _, name := range strings.Fields(string(names)) {
+		for _, name := range names {
 			if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
 				"update-ref", "-d", name); err != nil {
 				return fmt.Errorf("release campaign ref %s: %w", name, err)
@@ -646,18 +754,29 @@ func (s CampaignRefStore) ReleaseRun(ctx context.Context, workflowRunID string, 
 }
 
 // holdsRun reports whether the store has published or staged anything for one
-// workflow run.
-func (s CampaignRefStore) holdsRun(workflowRunID string) (bool, error) {
+// workflow run. A run directory left without records, as a crash between a
+// quarantine ref and its record can leave it, still holds the run, because
+// Runs lists it and only the release below sweeps its refs. So does a ref with
+// no run directory at all, which a crash during the run's first publication
+// leaves.
+func (s CampaignRefStore) holdsRun(ctx context.Context, workflowRunID string) (bool, error) {
 	for _, kind := range []string{"provenance", "staged"} {
-		records, err := s.listRecords(filepath.Join(s.Root, kind, workflowRunID))
+		dir := filepath.Join(s.Root, kind, workflowRunID)
+		records, err := s.listRecords(dir)
 		if err != nil {
 			return false, err
 		}
 		if len(records) != 0 {
 			return true, nil
 		}
+		if _, err := os.Lstat(dir); err == nil {
+			return true, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, fmt.Errorf("inspect campaign commit records: %w", err)
+		}
 	}
-	return false, nil
+	pinned, err := s.refRuns(ctx, workflowRunID)
+	return len(pinned) != 0, err
 }
 
 func (s CampaignRefStore) validate() error {
@@ -726,7 +845,11 @@ func (s CampaignRefStore) stagedPath(workflowRunID, taskID, attemptID, name stri
 }
 
 func (s CampaignRefStore) writeProvenance(provenance CommitProvenance) error {
-	return writeCommitRecord(s.provenancePath(provenance.WorkflowRunID, provenance.TaskID, provenance.Name), provenance)
+	path := s.provenancePath(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
+	if provenance.FailedAttempt != nil {
+		path = filepath.Join(s.Root, "provenance", provenance.WorkflowRunID, provenance.TaskID, "failed", provenance.FailedAttempt.ID, provenance.Name+".json")
+	}
+	return writeCommitRecord(path, provenance)
 }
 
 func writeCommitRecord(path string, provenance CommitProvenance) error {
@@ -767,6 +890,17 @@ func MarshalCommitProvenance(provenance CommitProvenance) ([]byte, error) {
 	return append(raw, '\n'), nil
 }
 
+// LooksLikeCommitProvenance distinguishes a recognized but invalid commit record
+// from an ordinary dependency file. Such records must never bypass preparation.
+func LooksLikeCommitProvenance(raw []byte) bool {
+	var header struct {
+		Version string `json:"version"`
+	}
+	// Recognize the first document even if strict provenance parsing will
+	// reject trailing bytes. Malformed recognized records stay behind the fence.
+	return json.NewDecoder(bytes.NewReader(raw)).Decode(&header) == nil && header.Version == CampaignCommitRecordVersion
+}
+
 // ParseCommitProvenance reads a provenance document and refuses anything that
 // is not one, so that an ordinary dependency file is never mistaken for a
 // commit reference.
@@ -778,14 +912,8 @@ func ParseCommitProvenance(raw []byte) (CommitProvenance, error) {
 	if provenance.Version != CampaignCommitRecordVersion {
 		return CommitProvenance{}, fmt.Errorf("campaign commit record version %q is not supported", provenance.Version)
 	}
-	if err := validateCommitTarget(provenance.WorkflowRunID, provenance.TaskID, provenance.Name); err != nil {
+	if err := ValidateCommitProvenance(provenance); err != nil {
 		return CommitProvenance{}, err
-	}
-	if !validGitObjectID(provenance.Commit) || !validGitObjectID(provenance.Base) {
-		return CommitProvenance{}, errors.New("campaign commit record needs a commit and a base")
-	}
-	if provenance.Repository == "" {
-		return CommitProvenance{}, errors.New("campaign commit record needs its repository")
 	}
 	return provenance, nil
 }

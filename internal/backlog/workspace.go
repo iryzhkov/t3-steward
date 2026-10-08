@@ -130,7 +130,8 @@ type WorkspacePreparation struct {
 	// DependencySources binds each dependency carried from another run, keyed
 	// by the dependency directory it is materialized in, to the run and task
 	// that produced it. A commit record of another run is accepted only from a
-	// directory bound to exactly that run and task.
+	// directory bound to exactly that run and task. Failed candidates additionally
+	// require the exact source attempt, even within the consuming run.
 	DependencySources map[string]DependencySource
 	// AcceptedCommits names, by dependency task ID, the declared commit outputs
 	// whose result the coordinator's review gate accepted. The commit such an
@@ -139,10 +140,11 @@ type WorkspacePreparation struct {
 	AcceptedCommits map[string][]string
 }
 
-// DependencySource is the run and task a carried dependency came from.
+// DependencySource identifies the run, task and attempt a carried dependency came from.
 type DependencySource struct {
 	WorkflowRunID string
 	TaskID        string
+	AttemptID     string
 }
 
 // PreparedWorkspace is the published run directory and pinned source revision.
@@ -493,11 +495,6 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		if readErr != nil {
 			return fmt.Errorf("resolve dependency commits: %w", readErr)
 		}
-		provenance, parseErr := ParseCommitProvenance(raw)
-		if parseErr != nil {
-			// An ordinary dependency file is not a commit reference.
-			return nil
-		}
 		relative, relErr := filepath.Rel(dependenciesDir, path)
 		if relErr != nil {
 			return fmt.Errorf("resolve dependency commits: %w", relErr)
@@ -505,6 +502,21 @@ func (p WorkspacePreparer) resolveDependencyCommits(
 		directory, _, _ := strings.Cut(filepath.ToSlash(relative), "/")
 		producer := slices.IndexFunc(request.DependencyTasks, func(task domain.Task) bool { return task.Name == directory })
 		source, bound := request.DependencySources[directory]
+		provenance, parseErr := ParseCommitProvenance(raw)
+		if parseErr != nil {
+			// A recognized but malformed record is refused in any file, so
+			// it can never pass for ordinary content.
+			if LooksLikeCommitProvenance(raw) {
+				return fmt.Errorf("resolve dependency commits: %w", parseErr)
+			}
+			// An ordinary dependency file is not a commit reference.
+			return nil
+		}
+		// A failed candidate is refused in any file unless the carried source
+		// binding names the exact attempt that retained it, even in its own run.
+		if err := ValidateFailedCommitSource(provenance, source); err != nil {
+			return fmt.Errorf("resolve dependency commits: %w", err)
+		}
 		if producer < 0 || !IsDependencyCommitRecord(relative, provenance, DeclaredCommitOutputs(request.DependencyTasks[producer])) {
 			// A record in any other file is the content of an ordinary output,
 			// and publishes nothing. A record of another run that names its own

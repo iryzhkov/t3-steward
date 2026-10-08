@@ -181,8 +181,8 @@ func ValidateReviewManifest(m Manifest) error {
 			return errors.New("reviewer isolation forbids dependencies")
 		}
 	}
-	if r.HeadCommit != "" && (m.Environment.Type != EnvironmentGit || m.Environment.Ref != r.HeadCommit || r.BaseCommit == "") {
-		return errors.New("diff review requires checkout at the pinned head and a pinned base")
+	if err := validateReviewCandidateManifest(m); err != nil {
+		return err
 	}
 	return review.ValidateSelection(r, 0)
 }

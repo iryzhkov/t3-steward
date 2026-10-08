@@ -69,6 +69,13 @@ func (s *Service) ExecutePendingCommands(ctx context.Context) (CommandExecutionR
 		if err != nil {
 			return report, fmt.Errorf("plan admin command %q: %w", command.ID, err)
 		}
+		if trigger != nil && s.scheduleTriggerResolver != nil {
+			resolved, err := s.scheduleTriggerResolver(ctx, *trigger)
+			if err != nil {
+				return report, fmt.Errorf("resolve schedule trigger for %q: %w", command.ID, err)
+			}
+			trigger = &resolved
+		}
 		application.ScheduleTrigger = trigger
 		decision, err := store.ApplyAdminCommand(ctx, application)
 		if errors.Is(err, sqlite.ErrStaleAdminSafetyFence) {

@@ -398,6 +398,17 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 // staging, so whoever imports it knows it as staged work of that attempt and
 // never as the task's campaign output.
 func bundleRef(provenance CommitProvenance) (string, error) {
+	if provenance.FailedAttempt != nil {
+		// A retained failed candidate is bundled from, and named by, its
+		// attempt's quarantine ref; it is never staged.
+		if provenance.StagedAttempt != "" {
+			return "", errors.New("campaign commit record names both a failed attempt and a staging")
+		}
+		if err := validateFailedCommitAttempt(provenance.FailedAttempt); err != nil {
+			return "", err
+		}
+		return FailedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.FailedAttempt.ID, provenance.Name), nil
+	}
 	if provenance.StagedAttempt == "" {
 		return CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name), nil
 	}
@@ -433,15 +444,12 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 	if workspaceDir == "" {
 		return errors.New("obtain campaign commit: consuming workspace is required")
 	}
-	if err := validateCommitTarget(provenance.WorkflowRunID, provenance.TaskID, provenance.Name); err != nil {
+	if err := ValidateCommitProvenance(provenance); err != nil {
 		return err
 	}
-	if !validGitObjectID(provenance.Commit) || !validGitObjectID(provenance.Base) {
-		return fmt.Errorf("obtain campaign commit: %q from base %q is not a commit ID", provenance.Commit, provenance.Base)
-	}
 	ref := CampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.Name)
-	if provenance.Ref != "" && provenance.Ref != ref {
-		return fmt.Errorf("campaign commit record names ref %q, want %q", provenance.Ref, ref)
+	if provenance.FailedAttempt != nil {
+		ref = FailedCampaignRef(provenance.WorkflowRunID, provenance.TaskID, provenance.FailedAttempt.ID, provenance.Name)
 	}
 	provenance.Ref = ref
 	source, err := bundleRef(provenance)
@@ -460,8 +468,12 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 	// staged ref. The fetch that follows publishes it for an accepted
 	// consumer or reads it from staging for inspection; importing a bundle
 	// here would publish it without the coordinator's acceptance.
-	if staged, err := s.stagedHeld(ctx, gitDir, provenance, log); err != nil || staged {
-		return err
+	// A failed candidate is held only under its quarantine ref, so another
+	// attempt's staging of the same commit does not satisfy it.
+	if provenance.FailedAttempt == nil {
+		if staged, err := s.stagedHeld(ctx, gitDir, provenance, log); err != nil || staged {
+			return err
+		}
 	}
 	if !s.hasCommit(ctx, workspaceDir, provenance.Base, log) {
 		return fmt.Errorf("campaign commit %s: missing prerequisite: its base %s is not present in this worker's repository cache for %s, "+
@@ -778,6 +790,15 @@ func RequireCarriedCommitCapabilities(task *domain.Task, producer domain.Task) {
 	RequireCommitBundleCapability(task)
 	if producer.ReviewRequirements != nil && !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityAcceptedDependencies) {
 		task.Placement.Capabilities = append(task.Placement.Capabilities, workerproto.PackageCapabilityAcceptedDependencies)
+	}
+}
+
+// RequireFailedCommitCapability excludes workers that can import ordinary
+// bundles but do not implement the quarantined ref and attempt binding.
+func RequireFailedCommitCapability(task *domain.Task) {
+	RequireCommitBundleCapability(task)
+	if !slices.Contains(task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit) {
+		task.Placement.Capabilities = append(task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit)
 	}
 }
 

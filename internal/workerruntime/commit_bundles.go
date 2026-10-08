@@ -21,21 +21,25 @@ func commitBundleDeliveries(pkg workerproto.ExecutionPackage, open func(workerpr
 	deliveries := make(map[string]backlog.CommitBundleDelivery, len(pkg.CommitBundles))
 	for _, input := range pkg.CommitBundles {
 		ref := backlog.CampaignRef(input.WorkflowRunID, input.TaskID, input.Name)
-		if input.Bundle == nil {
-			deliveries[ref] = backlog.CommitBundleDelivery{Omitted: input.Omitted}
-			continue
+		delivery := backlog.CommitBundleDelivery{Omitted: input.Omitted}
+		if input.Bundle != nil {
+			object := *input.Bundle
+			delivery = backlog.CommitBundleDelivery{
+				SHA256: object.SHA256, Size: object.Size,
+				Open: func(context.Context) (io.ReadCloser, error) { return open(object) },
+			}
 		}
-		object := *input.Bundle
-		deliveries[ref] = backlog.CommitBundleDelivery{
-			SHA256: object.SHA256, Size: object.Size,
-			Open: func(context.Context) (io.ReadCloser, error) { return open(object) },
+		deliveries[ref] = delivery
+		if failedRef := failedCommitBundleRef(pkg, input); failedRef != "" {
+			deliveries[failedRef] = delivery
 		}
 	}
 	return deliveries
 }
 
 // dependencySources binds each dependency carried from another run to the run
-// and task the package says produced it, keyed by the directory preparation
+// and task the package says produced it, with the source attempt required for
+// failed candidates, keyed by the directory preparation
 // materializes it in: the recorded artifact namespace, or the task ID for a
 // dependency with no materialized artifacts.
 func dependencySources(pkg workerproto.ExecutionPackage) map[string]backlog.DependencySource {
@@ -49,14 +53,14 @@ func dependencySources(pkg workerproto.ExecutionPackage) map[string]backlog.Depe
 		}
 		if len(dependency.Artifacts) == 0 {
 			sources[dependency.TaskID] = backlog.DependencySource{
-				WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+				WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID, AttemptID: dependency.Provenance.AttemptID,
 			}
 		}
 		for _, object := range dependency.Artifacts {
 			parts := strings.Split(object.Path, "/")
 			if len(parts) >= 3 && parts[0] == "dependencies" {
 				sources[parts[1]] = backlog.DependencySource{
-					WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID,
+					WorkflowRunID: dependency.Provenance.RunID, TaskID: dependency.Provenance.TaskID, AttemptID: dependency.Provenance.AttemptID,
 				}
 			}
 		}

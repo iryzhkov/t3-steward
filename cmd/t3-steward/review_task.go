@@ -36,7 +36,7 @@ const (
 // than ignored.
 var reviewTaskRefusedFlags = []string{
 	"reviewer", "model", "independent", "judge", "role", "risk", "swarm", "swarm-model", "effort", "policy-file",
-	"plan", "diff", "diff-file", "criteria", "project", "deadline", "wait", "no-notify", "notify-thread", "gate",
+	"plan", "commit", "bundle", "base", "diff", "diff-file", "criteria", "project", "deadline", "wait", "no-notify", "notify-thread", "gate",
 }
 
 // reviewTaskArgsRequested reports whether review was asked for in task mode.

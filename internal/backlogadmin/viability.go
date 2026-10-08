@@ -107,6 +107,11 @@ const (
 
 // permanentReasons is the closed set of codes that refuse a submission.
 var permanentReasons = map[string]bool{
+	"unknown-role":                true,
+	"role-no-eligible-candidate":  true,
+	"route-policy-unavailable":    true,
+	"role-effort-raised":          true,
+	"role-unsupported":            true,
 	ReasonUnknownProject:          true,
 	ReasonWorkspaceTypeMismatch:   true,
 	ReasonUnknownSetupProfile:     true,
@@ -168,6 +173,11 @@ type ViabilitySupervision struct {
 
 // ViabilityTask is one projected task's requirements.
 type ViabilityTask struct {
+	Role         string                `json:"role,omitempty"`
+	RoleEffort   string                `json:"roleEffort,omitempty"`
+	Needs        []string              `json:"needs,omitempty"`
+	Producers    []string              `json:"producers,omitempty"`
+	ReviewType   bool                  `json:"reviewType,omitempty"`
 	Name         string                `json:"name"`
 	Project      string                `json:"project"`
 	Type         string                `json:"type,omitempty"`
@@ -210,11 +220,12 @@ const ViabilityMatrixSchemaVersion = 1
 // copying a project-level finding onto every candidate would have said the same
 // thing N times and implied it was a property of the worker.
 type ViabilityTaskResult struct {
-	SelectedWorker string               `json:"selectedWorker,omitempty"`
-	Task           string               `json:"task"`
-	Outcome        ViabilityOutcome     `json:"outcome"`
-	Reasons        []ViabilityReason    `json:"reasons,omitempty"`
-	Candidates     []ViabilityCandidate `json:"candidates"`
+	RoleSelection  *domain.RoleSelection `json:"roleSelection,omitempty"`
+	SelectedWorker string                `json:"selectedWorker,omitempty"`
+	Task           string                `json:"task"`
+	Outcome        ViabilityOutcome      `json:"outcome"`
+	Reasons        []ViabilityReason     `json:"reasons,omitempty"`
+	Candidates     []ViabilityCandidate  `json:"candidates"`
 }
 
 // ViabilityCandidate is one worker's answer for one task.

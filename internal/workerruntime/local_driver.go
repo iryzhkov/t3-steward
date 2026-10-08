@@ -1096,6 +1096,7 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		// when it accepts the bundle artifact, and the bundle is uploaded as one
 		// artifact, so it is bounded by the same limit.
 		CommitBundles:     slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle),
+		FailedCommits:     slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit),
 		CommitBundleLimit: pkg.Limits.MaxArtifactBytes,
 		// The whole result, including the final message and the thread
 		// archive published with it below, is one upload, so bundle metadata
@@ -1122,7 +1123,9 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		d.retainWorkInProgress(ctx, pkg, workspace)
 		result.WorkInProgressBundle = d.workInProgressBundle(pkg, result)
 	}
-	publishErr := d.Publisher.PublishResult(ctx, pkg, result)
+	// publishCollectedResult already withholds refused failed-commit
+	// candidates; the continuation checkpoint is withheld separately here.
+	publishErr := d.publishCollectedResult(ctx, pkg, result)
 	var refused *SecretScanError
 	if result.Continuation != nil && errors.As(publishErr, &refused) && !refused.retryable() &&
 		refused.Object == "results/"+domain.ContinuationArtifactName {
@@ -1131,7 +1134,7 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		d.logger().Warn("the continuation checkpoint was refused by the result secret scan; the result goes without it",
 			"attempt", pkg.Identity.AttemptID, "detector", refused.Detector, "byte_offset", refused.Offset, "fingerprint", refused.Fingerprint)
 		result.Continuation = nil
-		publishErr = d.Publisher.PublishResult(ctx, pkg, result)
+		publishErr = d.publishCollectedResult(ctx, pkg, result)
 	}
 	if err := publishErr; err != nil {
 		var size *workerproto.ArtifactSizeError

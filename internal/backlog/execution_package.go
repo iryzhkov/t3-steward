@@ -223,6 +223,9 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		CreatedAt: assignment.CreatedAt,
 	}
+	if slices.Contains(state.task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit) {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit)
+	}
 	if err := b.declarePackageCapabilities(ctx, &pkg, state.task.ReviewRequirements != nil); err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}
@@ -340,7 +343,8 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 		// consume an accepted review-declared producer.
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityAcceptedDependencies)
 	}
-	if len(pkg.RequiredCapabilities) == 0 && !offerBundle {
+	offerFailed := declaresCommit(*pkg)
+	if len(pkg.RequiredCapabilities) == 0 && !offerBundle && !offerFailed {
 		return nil
 	}
 	advertised, known, err := b.advertisedCapabilities(ctx, pkg.WorkerID)
@@ -351,6 +355,9 @@ func (b CoordinatorOfferBuilder) declarePackageCapabilities(ctx context.Context,
 		// Declared only once the worker is known to advertise it, so the
 		// checks below hold for it as for every required capability.
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCommitBundle)
+	}
+	if offerFailed && slices.Contains(advertised, workerproto.PackageCapabilityFailedCommit) && !slices.Contains(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit) {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit)
 	}
 	if len(pkg.RequiredCapabilities) == 0 {
 		return nil

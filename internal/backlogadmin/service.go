@@ -94,6 +94,9 @@ type Service struct {
 	// reviewCheckpoint opens in-task review rounds. It is composed by the
 	// coordinator runtime from its own configuration and worker transport.
 	reviewCheckpoint ReviewCheckpointOpener
+
+	// scheduleTriggerResolver shares role expansion with the recurring timer.
+	scheduleTriggerResolver func(context.Context, domain.ScheduleTriggerRequest) (domain.ScheduleTriggerRequest, error)
 }
 
 // SetWorkerAuthorization supplies the provider authorization the coordinator
@@ -279,9 +282,9 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		return response, err
 	}
 	// A strict older client rejects every field its release did not declare,
-	// so a v1 read keeps the shape v1 had, and an ExtendedReadVersion read the
-	// shape it had in rc.116; this release's clients ask for
-	// CurrentReadVersion.
+	// so a v1 read keeps the shape v1 had, an ExtendedReadVersion read the
+	// shape it had in rc.116 and an RC117ReadVersion read the shape it had in
+	// rc.117; this release's clients ask for CurrentReadVersion.
 	switch query.Version {
 	case Version:
 		if err := projectV1Response(&response); err != nil {
@@ -291,13 +294,17 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		if err := projectRC116ExtendedResponse(&response); err != nil {
 			return Response{}, fmt.Errorf("project the rc.116 extended %s response: %w", query.Kind, err)
 		}
+	case RC117ReadVersion:
+		if err := projectRC117ExtendedResponse(&response); err != nil {
+			return Response{}, fmt.Errorf("project the rc.117 extended %s response: %w", query.Kind, err)
+		}
 	}
 	return response, nil
 }
 
 func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	extendedRead := (query.Version == ExtendedReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
+	extendedRead := (query.Version == ExtendedReadVersion || query.Version == RC117ReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
 	if query.Version != Version && !intakeStatus && !extendedRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}
@@ -1093,6 +1100,7 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		return Explanation{}, false
 	}
 	explanation := Explanation{WorkflowRunID: runID, TaskID: task.ID, Blockers: make([]Blocker, 0), Checkpoint: v.continuationCheckpoint(runID, task.ID)}
+	explanation.Details = append(explanation.Details, reusedCommitDetails(v.runs[runID])...)
 	if project := v.workflows[v.runs[runID].WorkflowID].Project; slices.Contains(v.defaultedProjects, project) {
 		explanation.Details = append(explanation.Details, projectBindingDefaultedDetail(project))
 	}

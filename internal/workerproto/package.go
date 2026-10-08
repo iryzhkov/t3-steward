@@ -175,6 +175,8 @@ const (
 	// when none of them is a commit, to a worker it froze the continuation
 	// checkpoint decision for; both arrived in the same release.
 	PackageCapabilityCommitOutputs = "dependency-commit-outputs-v1"
+	// Failed candidates require attempt-bound quarantine refs and provenance.
+	PackageCapabilityFailedCommit = "campaign-failed-commit-v1"
 )
 
 // ContinuationInputPath is where a package places the previous attempt's
@@ -195,7 +197,7 @@ type ContinuationInput struct {
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs}
+	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs, PackageCapabilityFailedCommit}
 }
 
 // MarksCommitOutputs reports whether the package names its dependencies'

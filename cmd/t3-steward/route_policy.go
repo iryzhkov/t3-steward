@@ -355,7 +355,9 @@ func evaluatePolicyCandidates(p *routePolicy, role, model, effort, worker string
 	return rr, verdicts, nil
 }
 
-func selectPolicyRoute(p *routePolicy, role, model, effort, worker string, project backlogadmin.Project, accept func(string) bool) (policySelection, error) {
+// selectPolicyRouteCandidate picks the first eligible candidate in policy
+// order. selectPolicyRoute in campaign_roles.go wraps it for role receipts.
+func selectPolicyRouteCandidate(p *routePolicy, role, model, effort, worker string, project backlogadmin.Project, accept func(string) bool) (policySelection, error) {
 	_, verdicts, err := evaluatePolicyCandidates(p, role, model, effort, worker, project, accept)
 	if err != nil {
 		return policySelection{}, err
