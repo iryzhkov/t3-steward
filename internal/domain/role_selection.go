@@ -12,12 +12,16 @@ type RoleSelection struct {
 	Effort       string                 `json:"effort"`
 	PolicyDigest string                 `json:"policyDigest"`
 	Reason       string                 `json:"reason"`
+	Ranking      string                 `json:"ranking,omitempty"`
 	Candidates   []RoleCandidateVerdict `json:"candidates,omitempty"`
 	Diversity    RoleDiversity          `json:"diversity"`
 	ResolvedAt   time.Time              `json:"resolvedAt"`
 }
 
 type RoleCandidateVerdict struct {
+	Ordinal  int    `json:"ordinal,omitempty"`
+	Band     string `json:"band,omitempty"`
+	Pool     string `json:"pool,omitempty"`
 	Route    string `json:"route"`
 	Eligible bool   `json:"eligible"`
 	Reason   string `json:"reason,omitempty"`

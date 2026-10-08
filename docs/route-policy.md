@@ -197,9 +197,9 @@ resolves roles afresh for each occurrence; replay keeps the original selection.
 Manifests without role keep their existing explicit-route behavior.
 
 Review-type role tasks (review or critical-review, or tasks with review_output:)
-prefer the first eligible candidate outside every known local producer family.
+prefer the first usable candidate in the winning quota rank band outside every known local producer family.
 Producers come from inputs_from, or local needs when inputs_from is empty.
-If none qualifies, the first eligible candidate is used with a diversity
+If none qualifies, the highest ranked eligible candidate is used with a diversity
 fallback reason. Unknown producer families do not apply the preference.
 Explicit routes always stay as written. This preference is also applied to
 schedule occurrences and never grants eligibility or review authority.
@@ -216,12 +216,16 @@ unresolved occurrence is suppressed as `role-unresolved` and tries again at the
 next occurrence. Older coordinators must be upgraded to support `role:`;
 workers still receive ordinary concrete routes.
 
-Until M17-2b, campaign and schedule role resolution uses policy order, with
-the review diversity preference above, and not the quota ranking
-(`route-ranking/v1`) described above that `task run --role` and `review --role`
-use; planner adoption of the ranking remains M17-2b. The selected concrete
-route still passes the coordinator's quota admission at submission like any
-explicit route. When the first eligible candidate's quota pool is exhausted or
-gated, that route is still selected, and quota admission refuses the
-submission rather than falling through to a later candidate. Name an explicit
-route to use another pool.
+Campaign and schedule roles use `route-ranking/v1` after policy, catalog and
+worker eligibility checks, from the coordinator's request-local quota snapshot.
+A healthy authorized candidate wins over an exhausted, gated or unknown pool;
+equal bands retain policy order before the soft review diversity preference.
+Selections retain the ranking version and candidate bands, pools and reasons.
+Missing, stale or malformed quota cannot supply healthy headroom. Explicitly
+disabled quota checks retain their operator-defined behavior. Ranking is a
+preference: submission and schedule admission still enforce quota atomically,
+including changes after resolution. If every candidate is gated or unknown,
+the ranked receipt explains the preference and admission can refuse or suppress
+the occurrence; diversity cannot promote an unusable pool. Explicit pins stay
+literal, including quota refusal when their pool is closed. New schedule
+occurrences read new quota; persisted selections and templates remain immutable.

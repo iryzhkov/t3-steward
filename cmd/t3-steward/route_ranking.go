@@ -95,7 +95,7 @@ func selectPolicyRouteRanked(p *routePolicy, role, model, effort, worker string,
 		eligible[v.Route] = v
 	}
 	if len(input.Candidates) == 0 {
-		return policySelection{}, noEligiblePolicyRoute(role, model, project)
+		return policySelection{Ranking: domain.RouteRankingV1, Candidates: receipt}, noEligiblePolicyRoute(role, model, project)
 	}
 	ranked, err := domain.RankRoutes(input)
 	if err != nil {

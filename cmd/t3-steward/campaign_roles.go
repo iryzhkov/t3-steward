@@ -56,6 +56,14 @@ type coordinatorRoleResolver struct {
 }
 
 func (r coordinatorRoleResolver) Resolve(ctx context.Context, tasks []backlogadmin.ViabilityTask, projects []backlogadmin.Project, eligible backlogadmin.RoleWorkerEligible) (map[string]domain.RoleSelection, map[string]backlogadmin.ViabilityReason) {
+	return r.resolve(ctx, tasks, projects, eligible, nil)
+}
+
+func (r coordinatorRoleResolver) ResolveWithQuota(ctx context.Context, tasks []backlogadmin.ViabilityTask, projects []backlogadmin.Project, eligible backlogadmin.RoleWorkerEligible, snapshot backlogadmin.RoleQuotaSnapshot) (map[string]domain.RoleSelection, map[string]backlogadmin.ViabilityReason) {
+	return r.resolve(ctx, tasks, projects, eligible, []backlogadmin.RoleQuotaSnapshot{snapshot})
+}
+
+func (r coordinatorRoleResolver) resolve(ctx context.Context, tasks []backlogadmin.ViabilityTask, projects []backlogadmin.Project, eligible backlogadmin.RoleWorkerEligible, snapshots []backlogadmin.RoleQuotaSnapshot) (map[string]domain.RoleSelection, map[string]backlogadmin.ViabilityReason) {
 	_ = ctx
 	hasRoles := false
 	for _, task := range tasks {
@@ -86,14 +94,30 @@ func (r coordinatorRoleResolver) Resolve(ctx context.Context, tasks []backlogadm
 	if r.Now != nil {
 		now = r.Now().UTC()
 	}
-	return resolveCampaignPolicy(policy, tasks, projects, eligible, now)
+	return resolveCampaignPolicy(policy, tasks, projects, eligible, now, snapshots...)
 }
 func campaignRoleReason(code, detail string) backlogadmin.ViabilityReason {
 	return backlogadmin.ViabilityReason{Code: code, Detail: detail, Permanent: true}
 }
-func resolveCampaignPolicy(p *routePolicy, tasks []backlogadmin.ViabilityTask, projects []backlogadmin.Project, eligible backlogadmin.RoleWorkerEligible, now time.Time) (map[string]domain.RoleSelection, map[string]backlogadmin.ViabilityReason) {
+func resolveCampaignPolicy(p *routePolicy, tasks []backlogadmin.ViabilityTask, projects []backlogadmin.Project, eligible backlogadmin.RoleWorkerEligible, now time.Time, snapshots ...backlogadmin.RoleQuotaSnapshot) (map[string]domain.RoleSelection, map[string]backlogadmin.ViabilityReason) {
 	selections := map[string]domain.RoleSelection{}
 	failures := map[string]backlogadmin.ViabilityReason{}
+	var snapshot *backlogadmin.RoleQuotaSnapshot
+	if len(snapshots) > 0 {
+		snapshot = &snapshots[0]
+		now = snapshot.Now
+	}
+	selectRoute := func(task backlogadmin.ViabilityTask, project backlogadmin.Project, accept func(string) bool) (policySelection, []domain.RoleCandidateVerdict, error) {
+		if snapshot == nil {
+			return selectPolicyRouteDetailed(p, task.Role, "", "", "", project, accept)
+		}
+		ranked, err := selectPolicyRouteRanked(p, task.Role, "", "", "", project, accept, routeRankView{Now: now, Pools: snapshot.Pools})
+		verdicts := make([]domain.RoleCandidateVerdict, 0, len(ranked.Candidates))
+		for _, candidate := range ranked.Candidates {
+			verdicts = append(verdicts, domain.RoleCandidateVerdict{Route: candidate.Route, Ordinal: candidate.Ordinal, Eligible: candidate.Eligible, Band: candidate.Band, Pool: candidate.Pool, Reason: candidate.Reason})
+		}
+		return ranked, verdicts, err
+	}
 	byName := map[string]backlogadmin.ViabilityTask{}
 	for _, t := range tasks {
 		byName[t.Name] = t
@@ -168,11 +192,11 @@ func resolveCampaignPolicy(p *routePolicy, tasks []backlogadmin.ViabilityTask, p
 			return result
 		}
 		live := filtered(true)
-		first, verdicts, err := selectPolicyRouteDetailed(p, task.Role, "", "", "", live, nil)
+		first, verdicts, err := selectRoute(task, live, nil)
 		waiting := false
 		if err != nil {
 			live = filtered(false)
-			first, verdicts, err = selectPolicyRouteDetailed(p, task.Role, "", "", "", live, nil)
+			first, verdicts, err = selectRoute(task, live, nil)
 			waiting = err == nil
 		}
 		if err != nil {
@@ -213,15 +237,21 @@ func resolveCampaignPolicy(p *routePolicy, tasks []backlogadmin.ViabilityTask, p
 			diversity.Reason = "not applied: producer provider unknown"
 			if len(known) > 0 {
 				diversity.Reason = "fallback: no eligible candidate outside " + strings.Join(diversity.ProducerFamilies, ", ")
+				if snapshot != nil {
+					diversity.Reason = "fallback: no usable candidate in the winning quota band outside " + strings.Join(diversity.ProducerFamilies, ", ")
+				}
 				for _, verdict := range verdicts {
 					if !verdict.Eligible {
+						continue
+					}
+					if snapshot != nil && !campaignDiversityUsable(verdict, first, *snapshot) {
 						continue
 					}
 					family := campaignRouteFamily(projects, task.Project, verdict.Route)
 					if family == "" || known[family] {
 						continue
 					}
-					chosen, _, e := selectPolicyRouteDetailed(p, task.Role, "", "", "", live, func(pair string) bool { return pair == verdict.Route })
+					chosen, _, e := selectRoute(task, live, func(pair string) bool { return pair == verdict.Route })
 					if e == nil {
 						first = chosen
 						diversity.CrossProvider = true
@@ -240,9 +270,13 @@ func resolveCampaignPolicy(p *routePolicy, tasks []backlogadmin.ViabilityTask, p
 			first.Effort = task.RoleEffort
 		}
 		if waiting {
-			first.Reason = "no ready worker now; first advertised candidate selected, the run waits for capacity"
+			if snapshot == nil {
+				first.Reason = "no ready worker now; first advertised candidate selected, the run waits for capacity"
+			} else {
+				first.Reason += "; no ready worker now; ranked advertised candidate selected, the run waits for capacity"
+			}
 		}
-		selections[name] = domain.RoleSelection{Role: task.Role, Route: first.Route, Effort: first.Effort, PolicyDigest: p.Digest, Reason: first.Reason, Candidates: verdicts, Diversity: diversity, ResolvedAt: now}
+		selections[name] = domain.RoleSelection{Role: task.Role, Route: first.Route, Effort: first.Effort, PolicyDigest: p.Digest, Reason: first.Reason, Ranking: first.Ranking, Candidates: verdicts, Diversity: diversity, ResolvedAt: now}
 	}
 	for _, t := range tasks {
 		visit(t.Name)
