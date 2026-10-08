@@ -22,6 +22,8 @@ type policyRankCandidate struct {
 type routeRankView struct {
 	Now   time.Time
 	Pools map[string]domain.RouteRankPool
+	// PoolGateReasons explains task-class admission gates normalized to v1's gated band.
+	PoolGateReasons map[string]string
 }
 
 // Observations are fleet-wide, even when a project advertises on only one
@@ -101,7 +103,11 @@ func selectPolicyRouteRanked(p *routePolicy, role, model, effort, worker string,
 	if err != nil {
 		return policySelection{}, err
 	}
-	for _, entry := range ranked {
+	for index := range ranked {
+		entry := &ranked[index]
+		if reason := view.PoolGateReasons[entry.Pool]; entry.Band == "gated" && reason != "" {
+			entry.Reason = domain.RouteRankingV1 + ": " + entry.Pool + " " + reason + " (gated)"
+		}
 		for i := range receipt {
 			if receipt[i].Route == entry.Route {
 				receipt[i].Band, receipt[i].Pool, receipt[i].Reason = entry.Band, entry.Pool, entry.Reason

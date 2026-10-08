@@ -97,6 +97,31 @@ func TestCampaignQuotaRanking(t *testing.T) {
 	}
 }
 
+func TestCampaignQuotaClassGateUsesCopiedSnapshot(t *testing.T) {
+	for _, state := range []domain.AdmissionState{domain.AdmissionConstrained, domain.AdmissionRecovering} {
+		t.Run(string(state), func(t *testing.T) {
+			p, projects, tasks, snapshot := roleRankingFixture()
+			pool := snapshot.Pools["a"]
+			pool.Admission = state
+			snapshot.Pools["a"] = pool
+			tasks[0].Class = domain.TaskClassSurplus
+			selected, failures := resolveCampaignPolicy(p, tasks, projects, nil, snapshot.Now, snapshot)
+			got := selected["t"]
+			if len(failures) != 0 || got.Route != "b/m" || got.Candidates[0].Band != "gated" || !strings.Contains(got.Candidates[0].Reason, "admission "+string(state)+" for surplus") || strings.Contains(got.Candidates[0].Reason, "admission closed") {
+				t.Fatalf("surplus class gate lost: selected=%+v failures=%+v", got, failures)
+			}
+			if snapshot.Pools["a"].Admission != state {
+				t.Fatal("class gate mutated request snapshot")
+			}
+			tasks[0].Class = domain.TaskClassRequired
+			selected, failures = resolveCampaignPolicy(p, tasks, projects, nil, snapshot.Now, snapshot)
+			if len(failures) != 0 || selected["t"].Route != "a/m" || selected["t"].Candidates[0].Band != "healthy" {
+				t.Fatalf("surplus gate leaked into required task: %+v %+v", selected, failures)
+			}
+		})
+	}
+}
+
 func TestCampaignQuotaDiversityIsSoftWithinUsableBand(t *testing.T) {
 	for _, mode := range []string{"healthy", "gated-other", "unknown-other", "reset-first", "unknown-producer", "multi-producer", "disabled"} {
 		t.Run(mode, func(t *testing.T) {

@@ -221,7 +221,9 @@ worker eligibility checks, from the coordinator's request-local quota snapshot.
 A healthy authorized candidate wins over an exhausted, gated or unknown pool;
 equal bands retain policy order before the soft review diversity preference.
 Selections retain the ranking version and candidate bands, pools and reasons.
-Missing, stale or malformed quota cannot supply healthy headroom. Explicitly
+Missing, stale or malformed quota cannot supply healthy headroom. Existing
+class admission gates apply before ranking: surplus tasks cannot prefer a
+constrained or recovering pool over a usable alternative. Explicitly
 disabled quota checks retain their operator-defined behavior. Ranking is a
 preference: submission and schedule admission still enforce quota atomically,
 including changes after resolution. If every candidate is gated or unknown,
