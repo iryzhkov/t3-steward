@@ -190,7 +190,12 @@ func (s *CustodyStore) ResultDurable(pkg workerproto.ExecutionPackage) (bool, er
 			prior.Manifest.AssignmentEpoch != pkg.Identity.AssignmentEpoch {
 			return false, errors.New("result custody: immutable assignment binding mismatch")
 		}
-		if prior.Manifest.Direction != "upload" || prior.Manifest.CoordinatorEpoch < pkg.CoordinatorEpoch {
+		// The receipt carries the epoch of the store that published it. A
+		// same-assignment replay can raise only the package's coordinator
+		// epoch, so a receipt from an earlier epoch is still this execution's
+		// result, exactly as validateManifest accepts it; future authority is not.
+		if prior.Manifest.Direction != "upload" || !s.uploadEpochAuthorized(prior.Manifest.CoordinatorEpoch) ||
+			prior.Manifest.WorkerID != pkg.WorkerID || prior.Manifest.WorkerEpoch != pkg.WorkerEpoch {
 			return false, errors.New("result custody: result upload authority mismatch")
 		}
 		// loadPending already proves the complete ordered object chain and
@@ -821,6 +826,12 @@ func (s *CustodyStore) uploadManifest(pkg workerproto.ExecutionPackage, purpose 
 	}
 }
 
+// uploadEpochAuthorized reports whether upload evidence stamped with epoch is
+// within this store's authority: any positive coordinator epoch up to its own.
+func (s *CustodyStore) uploadEpochAuthorized(epoch int64) bool {
+	return epoch > 0 && epoch <= s.config.CoordinatorEpoch
+}
+
 func (s *CustodyStore) validateManifest(manifest workerproto.ArtifactTransferManifest, direction string) error {
 	if err := workerproto.ValidateArtifactTransferManifest(manifest, s.config.MaxArtifactBytes, s.config.MaxTotalBytes, s.now()); err != nil {
 		return err
@@ -830,7 +841,7 @@ func (s *CustodyStore) validateManifest(manifest workerproto.ArtifactTransferMan
 		// A completed upload is immutable assignment evidence. It must remain
 		// readable after coordinator failover, while future-authority evidence
 		// is never accepted by an older coordinator.
-		epochMatches = manifest.CoordinatorEpoch > 0 && manifest.CoordinatorEpoch <= s.config.CoordinatorEpoch
+		epochMatches = s.uploadEpochAuthorized(manifest.CoordinatorEpoch)
 	}
 	if manifest.Direction != direction || !epochMatches || manifest.WorkerID != s.config.WorkerID || manifest.WorkerEpoch != s.config.WorkerEpoch {
 		return errors.New("artifact manifest: custody epoch binding mismatch")
