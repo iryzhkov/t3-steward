@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/privatefile"
 )
 
 // CachedRepository is a bare repository prepared as the source of an independent clone.
@@ -638,6 +640,35 @@ func exposeWorkspaceInputs(workspaceDir string) error {
 			}
 		}
 	}
+	// The worker writes its own files at these names before containment
+	// exists. The writers refuse a link or an entry of the wrong kind, and
+	// refusing a repository's entry here as well fails preparation before the
+	// workspace is published, rather than half-way through the worker's
+	// writes into an already prepared workspace.
+	for _, reserved := range []struct {
+		name      string
+		directory bool
+	}{
+		{workspaceBaseCommitFile, false},
+		{domain.TaskIdentityFile, false},
+		{domain.TaskIdentityDir + "/.gitignore", false},
+		{path.Dir(domain.ProjectContextFile), true},
+		{domain.ProjectContextFile, false},
+	} {
+		info, err := os.Lstat(filepath.Join(workspaceDir, filepath.FromSlash(reserved.name)))
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			continue
+		case err != nil:
+			return fmt.Errorf("prepare workspace: inspect repository %s: %w", reserved.name, err)
+		case info.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("prepare workspace: repository %s is a symbolic link", reserved.name)
+		case reserved.directory && !info.IsDir():
+			return fmt.Errorf("prepare workspace: repository %s is not a real directory", reserved.name)
+		case !reserved.directory && !info.Mode().IsRegular():
+			return fmt.Errorf("prepare workspace: repository %s is not a regular file", reserved.name)
+		}
+	}
 	metadataDir := filepath.Join(workspaceDir, ".t3")
 	for name, target := range map[string]string{
 		"inputs": "../../inputs", "dependencies": "../../dependencies",
@@ -658,8 +689,9 @@ func writeWorkspaceBaseCommit(workspaceDir, commit string) error {
 	if commit == "" {
 		return nil
 	}
-	path := filepath.Join(workspaceDir, filepath.FromSlash(workspaceBaseCommitFile))
-	if err := os.WriteFile(path, []byte(commit+"\n"), 0o400); err != nil {
+	// .t3 may be tracked by the repository, so a link at base-commit must not
+	// redirect this write to a host file before containment exists.
+	if err := privatefile.WriteBelow(workspaceDir, workspaceBaseCommitFile, []byte(commit+"\n"), 0o400); err != nil {
 		return fmt.Errorf("prepare workspace: record base commit: %w", err)
 	}
 	return nil

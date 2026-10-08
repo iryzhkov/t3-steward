@@ -21,6 +21,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/compat"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/privatefile"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -582,20 +583,20 @@ func (d *LocalDriver) writeTaskIdentity(pkg workerproto.ExecutionPackage, worksp
 	if err != nil {
 		return err
 	}
-	directory := filepath.Join(workspace, domain.TaskIdentityDir)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create task identity directory: %w", err)
+	// The exclusion goes in first, so a record is never left in the worktree
+	// without it, whether the exclusion is refused or the worker stops between
+	// the two writes.
+	if err := excludeTaskIdentityFromGit(workspace); err != nil {
+		return err
 	}
-	path := filepath.Join(workspace, filepath.FromSlash(domain.TaskIdentityFile))
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+	// The workspace is a repository checkout and containment does not exist
+	// yet, so a tracked link at the directory or the file must not redirect
+	// this write to a host file. A resumed attempt rewrites the record, which
+	// replaces it whole with its mode asserted.
+	if err := privatefile.WriteBelow(workspace, domain.TaskIdentityFile, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write task identity: %w", err)
 	}
-	// WriteFile leaves an existing file's mode alone, and a resumed attempt
-	// rewrites this one, so the mode is asserted rather than assumed.
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("restrict task identity: %w", err)
-	}
-	return excludeTaskIdentityFromGit(workspace, directory)
+	return nil
 }
 
 // writeProjectContext atomically materializes the canonical package-bound index.
@@ -607,45 +608,10 @@ func (d *LocalDriver) writeProjectContext(pkg workerproto.ExecutionPackage, work
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(workspace, filepath.FromSlash(domain.ProjectContextFile))
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create project context directory: %w", err)
-	}
-	file, err := os.CreateTemp(directory, ".index-*.tmp")
-	if err != nil {
-		return fmt.Errorf("stage project context: %w", err)
-	}
-	temporary := file.Name()
-	defer os.Remove(temporary)
-	if err := file.Chmod(0o444); err != nil {
-		file.Close()
-		return fmt.Errorf("restrict staged project context: %w", err)
-	}
-	if _, err := file.Write(content); err != nil {
-		file.Close()
-		return fmt.Errorf("write staged project context: %w", err)
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return fmt.Errorf("sync staged project context: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close staged project context: %w", err)
-	}
-	if err := os.Rename(temporary, path); err != nil {
+	// WriteBelow stages, syncs and renames the index, and refuses a tracked
+	// link at .t3 or .t3/context instead of writing through it.
+	if err := privatefile.WriteBelow(workspace, domain.ProjectContextFile, content, 0o444); err != nil {
 		return fmt.Errorf("publish project context: %w", err)
-	}
-	parent, err := os.Open(directory)
-	if err != nil {
-		return fmt.Errorf("open project context directory for sync: %w", err)
-	}
-	if err := parent.Sync(); err != nil {
-		parent.Close()
-		return fmt.Errorf("sync project context directory: %w", err)
-	}
-	if err := parent.Close(); err != nil {
-		return fmt.Errorf("close project context directory: %w", err)
 	}
 	return nil
 }
@@ -703,8 +669,8 @@ func verifyProjectContextFile(pkg workerproto.ExecutionPackage, workspace string
 // written, twice over. The self-ignoring .gitignore works in any layout and
 // travels with the directory; the repository's own exclude file covers a tool
 // that reads only that.
-func excludeTaskIdentityFromGit(workspace, directory string) error {
-	if err := os.WriteFile(filepath.Join(directory, ".gitignore"), []byte("# Steward task identity. Never commit this.\n*\n"), 0o600); err != nil {
+func excludeTaskIdentityFromGit(workspace string) error {
+	if err := privatefile.WriteBelow(workspace, domain.TaskIdentityDir+"/.gitignore", []byte("# Steward task identity. Never commit this.\n*\n"), 0o600); err != nil {
 		return fmt.Errorf("exclude task identity: %w", err)
 	}
 	gitDir, err := resolveGitDir(workspace)
