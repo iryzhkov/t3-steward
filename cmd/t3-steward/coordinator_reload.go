@@ -282,6 +282,10 @@ func coordinatorConfigLoop(ctx context.Context, cfg config.Config, logger *slog.
 	watchdogDone := make(chan struct{})
 	go func() { defer close(watchdogDone); runWatchdogAlongside(watchdogCtx, cfg, logger, store) }()
 	defer func() { stopWatchdog(); <-watchdogDone }()
+	// The quota telemetry recorder observes only: it starts once per process,
+	// outside configuration reloads, and nothing it meets reaches this loop.
+	quotaTelemetry := startQuotaTelemetryRecorder(ctx, cfg, logger)
+	defer quotaTelemetry.Stop()
 
 	run := func(instanceCtx context.Context, active config.Config, ready func()) error {
 		return runCoordinatorConfiguration(instanceCtx, active, logger, store, epoch, receipts, ready)
