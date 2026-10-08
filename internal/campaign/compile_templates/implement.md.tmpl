@@ -8,7 +8,8 @@ Inputs:
   brief: its scope, contract and acceptance criteria are authoritative.
 - `{{.PlanPath}}` is the whole plan, for context only. Do not implement any
   other unit.
-
+{{range .ExtraInputs}}- `{{.}}` is supporting material the plan bundles with every unit.
+{{end}}
 Before editing, check that `git rev-parse HEAD` prints {{.Ref}}; the workspace
 is pinned to it, and the pin is also recorded at `.t3/base-commit`. If it does
 not, stop and say so in `handoff.md`.

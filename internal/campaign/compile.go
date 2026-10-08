@@ -98,19 +98,47 @@ type CompiledFile struct {
 }
 
 type compileFrontMatter struct {
-	Compile  string            `yaml:"compile"`
-	Project  string            `yaml:"project"`
-	Ref      string            `yaml:"ref"`
-	Class    string            `yaml:"class"`
-	Template string            `yaml:"template"`
-	Routes   compileRoutes     `yaml:"routes"`
-	Verify   []string          `yaml:"verify"`
-	Units    []compileUnitSpec `yaml:"units"`
+	Compile  string        `yaml:"compile"`
+	Project  string        `yaml:"project"`
+	Ref      string        `yaml:"ref"`
+	Class    string        `yaml:"class"`
+	Template string        `yaml:"template"`
+	Roles    compileRoles  `yaml:"roles"`
+	Routes   compileRoutes `yaml:"routes"`
+	Verify   []string      `yaml:"verify"`
+	// Ledger and Placement are copied into every unit's workflow as written;
+	// the workflow format validates them.
+	Ledger    *backlog.ManifestLedger    `yaml:"ledger"`
+	Placement *backlog.ManifestPlacement `yaml:"placement"`
+	Resources compileTaskResources       `yaml:"resources"`
+	// MaxTurns bounds every task of a unit; nil leaves the manifest default.
+	MaxTurns *int `yaml:"max_turns"`
+	// Inputs are extra files, relative to the plan, bundled into every unit.
+	Inputs []string          `yaml:"inputs"`
+	Units  []compileUnitSpec `yaml:"units"`
+}
+
+// compileRoles chooses a template task's route by role through the
+// coordinator's route policy. It is the default: a task routes.* does not pin
+// is routed by its role.
+type compileRoles struct {
+	Execute *compileRole `yaml:"execute"`
+	Review  *compileRole `yaml:"review"`
+}
+
+type compileRole struct {
+	Effort string `yaml:"effort"`
 }
 
 type compileRoutes struct {
 	Execute *compileRoute `yaml:"execute"`
 	Review  *compileRoute `yaml:"review"`
+}
+
+// compileTaskResources is the resources block of each template task.
+type compileTaskResources struct {
+	Implement *backlog.ManifestResources `yaml:"implement"`
+	Review    *backlog.ManifestResources `yaml:"review"`
 }
 
 type compileRoute struct {
@@ -132,19 +160,46 @@ var compileObjectNames = strings.NewReplacer(
 	"in type campaign.compileFrontMatter", "in the front matter",
 	"in type campaign.compileRoutes", "in routes",
 	"in type campaign.compileRoute", "in a route",
+	"in type campaign.compileRoles", "in roles",
+	"in type campaign.compileRole", "in a role",
+	"in type campaign.compileTaskResources", "in resources, which names the template tasks implement and review",
 	"in type campaign.compileUnitSpec", "in a unit",
+	"in type backlog.ManifestLedger", "in ledger",
+	"in type backlog.ManifestPlacement", "in placement",
+	"in type backlog.ManifestResources", "in a task's resources",
 	"campaign.compileFrontMatter", "the front matter, which must be a mapping",
 	"campaign.compileRoutes", "routes, which must be a mapping",
+	"campaign.compileRoles", "roles, which must be a mapping",
+	"campaign.compileRole", "a role, which must be a mapping such as {effort: medium}",
+	"campaign.compileTaskResources", "resources, which must be a mapping by template task",
 	"campaign.compileUnitSpec", "a unit",
 	"campaign.compileRoute", "a route",
+	"backlog.ManifestLedger", "ledger, which must be a mapping",
+	"backlog.ManifestPlacement", "placement, which must be a mapping",
+	"backlog.ManifestResources", "a task's resources, which must be a mapping",
 )
 
 var yamlLinePattern = regexp.MustCompile(`line (\d+): (.*)$`)
 
+// CompileOptions are what ParseCompilePlanWith needs beyond the plan itself.
+type CompileOptions struct {
+	// ReadInput reads one extra input the front matter names, by its
+	// slash-separated path relative to the plan. Nil refuses a plan that names
+	// any.
+	ReadInput func(path string) ([]byte, error)
+}
+
 // ParseCompilePlan reads a compile/v1 plan and renders every unit. It writes
 // nothing; every refusal is a *CompilePlanError naming the plan line. source
-// is how refusals name the plan, normally its path.
+// is how refusals name the plan, normally its path. A plan whose front matter
+// names extra inputs needs ParseCompilePlanWith.
 func ParseCompilePlan(source string, raw []byte) (CompilePlan, error) {
+	return ParseCompilePlanWith(source, raw, CompileOptions{})
+}
+
+// ParseCompilePlanWith is ParseCompilePlan with a reader for the extra inputs
+// the front matter names.
+func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (CompilePlan, error) {
 	refuse := func(line int, format string, args ...any) error {
 		return &CompilePlanError{Source: source, Line: line, Reason: fmt.Sprintf(format, args...)}
 	}
@@ -244,20 +299,15 @@ func ParseCompilePlan(source string, raw []byte) (CompilePlan, error) {
 	if templateName != CompileTemplateImplementReview {
 		return CompilePlan{}, refuse(lineOf(root, "template"), "template %q is not available; this release compiles %s only", header.Template, CompileTemplateImplementReview)
 	}
-	for _, role := range []struct {
-		name  string
-		route *compileRoute
-	}{{"execute", header.Routes.Execute}, {"review", header.Routes.Review}} {
-		if role.route == nil {
-			return CompilePlan{}, refuse(lineOf(root, "routes"), "routes.%s is required: {instance, model, quota_pool, effort}", role.name)
-		}
-		line := lineOf(root, "routes", role.name)
-		if strings.TrimSpace(role.route.Instance) == "" {
-			return CompilePlan{}, refuse(line, "routes.%s needs an instance", role.name)
-		}
-		if strings.TrimSpace(role.route.Model) == "" {
-			return CompilePlan{}, refuse(line, "routes.%s needs a model", role.name)
-		}
+	if err := checkCompileRouting(header, root, lineOf, refuse); err != nil {
+		return CompilePlan{}, err
+	}
+	if header.MaxTurns != nil && *header.MaxTurns < 1 {
+		return CompilePlan{}, refuse(lineOf(root, "max_turns"), "max_turns %d is not a positive number of turns", *header.MaxTurns)
+	}
+	extras, err := readCompileInputs(header.Inputs, mappingValue(root, "inputs"), lineOf(root, "inputs"), options, refuse)
+	if err != nil {
+		return CompilePlan{}, err
 	}
 	verifyNode := mappingValue(root, "verify")
 	for index, command := range header.Verify {
@@ -314,7 +364,7 @@ func ParseCompilePlan(source string, raw []byte) (CompilePlan, error) {
 			return CompilePlan{}, refuse(line, "unit %q: section %q matches %d headings, on lines %s; name exactly one",
 				spec.ID, spec.Section, len(matches), joinAnd(at))
 		}
-		unit, err := renderCompiledUnit(plan, header, spec, line, raw, body[matches[0].start:sectionEnd(body, headings, matches[0])])
+		unit, err := renderCompiledUnit(plan, header, spec, line, raw, body[matches[0].start:sectionEnd(body, headings, matches[0])], extras)
 		if err != nil {
 			return CompilePlan{}, refuse(line, "unit %q: %v", spec.ID, err)
 		}
@@ -484,46 +534,60 @@ type compilePromptData struct {
 	DependenciesPath string
 	CommitName       string
 	Verify           []string
+	// ExtraInputs are the mount paths of the extra inputs the plan bundles.
+	ExtraInputs []string
 }
 
-func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compileUnitSpec, line int, raw, section []byte) (CompiledUnit, error) {
-	route := func(declared compileRoute) []backlog.ManifestRoute {
-		converted := backlog.ManifestRoute{Instance: declared.Instance, Model: declared.Model, QuotaPool: declared.QuotaPool}
-		if declared.Effort != "" {
-			converted.Options = map[string]string{"effort": declared.Effort}
+func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compileUnitSpec, line int, raw, section []byte, extras []CompiledFile) (CompiledUnit, error) {
+	class := plan.Class
+	if class == domain.TaskClassSurplus {
+		class = ""
+	}
+	inputs := []string{compiledPlanInput, compiledUnitInput}
+	for _, extra := range extras {
+		inputs = append(inputs, extra.Path)
+	}
+	maxTurns := 0
+	if header.MaxTurns != nil {
+		maxTurns = *header.MaxTurns
+	}
+	implement := compiledTask{
+		PromptFile: "prompts/implement.md",
+		Outputs:    []string{"continuation.md", "handoff.md"},
+		Commits:    []compiledCommit{{Name: compiledCommitName, Revision: "HEAD"}},
+		Verify:     append([]string(nil), header.Verify...),
+		Resources:  newCompiledResources(header.Resources.Implement),
+		MaxTurns:   maxTurns,
+	}
+	review := compiledTask{
+		PromptFile: "prompts/review.md",
+		Needs:      []string{"implement"},
+		InputsFrom: map[string][]string{"implement": {compiledCommitName, "handoff.md"}},
+		Outputs:    []string{"continuation.md", "review.md"},
+		// The coordinator records review.md's first line, which the review
+		// prompt fixes, as the run's verdict.
+		ReviewOutput: &domain.ReviewOutput{VerdictLine: "review.md"},
+		Resources:    newCompiledResources(header.Resources.Review),
+		MaxTurns:     maxTurns,
+	}
+	for _, routing := range compileTemplateRouting(header) {
+		task := &implement
+		if routing.task == "review" {
+			task = &review
 		}
-		return []backlog.ManifestRoute{converted}
+		routes, role, options := routing.compiled()
+		task.Routes, task.Role, task.Options = routes, role, options
 	}
-	manifest := backlog.Manifest{
-		Version: backlog.ManifestVersion,
-		Name:    spec.ID,
-		Class:   plan.Class,
-		Environment: backlog.ManifestEnvironment{
-			Project: plan.Project, Type: backlog.EnvironmentGit,
-			Scope: backlog.EnvironmentScopeTask, Ref: plan.Ref,
-		},
-		Inputs: []string{compiledPlanInput, compiledUnitInput},
-		Tasks: map[string]backlog.ManifestTask{
-			"implement": {
-				PromptFile: "prompts/implement.md",
-				Outputs:    []string{"continuation.md", "handoff.md"},
-				Commits:    []backlog.ManifestCommit{{Name: compiledCommitName, Revision: "HEAD"}},
-				Verify:     append([]string(nil), header.Verify...),
-				Routes:     route(*header.Routes.Execute),
-			},
-			"review": {
-				PromptFile: "prompts/review.md",
-				Needs:      backlog.ManifestNeeds{"implement"},
-				InputsFrom: map[string][]string{"implement": {compiledCommitName, "handoff.md"}},
-				Outputs:    []string{"continuation.md", "review.md"},
-				// The coordinator records review.md's first line, which the
-				// review prompt fixes, as the run's verdict.
-				ReviewOutput: &domain.ReviewOutput{VerdictLine: "review.md"},
-				Routes:       route(*header.Routes.Review),
-			},
-		},
-	}
-	workflow, err := yaml.Marshal(manifest)
+	workflow, err := marshalCompiledWorkflow(compiledWorkflow{
+		Version:     backlog.ManifestVersion,
+		Name:        spec.ID,
+		Class:       class,
+		Environment: compiledEnvironment{Project: plan.Project, Ref: plan.Ref},
+		Placement:   newCompiledPlacement(header.Placement),
+		Ledger:      newCompiledLedger(header.Ledger),
+		Inputs:      inputs,
+		Tasks:       compiledTasks{Implement: implement, Review: review},
+	})
 	if err != nil {
 		return CompiledUnit{}, err
 	}
@@ -546,12 +610,18 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 		CommitName:       compiledCommitName,
 		Verify:           header.Verify,
 	}
+	for _, extra := range extras {
+		data.ExtraInputs = append(data.ExtraInputs, ".t3/inputs/"+extra.Path)
+	}
 	unit := CompiledUnit{ID: spec.ID, Title: title, Section: spec.Section, Line: line}
 	unit.Files = append(unit.Files,
 		CompiledFile{Path: ManifestFileName, Content: workflow},
 		CompiledFile{Path: compiledPlanInput, Content: append([]byte(nil), raw...)},
 		CompiledFile{Path: compiledUnitInput, Content: append([]byte(nil), section...)},
 	)
+	for _, extra := range extras {
+		unit.Files = append(unit.Files, CompiledFile{Path: extra.Path, Content: append([]byte(nil), extra.Content...)})
+	}
 	for _, name := range []string{"implement", "review"} {
 		var prompt bytes.Buffer
 		if err := compileTemplates.ExecuteTemplate(&prompt, name+".md.tmpl", data); err != nil {

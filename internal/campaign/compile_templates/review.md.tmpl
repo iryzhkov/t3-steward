@@ -8,7 +8,8 @@ Inputs:
 - `{{.UnitPath}}` is the unit's brief, byte for byte. Check every acceptance
   criterion in it.
 - `{{.PlanPath}}` is the whole plan, for context.
-- `{{.DependenciesPath}}` holds one directory for the implement task; list it
+{{range .ExtraInputs}}- `{{.}}` is supporting material the plan bundles with every unit.
+{{end}}- `{{.DependenciesPath}}` holds one directory for the implement task; list it
   to find that directory. It contains `handoff.md` and `{{.CommitName}}`, the
   provenance record of the implementation commit. The commit itself is
   already fetched into this checkout under the campaign ref the record names.
