@@ -1054,13 +1054,8 @@ func (r *Runtime) reconcileDispatch(ctx context.Context, id string) error {
 	case backlog.DispatchThreadStopped:
 		return r.markPhase(id, PhaseStopped, "", record.WorkspacePath, pkg.Identity.ThreadID)
 	case backlog.DispatchThreadMissing:
-<<<<<<< HEAD
-		if err := r.driver.CreateThread(ctx, pkg, record.WorkspacePath); err != nil {
-			observed, observeErr := r.observeThread(ctx, id, pkg)
-=======
 		if err := r.driver.CreateThread(withAttemptProcessLimits(ctx, record), pkg, record.WorkspacePath); err != nil {
-			observed, observeErr := r.driver.ObserveThread(ctx, pkg)
->>>>>>> refs/heads/rc119-input/resource-sizing
+			observed, observeErr := r.observeThread(ctx, id, pkg)
 			switch {
 			case observeErr == nil && observed == backlog.DispatchThreadActive:
 				return r.markPhase(id, PhaseRunning, "", record.WorkspacePath, pkg.Identity.ThreadID)

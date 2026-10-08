@@ -19,6 +19,7 @@ func init() {
 		backlogHelpPages(),
 		campaignHelpPages(),
 		campaignFixHelpPages(),
+		campaignCollectHelpPages(),
 		fleetHelpPages(),
 		quotaHelpPages(),
 	} {
