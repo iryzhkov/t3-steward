@@ -516,7 +516,10 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 				Needs:      backlog.ManifestNeeds{"implement"},
 				InputsFrom: map[string][]string{"implement": {compiledCommitName, "handoff.md"}},
 				Outputs:    []string{"continuation.md", "review.md"},
-				Routes:     route(*header.Routes.Review),
+				// The coordinator records review.md's first line, which the
+				// review prompt fixes, as the run's verdict.
+				ReviewOutput: &domain.ReviewOutput{VerdictLine: "review.md"},
+				Routes:       route(*header.Routes.Review),
 			},
 		},
 	}

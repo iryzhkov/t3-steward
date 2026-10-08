@@ -70,7 +70,8 @@ tasks:
         deadline: null
         expires_at: null
     review:
-        review_output: null
+        review_output:
+            verdict_line: review.md
         review_requirements: null
         directories: []
         class: ""
