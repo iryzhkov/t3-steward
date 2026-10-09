@@ -250,7 +250,9 @@ func buildCampaignResult(ctx context.Context, detail backlogadmin.WorkflowDetail
 //     one head, which its own verification ran on;
 //   - a task whose latest attempt recorded an ACCEPT verdict is about the
 //     commit outputs it consumed, each produced by a succeeded attempt whose
-//     own verification is what is checked.
+//     own verification is checked only when its accepted-head review gate
+//     also binds that verification to the declared commit. Ordinary reports
+//     contain no commit identity and cannot establish this fact.
 //
 // When several commits qualify, the last in manifest order is reported.
 func campaignAcceptance(tasks []campaignResultTask, byName map[string]int) campaignResultAcceptance {
@@ -328,6 +330,9 @@ func campaignAcceptance(tasks []campaignResultTask, byName map[string]int) campa
 				reason("%s is %s", producer.Task, producer.State)
 			case producer.Verification.State != verificationPassed:
 				reason("verification of %s is %s", producer.Task, producer.Verification.State)
+			case producer.ReviewGate == nil || !producer.ReviewGate.Passed ||
+				producer.ReviewGate.Code != string(domain.ReviewGateAccepted) || producer.ReviewGate.ReviewedHead != commit.Commit:
+				reason("verification of %s is not bound to declared commit %s", producer.Task, shortCommit(commit.Commit))
 			default:
 				candidates = append(candidates, candidate{commit.Commit, task.Task, producer.Task})
 			}

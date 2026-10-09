@@ -72,7 +72,7 @@ func TestCampaignResultRecordedRuns(t *testing.T) {
 		want    string
 	}{
 		{"accepted", 0, `run run-accepted: succeeded (2 tasks: 2 succeeded)
-  implement  succeeded; commit 111111111111; verification passed 2/2
+  implement  succeeded; review gate accepted-head; commit 111111111111; verification passed 2/2
   review     succeeded; verdict ACCEPT blocking=0 on implement 111111111111
 review ACCEPT and verification passed on the same commit: yes, 111111111111 (review accepted, implement verification passed)
 `},
@@ -181,7 +181,20 @@ func TestCampaignResultAcceptanceNeedsRecordedFactsOnOneCommit(t *testing.T) {
 	}{
 		{"no recorded verdict, only a review.md that says ACCEPT", func(f *campaignResultFixture) {
 			f.Workflow.Tasks[0].Attempt.ReviewVerdict = nil
+			f.Workflow.Tasks[1].Attempt.ReviewGate = nil
 		}, "no review verdict is recorded"},
+		{"ordinary reports have no commit binding", func(f *campaignResultFixture) {
+			f.Workflow.Tasks[1].Attempt.ReviewGate = nil
+		}, "verification of implement is not bound to declared commit"},
+		{"producer gate names another commit", func(f *campaignResultFixture) {
+			f.Workflow.Tasks[1].Attempt.ReviewGate.ReviewedHead = "2222222222222222222222222222222222222222"
+		}, "verification of implement is not bound to declared commit"},
+		{"producer gate failed", func(f *campaignResultFixture) {
+			f.Workflow.Tasks[1].Attempt.ReviewGate.Passed = false
+		}, "verification of implement is not bound to declared commit"},
+		{"producer gate did not accept the head", func(f *campaignResultFixture) {
+			f.Workflow.Tasks[1].Attempt.ReviewGate.Code = domain.ReviewGateNotAccepted
+		}, "verification of implement is not bound to declared commit"},
 		{"no verification declared", func(f *campaignResultFixture) {
 			f.Workflow.Tasks[1].Task.Verification = nil
 		}, "verification of implement is not-declared"},
@@ -202,6 +215,7 @@ func TestCampaignResultAcceptanceNeedsRecordedFactsOnOneCommit(t *testing.T) {
 		}, "unreadable"},
 		{"the review consumed no commit", func(f *campaignResultFixture) {
 			f.Workflow.Tasks[0].Task.DependencyInputs = nil
+			f.Workflow.Tasks[1].Attempt.ReviewGate = nil
 		}, "review recorded ACCEPT but consumed no recorded commit"},
 		{"the producer's latest attempt has no commit record", func(f *campaignResultFixture) {
 			f.Workflow.Tasks[1].Artifacts = append(f.Workflow.Tasks[1].Artifacts[:2], f.Workflow.Tasks[1].Artifacts[3:]...)

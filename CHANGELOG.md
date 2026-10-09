@@ -24,7 +24,8 @@ or rc.115 coordinator.
   The acceptance fact is computed only from recorded facts that name one
   commit: a recorded ACCEPT on a commit output the review consumed, whose
   producing attempt succeeded with every declared verification command
-  reported at exit 0, or a review-declared task's `accepted-head` gate whose
+  reported at exit 0 and its `accepted-head` review gate binding verification
+  to that declared commit, or a review-declared task's `accepted-head` gate whose
   reviewed head is its declared commit and whose own verification passed. A
   recorded CHANGES_REQUESTED on the same commit makes it no; exit codes and
   task success alone never make it yes. `--json` prints the versioned

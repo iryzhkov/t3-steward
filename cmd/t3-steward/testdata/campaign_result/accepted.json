@@ -30,7 +30,8 @@
         },
         "attempt": {
           "id": "a-implement-2", "workflowRunId": "run-accepted", "taskId": "t-implement", "number": 2,
-          "progress": "succeeded", "control": "released", "revision": 6
+          "progress": "succeeded", "control": "released", "revision": 6,
+          "reviewGate": {"passed": true, "code": "accepted-head", "reviewedHead": "1111111111111111111111111111111111111111", "roundVerdict": "accept"}
         },
         "artifacts": [
           {"metadata": {"id": "art-old-commit", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "output", "name": "implementation"}},

@@ -10,7 +10,7 @@ additions shorten that.
 ```
 $ t3-steward campaign result run-4be1
 run run-4be1: succeeded (2 tasks: 2 succeeded)
-  implement  succeeded; commit 1a2b3c4d5e6f; verification passed 5/5
+  implement  succeeded; review gate accepted-head; commit 1a2b3c4d5e6f; verification passed 5/5
   review     succeeded; verdict ACCEPT blocking=0 on implement 1a2b3c4d5e6f
 review ACCEPT and verification passed on the same commit: yes, 1a2b3c4d5e6f (review accepted, implement verification passed)
 ```
@@ -41,8 +41,16 @@ both halves are recorded facts that name one commit:
   latest attempt. That attempt must have succeeded, and its own verification
   must have passed: every declared verification command has a retained report
   with exit code 0, and a declared gate's report says passed for that attempt.
+  The producer must also have a passing `accepted-head` review completion
+  gate whose reviewed head equals that declared commit. This gate binds the
+  clean workspace, verification and output commit. Ordinary verification
+  reports contain no commit identity; passing reports from the same attempt
+  alone cannot prove which commit was tested. Such runs report `no`, with
+  "verification ... is not bound to declared commit", even if all commands
+  and the separate review succeeded. This fails closed for older evidence
+  and for a different declared revision or uncommitted workspace changes.
   A run's producer has one succeeded attempt, and its consumers start only
-  after it, so this is the commit the review read.
+  after it, so the dependency identifies the commit the review read.
 - **A review-declared task's gate.** A task with `review:` requirements
   records a completion gate. A gate that passed as `accepted-head` binds the
   latest accepted review round, the clean workspace and the declared commit to
@@ -81,6 +89,7 @@ exits 1. Interrupting a wait never cancels work.
   "tasks": [
     {"task": "implement", "taskId": "...", "attemptId": "...", "state": "succeeded",
      "commits": [{"task": "implement", "name": "implementation", "commit": "1a2b..."}],
+     "reviewGate": {"passed": true, "code": "accepted-head", "reviewedHead": "1a2b...", "roundVerdict": "accept"},
      "verification": {"state": "passed", "declared": 5, "passed": 5}},
     {"task": "review", "taskId": "...", "attemptId": "...", "state": "succeeded",
      "verdict": {"verdict": "ACCEPT", "blockingFindings": 0},
