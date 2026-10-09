@@ -1035,9 +1035,31 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		}
 	}
 	failure, err := backlog.ResultCompletionFailureWithPause(archive, pkg.Identity.ThreadID, message, pauseReason)
+	if isThreadArchiveInvalid(err) {
+		// The archive judges the provider turn; it is not the task's result.
+		// One that cannot be decoded is read again on a few later passes, in
+		// case the export was caught mid-write, and then the results are
+		// collected without its judgement. The coordinator fails the attempt as
+		// thread-archive-invalid from the same uploaded archive, with the
+		// outputs and commits beside it, instead of the collection deferring
+		// on every pass for as long as the worker runs.
+		exhausted, passes := archiveDecodeExhausted(pkg, err)
+		if !exhausted {
+			return fmt.Errorf("thread archive could not be decoded (pass %d of %d): %w", passes, maxArchiveDecodePasses, err)
+		}
+		d.logger().Warn("the thread archive cannot be decoded; collecting the declared outputs and commits without it, and the attempt fails as "+backlog.ThreadArchiveInvalidReason,
+			"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "passes", passes, "error", err)
+		failure, err = backlog.ThreadArchiveInvalidFailure(err), nil
+	} else if err == nil {
+		if warnings, _ := backlog.ThreadArchiveWarnings(archive); len(warnings) != 0 {
+			d.logger().Warn("the thread archive has activity fields of an unexpected shape; they were read as JSON text",
+				"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "warnings", warnings)
+		}
+	}
 	if err != nil {
 		return err
 	}
+	forgetArchiveDecode(pkg)
 	if thread != nil {
 		// The recorded read is keyed by the collection identity, so a refused
 		// later request never reuses the earlier turn's clean read.
@@ -1067,8 +1089,12 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	finalizer := d.Finalizer
 	finalizer.GateTimeoutMax = pkg.Limits.VerificationTimeout
 	finalized, err := finalizer.Finalize(ctx, backlog.AttemptFinalization{
-		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "", WorkerID: pkg.WorkerID,
-		Extra: extras, Repository: pkg.Environment.Repository, BaseCommit: baseCommit,
+		// An archive that cannot be decoded judged nothing, so verification
+		// runs and the outputs and commits are captured as for a finished
+		// turn; the coordinator fails the attempt from the archive itself.
+		Task: task, Attempt: attempt, WorkspaceDir: workspace, WorkerID: pkg.WorkerID,
+		ExplicitSuccess: failure == "" || backlog.IsThreadArchiveInvalidFailure(failure),
+		Extra:           extras, Repository: pkg.Environment.Repository, BaseCommit: baseCommit,
 		// The coordinator declares the capability on a producer's package only
 		// when it accepts the bundle artifact, and the bundle is uploaded as one
 		// artifact, so it is bounded by the same limit.

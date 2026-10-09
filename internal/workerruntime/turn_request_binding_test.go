@@ -60,6 +60,9 @@ type fakeTurnT3 struct {
 	// lagging, when set, is what the thread detail still shows while the
 	// shell already shows thread: T3 projects the two separately.
 	lagging *fakeTurnThread
+	// editDetail, when set, changes the thread detail as it is served, so a
+	// test can give it a shape the projection never produces.
+	editDetail func(map[string]any)
 	// settled is set by a settlement dispatch and shown by the shell.
 	settled bool
 	exports int
@@ -90,6 +93,9 @@ func (f *fakeTurnT3) json() (shell, detail map[string]any) {
 	}
 	if f.settled {
 		shell["settledAt"], shell["settledOverride"] = fakeTurnTime(20), "settled"
+	}
+	if f.editDetail != nil {
+		f.editDetail(detail)
 	}
 	return shell, detail
 }

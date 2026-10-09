@@ -359,13 +359,16 @@ func (a threadArchive) requiredActivities() map[int]bool {
 		latestTurn = a.Thread.LatestTurn.TurnID
 	}
 	for index, activity := range a.Thread.Activities {
+		if activity.Unreadable {
+			continue
+		}
 		switch activity.Kind {
 		case TurnStartFailedActivity:
 			if created, err := time.Parse(time.RFC3339Nano, activity.CreatedAt); err == nil && (refusal < 0 || !created.Before(newest)) {
 				refusal, newest = index, created
 			}
 		case runtimeErrorActivity:
-			if latestTurn != "" && activity.TurnID != nil && *activity.TurnID == latestTurn && providerDetail(activity.Payload.Message) != "" {
+			if latestTurn != "" && activity.TurnID != nil && *activity.TurnID == latestTurn && providerDetail(activityText(activity, "message")) != "" {
 				runtimeError = index
 			}
 		}

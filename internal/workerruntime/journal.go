@@ -101,19 +101,23 @@ type AttemptRecord struct {
 	ObservedTurnID string `json:"observedTurnId,omitempty"`
 	// TurnEnd is the background-command check of the attempt's turn ends:
 	// the nudges spent and the state explain reports.
-	TurnEnd          *TurnEndCheck                             `json:"turnEnd,omitempty"`
-	Assignment       domain.Assignment                         `json:"assignment"`
-	Package          workerproto.ExecutionPackageManifest      `json:"package"`
-	Phase            Phase                                     `json:"phase"`
-	WorkspacePath    string                                    `json:"workspacePath,omitempty"`
-	ThreadID         string                                    `json:"threadId,omitempty"`
-	Failure          string                                    `json:"failure,omitempty"`
-	CommandRequests  map[string]domain.WorkerCommand           `json:"commandRequests,omitempty"`
-	CommandResults   map[string]domain.WorkerAcknowledgement   `json:"commandResults,omitempty"`
-	ThrottleRequests map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
-	ThrottleResults  map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
-	PendingThrottle  *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
-	PrepareAttempts  int                                       `json:"prepareAttempts,omitempty"`
+	TurnEnd *TurnEndCheck `json:"turnEnd,omitempty"`
+	// CollectionDeferred is when the attempt's collection first deferred and
+	// why it last did. It is cleared when the attempt leaves collecting, and
+	// reported only while it is collecting.
+	CollectionDeferred *CollectionDeferral                       `json:"collectionDeferred,omitempty"`
+	Assignment         domain.Assignment                         `json:"assignment"`
+	Package            workerproto.ExecutionPackageManifest      `json:"package"`
+	Phase              Phase                                     `json:"phase"`
+	WorkspacePath      string                                    `json:"workspacePath,omitempty"`
+	ThreadID           string                                    `json:"threadId,omitempty"`
+	Failure            string                                    `json:"failure,omitempty"`
+	CommandRequests    map[string]domain.WorkerCommand           `json:"commandRequests,omitempty"`
+	CommandResults     map[string]domain.WorkerAcknowledgement   `json:"commandResults,omitempty"`
+	ThrottleRequests   map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
+	ThrottleResults    map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
+	PendingThrottle    *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
+	PrepareAttempts    int                                       `json:"prepareAttempts,omitempty"`
 	// Continuation is the attempt's latest continuation.md checkpoint taken
 	// at a turn end or a pause: its digest, size and time, never its content,
 	// which the attempt directory keeps.
