@@ -348,6 +348,9 @@ func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.Work
 		next.LastTurnOutcomeID, next.LastTurnOutcomeMarker = "", ""
 		next.Failure = ""
 	case domain.AdminCommandRetry:
+		if task.FixLoop != nil {
+			return nil, nil, nil, fmt.Errorf("fix loop retries require campaign rerun from %s so stopped descendants get fresh attempts", task.Name)
+		}
 		if !retryAllowed(attempt) {
 			return nil, nil, nil, invalid()
 		}

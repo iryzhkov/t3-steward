@@ -118,6 +118,9 @@ func expandManifestFixLoops(manifest *Manifest) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	// Templates must come from the authored graph, never from rounds generated
+	// while expanding an earlier loop.
+	authoredTasks := maps.Clone(manifest.Tasks)
 	used := map[string]bool{}
 	for _, name := range names {
 		loop := manifest.FixLoops[name]
@@ -131,11 +134,11 @@ func expandManifestFixLoops(manifest *Manifest) error {
 		if manifest.Environment.Type != EnvironmentGit || manifest.Environment.Scope != EnvironmentScopeTask {
 			return fail("requires git task workspaces so every round is fresh")
 		}
-		implement, exists := manifest.Tasks[loop.Implement]
+		implement, exists := authoredTasks[loop.Implement]
 		if !exists {
 			return fail("implement task is missing")
 		}
-		reviewer, exists := manifest.Tasks[loop.Review]
+		reviewer, exists := authoredTasks[loop.Review]
 		if !exists || loop.Implement == loop.Review {
 			return fail("review must name a distinct existing task")
 		}
