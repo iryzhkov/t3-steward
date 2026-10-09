@@ -5,7 +5,10 @@ package directoryresource
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 )
 
 func registration(path string) Registration {
@@ -13,7 +16,7 @@ func registration(path string) Registration {
 }
 
 func TestPinnedIdentityAndReplacement(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	path := filepath.Join(root, "data")
 	if err := os.Mkdir(path, 0700); err != nil {
 		t.Fatal(err)
@@ -66,7 +69,7 @@ func TestPinnedIdentityAndReplacement(t *testing.T) {
 }
 
 func TestMissingAndSymlinkDirectoriesRefused(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	if f, _, err := Open(registration(filepath.Join(root, "absent"))); err == nil {
 		f.Close()
 		t.Fatal("missing accepted")
@@ -86,12 +89,14 @@ func TestMissingAndSymlinkDirectoriesRefused(t *testing.T) {
 		if f, _, err := Open(registration(path)); err == nil {
 			f.Close()
 			t.Fatalf("symlink accepted: %s", path)
+		} else if want := alias + " is a symlink to " + real; !strings.Contains(err.Error(), want) {
+			t.Fatalf("symlink refusal %v does not name %q", err, want)
 		}
 	}
 }
 
 func TestAccessAndOverlappingRoots(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	child := filepath.Join(root, "child")
 	if err := os.Mkdir(child, 0700); err != nil {
 		t.Fatal(err)

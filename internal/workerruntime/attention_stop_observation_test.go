@@ -13,13 +13,14 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 func proveAttentionStopQuiescesProviderAndVerification(t *testing.T, pkg workerproto.ExecutionPackage) {
 	t.Helper()
 	ctx := context.Background()
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	if err := os.Chmod(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,7 @@ func TestAttentionStopObservationIsProducedByRuntimeAndConsumedBySQLite(t *testi
 	}
 	ctx := context.Background()
 	now := runtimeTestNow
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	driver := &fakeDriver{workspace: filepath.Join(root, "workspace"), observations: []backlog.DispatchThreadState{backlog.DispatchThreadActive, backlog.DispatchThreadActive}}
 	runtime := newClaimedRuntimeWithClock(t, root, driver, func() time.Time { return now })
 	if err := runtime.markPhase("assignment-1", PhaseRunning, "", driver.workspace, "thread-1"); err != nil {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 )
 
 // A work-in-progress snapshot runs Git on the worker host, outside the
@@ -61,7 +62,7 @@ func TestSnapshotRunsNoCommandTheTaskConfigured(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newWIPFixture(t, commitOutputs)
 			// The attempt was contained: its package binds a directory resource.
-			registration := directoryresource.Registration{WorkerID: "worker-1", ResourceID: "snapshot-directory", Revision: "1", Path: t.TempDir(), Writable: true}
+			registration := directoryresource.Registration{WorkerID: "worker-1", ResourceID: "snapshot-directory", Revision: "1", Path: testutil.RealTempDir(t), Writable: true}
 			fd, identity, err := directoryresource.Open(registration)
 			if runtime.GOOS != "linux" {
 				if err == nil || err.Error() != "directory identity containment is unsupported on this platform" || fd != nil {

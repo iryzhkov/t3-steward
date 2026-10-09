@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 )
 
 type fakeArtifactService struct {
@@ -62,7 +63,7 @@ func TestArtifactGetRequiresDownloadForUnsafeMediaAndNeverOverwrites(t *testing.
 	if err := cli.runBacklog(context.Background(), []string{"artifact", "get", "artifact-html"}); err == nil || !strings.Contains(err.Error(), "requires --output") {
 		t.Fatalf("inline error = %v", err)
 	}
-	destination := filepath.Join(t.TempDir(), "artifact.html")
+	destination := filepath.Join(testutil.RealTempDir(t), "artifact.html")
 	cli.artifacts = newFake()
 	if err := cli.runBacklog(context.Background(), []string{"artifact", "get", "artifact-html", "--output", destination}); err != nil {
 		t.Fatal(err)
@@ -99,7 +100,7 @@ func TestArtifactDownloadRejectsSymlinkDirectory(t *testing.T) {
 		Metadata: backlogadmin.ArtifactMetadata{ID: "artifact-1", MediaType: "application/octet-stream", Size: int64(len(content))},
 		Content:  io.NopCloser(strings.NewReader(content)),
 	}}
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	realDirectory := filepath.Join(root, "real")
 	if err := os.Mkdir(realDirectory, 0o700); err != nil {
 		t.Fatal(err)
@@ -116,6 +117,10 @@ func TestArtifactDownloadRejectsSymlinkDirectory(t *testing.T) {
 	err := cli.runBacklog(context.Background(), []string{"artifact", "get", "artifact-1", "--output", destination})
 	if err == nil || !strings.Contains(err.Error(), "real directory") {
 		t.Fatalf("symlink directory error = %v", err)
+	}
+	// The refusal names the link and its target, so the cause is in the first line.
+	if want := linkDirectory + " is a symlink to " + realDirectory; !strings.Contains(err.Error(), want) {
+		t.Fatalf("symlink directory error = %v, want it to name %q", err, want)
 	}
 	if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("destination exists: %v", err)
@@ -152,7 +157,7 @@ func TestOpenCheckedOutputDirectoryRejectsDirectorySwap(t *testing.T) {
 }
 
 func TestArtifactDownloadRemovesStagingFileAfterWriteFailure(t *testing.T) {
-	directory := t.TempDir()
+	directory := testutil.RealTempDir(t)
 	destination := filepath.Join(directory, "artifact.bin")
 	err := downloadArtifact(&failingArtifactReader{}, destination)
 	if err == nil || !strings.Contains(err.Error(), "write artifact output") {

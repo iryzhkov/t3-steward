@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 )
 
 func inspected(t *testing.T, path, name string, writable bool) directoryresource.Identity {
@@ -28,7 +29,7 @@ func inspected(t *testing.T, path, name string, writable bool) directoryresource
 
 func fixture(t *testing.T) Spec {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	for _, name := range []string{"home", "work", "data"} {
 		if err := os.Mkdir(filepath.Join(root, name), 0700); err != nil {
 			t.Fatal(err)

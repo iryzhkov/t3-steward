@@ -42,6 +42,11 @@ type ProcessRequest struct {
 	// parallelism to use and, where the user manager can enforce them, given
 	// cpu and memory limits; see ProcessLimits.
 	Limits ProcessLimits
+	// Environment holds NAME=value entries set for the command on top of the
+	// worker's own environment, such as the resolved temporary directories of
+	// a verification command. A contained runner gives the command its own
+	// fixed environment instead and ignores them.
+	Environment []string
 }
 
 type ProcessResult struct {
@@ -153,6 +158,9 @@ func (r SystemdScopeRunner) Run(ctx context.Context, request ProcessRequest) (Pr
 		"--working-directory=" + request.Dir,
 	}
 	args = append(args, r.scopeLimitArguments(request.Limits)...)
+	for _, value := range request.Environment {
+		args = append(args, "--setenv="+value)
+	}
 	args = append(args, "--", request.Program)
 	args = append(args, request.Args...)
 	fmt.Fprintf(log, "$ %s %s\n", r.systemdRun(), strings.Join(args, " "))
@@ -386,6 +394,11 @@ func validateProcessRequest(request ProcessRequest) error {
 	}
 	if request.MaxOutputBytes < 0 {
 		return errors.New("process output bound cannot be negative")
+	}
+	for _, value := range request.Environment {
+		if name, _, ok := strings.Cut(value, "="); !ok || name == "" || strings.ContainsAny(value, "\x00\n") {
+			return errors.New("process environment entries must be NAME=value on one line")
+		}
 	}
 	return nil
 }

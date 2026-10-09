@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/symlinkpath"
 )
 
 // Supervisor owns launch intent outside the worker's lifetime. Root is private,
@@ -193,6 +194,9 @@ func privateDirectory(path string) error {
 		return err
 	}
 	if resolved != path {
+		if described := symlinkpath.Describe(path); described != "" {
+			return fmt.Errorf("supervisor state path contains a symlink: %s", described)
+		}
 		return errors.New("supervisor state path contains a symlink")
 	}
 	return nil

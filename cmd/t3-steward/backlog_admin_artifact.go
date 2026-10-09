@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/symlinkpath"
 )
 
 const maxInlineArtifactBytes = 16 << 20
@@ -112,6 +113,9 @@ func ensureRealOutputDirectory(path string) error {
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			if !systemOwnedSymlink(info) {
+				if target, err := os.Readlink(current); err == nil {
+					return fmt.Errorf("artifact output directory is not a real directory: %s", symlinkpath.Link(current, target))
+				}
 				return errors.New("artifact output directory is not a real directory")
 			}
 		} else if !info.IsDir() {

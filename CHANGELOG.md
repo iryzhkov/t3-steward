@@ -16,6 +16,28 @@ or rc.115 coordinator.
 
 ### Added
 
+- Verification and gate commands get real temporary directories: before
+  running a task's verify and gate commands the worker resolves TMPDIR
+  (default `/tmp`) and, when set, GOTMPDIR to paths free of symbolic links,
+  creating a missing directory, and passes the resolved values to the
+  command's scope. The verification report and the gate report gain
+  `tempDirectories` (variable, configured value, resolved path), so a host
+  whose temporary directory is a symlink to another disk can no longer fail
+  every task's checks that refuse symlinked paths. The worker's inventory
+  snapshot logs a warning, once per process, naming a symlinked TMPDIR or
+  GOTMPDIR and its target, for example `TMPDIR /home/igor/.cache/tmp is a
+  symlink to /srv/agent/igor/steward-tmp`; the warning does not degrade the
+  worker's health and is not sent to the coordinator.
+- Refusals that reject a symlinked path now name the link and its target:
+  the artifact download's "artifact output directory is not a real
+  directory", the directory resource's "open registered directory" and the
+  containment supervisor's "supervisor state path contains a symlink". What
+  they refuse is unchanged.
+- The test suite passes when TMPDIR is a symlink: tests that hand their
+  temporary directory to code refusing symlinks resolve it first with the new
+  `testutil.RealTempDir`, `testutil.RerunWithSymlinkedTempDir` reruns the
+  affected tests in a child with a symlinked TMPDIR, and Linux CI runs the
+  plain test pass with TMPDIR a symlink.
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first

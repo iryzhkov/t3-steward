@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 )
 
 // killOnCleanup ends a test process however the test leaves.
@@ -71,7 +73,7 @@ func reports(report LiveCommandReport, pid int) bool {
 // A command an agent detached inside its workspace outlives the turn, and the
 // worker finds it by its working directory once its shell has exited.
 func TestLiveCommandsFindsADetachedCommandInTheWorkspace(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := testutil.RealTempDir(t)
 	pid := startDetached(t, workspace, "sleep 61")
 	report, err := scanLiveCommandsIn("linux", "/proc", os.Getpid(), workspace)
 	if err != nil {
@@ -93,7 +95,7 @@ func TestLiveCommandsFindsADetachedCommandInTheWorkspace(t *testing.T) {
 // The same command outside the workspace, including in a sibling directory
 // whose name merely starts with the workspace's, is somebody else's.
 func TestLiveCommandsIgnoresCommandsOutsideTheWorkspace(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	workspace := filepath.Join(root, "workspace")
 	sibling := filepath.Join(root, "workspace-other")
 	for _, dir := range []string{workspace, sibling} {
@@ -114,7 +116,7 @@ func TestLiveCommandsIgnoresCommandsOutsideTheWorkspace(t *testing.T) {
 // The worker's own children, such as verification commands, run in the
 // workspace too and are never the task's background commands.
 func TestLiveCommandsExcludesTheWorkersOwnChildren(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := testutil.RealTempDir(t)
 	child := exec.Command("sleep", "63")
 	child.Dir = workspace
 	if err := child.Start(); err != nil {
@@ -179,7 +181,7 @@ func waitInWorkspace(t *testing.T, pid int, workspace string) {
 // that stays attached to that shell, is a running command too: the shell is
 // waiting for it, not hosting a session.
 func TestLiveCommandsFindsACommandAttachedToALiveShellOutsideTheWorkspace(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := testutil.RealTempDir(t)
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	// The launcher exits at once, so the middle shell is no longer related to
 	// this test process; it stays outside the workspace and keeps its child
@@ -205,7 +207,7 @@ func TestLiveCommandsFindsACommandAttachedToALiveShellOutsideTheWorkspace(t *tes
 // The worker's own command shell outside the workspace, running a
 // verification command inside it, is the worker's work and is not reported.
 func TestLiveCommandsExcludesTheWorkersOwnCommandShell(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := testutil.RealTempDir(t)
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	shell := exec.Command("sh", "-c", `(cd "$1" && exec sleep 65) & echo $! > "$2"; wait`, "verify", workspace, pidFile)
 	shell.Dir = "/"
@@ -337,7 +339,7 @@ func TestLiveCommandsSessionHelper(t *testing.T) {
 // reported, by the command its shell runs, and the provider and its MCP
 // server are not.
 func TestLiveCommandsFindsACommandTheProviderStillTracks(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := testutil.RealTempDir(t)
 	pidFile := filepath.Join(t.TempDir(), "pids")
 	// The launching shell exits at once, so the server is not this test
 	// process's descendant, as the T3 server is not the worker's. The server
@@ -398,7 +400,7 @@ func TestLiveCommandsFindsACommandTheProviderStillTracks(t *testing.T) {
 // left below the provider. The command is still reported, and the MCP servers
 // in the provider's session are not, whatever their stdin.
 func TestLiveCommandsFindsToolExecutionsWhoseShellIsGone(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := testutil.RealTempDir(t)
 	helpers := t.TempDir()
 	pidFile := filepath.Join(helpers, "pids")
 	if err := os.Symlink(os.Args[0], filepath.Join(helpers, "bwrap")); err != nil {
@@ -458,7 +460,7 @@ func TestLiveCommandsFindsToolExecutionsWhoseShellIsGone(t *testing.T) {
 // Without /proc the check cannot answer, and says so rather than reporting
 // nothing running, which would read as a clean turn end.
 func TestLiveCommandsReportsUnsupportedWithoutProc(t *testing.T) {
-	workspace := t.TempDir()
+	workspace := testutil.RealTempDir(t)
 	for _, tc := range []struct{ goos, procRoot string }{
 		{"darwin", "/proc"},
 		{"linux", filepath.Join(t.TempDir(), "missing-proc")},
