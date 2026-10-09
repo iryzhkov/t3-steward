@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func inspected(t *testing.T, path, name string, writable bool) directoryresource.Identity {
@@ -113,7 +114,7 @@ print('source-child-network-output passed')
 `
 	spec.Command = []string{"/usr/bin/python3", "-c", program, strconv.Itoa(port)}
 	var output bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(10*time.Second))
 	defer cancel()
 	if err := Run(ctx, spec, Streams{Stdout: &output, Stderr: &output}); err != nil {
 		t.Fatalf("containment failed: %v\n%s", err, output.String())

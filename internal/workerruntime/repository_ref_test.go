@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -126,7 +127,7 @@ func TestWorkerRefResolutionStructuredOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if time.Since(started) > 30*time.Second {
+			if time.Since(started) > testtiming.Bound(30*time.Second) {
 				t.Fatal("resolution was not bounded")
 			}
 			if resolution.Status != test.status || resolution.ObjectID != "" || resolution.Ref != test.ref {

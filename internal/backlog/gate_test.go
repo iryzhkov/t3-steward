@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -251,7 +252,7 @@ func h2GateRequest(dir, id string) AttemptFinalization {
 	task := artifactTestTask()
 	task.Outputs = nil
 	task.Verification = []string{"printf verified"}
-	task.Gate = &domain.TaskGate{Commands: []string{"printf gated"}, Timeout: time.Second}
+	task.Gate = &domain.TaskGate{Commands: []string{"printf gated"}, Timeout: testtiming.Bound(time.Second)}
 	attempt := artifactTestAttempt()
 	attempt.ID = id
 	return AttemptFinalization{Task: task, Attempt: attempt, WorkspaceDir: dir, ExplicitSuccess: true}

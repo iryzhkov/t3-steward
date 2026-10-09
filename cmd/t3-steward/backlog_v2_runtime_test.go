@@ -22,6 +22,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // shortTempDir is t.TempDir without the test name in the path. The coordinator
@@ -85,7 +86,8 @@ func setCoordinatorTestRoots(t *testing.T, cfg *config.Config) string {
 // coordinatorStartupLimit and coordinatorShutdownLimit bound how long
 // runCoordinatorUntilStarted waits for readiness and, once it has cancelled
 // the coordinator, for it to return. They are failure bounds, not durations a
-// passing test waits out.
+// passing test waits out. Both limits use testtiming.Bound at the call site:
+// the race factor gives startup ten minutes, below the race package timeout.
 const (
 	coordinatorStartupLimit  = 2 * time.Minute
 	coordinatorShutdownLimit = 30 * time.Second
@@ -104,7 +106,7 @@ func runCoordinatorUntilStarted(t *testing.T, cfg config.Config, logger *slog.Lo
 	t.Helper()
 	handled, err, failure := awaitCoordinatorStart(func(ctx context.Context) (bool, error) {
 		return runBacklogV2(ctx, cfg, logger)
-	}, coordinatorStartupLimit, coordinatorShutdownLimit)
+	}, testtiming.Bound(coordinatorStartupLimit), testtiming.Bound(coordinatorShutdownLimit))
 	if failure != nil {
 		t.Fatal(failure)
 	}
@@ -159,7 +161,7 @@ func awaitCoordinatorStart(
 // coordinator that never reported readiness, and must not hang on one that
 // ignores cancellation.
 func TestAwaitCoordinatorStartRefusesWhatTheStartupTestsMustNotPass(t *testing.T) {
-	const limit = 200 * time.Millisecond
+	limit := testtiming.Bound(200 * time.Millisecond)
 	ready := func(ctx context.Context) (bool, error) {
 		started, _ := ctx.Value(coordinatorStartedKey{}).(func())
 		started()
@@ -168,6 +170,20 @@ func TestAwaitCoordinatorStartRefusesWhatTheStartupTestsMustNotPass(t *testing.T
 	}
 	if handled, err, failure := awaitCoordinatorStart(ready, limit, limit); failure != nil || err != nil || !handled {
 		t.Fatalf("a clean start and shutdown: handled=%t err=%v failure=%v", handled, err, failure)
+	}
+
+	// Readiness may arrive after scheduling or startup work. Exercise the
+	// asynchronous path with a delay smaller than the scaled failure budget.
+	delayed := func(ctx context.Context) (bool, error) {
+		select {
+		case <-time.After(testtiming.Bound(20 * time.Millisecond)):
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+		return ready(ctx)
+	}
+	if handled, err, failure := awaitCoordinatorStart(delayed, limit, limit); failure != nil || err != nil || !handled {
+		t.Fatalf("a delayed start and clean shutdown: handled=%t err=%v failure=%v", handled, err, failure)
 	}
 
 	silent := func(context.Context) (bool, error) { return true, nil }
@@ -308,7 +324,7 @@ func TestRunBacklogV2CoordinatorServesAuthenticatedLocalAdmin(t *testing.T) {
 	}
 	// Generous: coordinator start-up under -race on a loaded macOS runner
 	// took longer than the two seconds this used to allow.
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(15 * time.Second))
 	for {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
@@ -349,7 +365,7 @@ func TestRunBacklogV2CoordinatorServesAuthenticatedLocalAdmin(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("coordinator did not stop")
 	}
 	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
@@ -377,7 +393,7 @@ func TestRunBacklogV2CoordinatorAcceptsNativeArchiveSubmissionAndReplay(t *testi
 	}
 	// Generous: coordinator start-up under -race on a loaded macOS runner
 	// took longer than the two seconds this used to allow.
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(15 * time.Second))
 	for {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
@@ -466,7 +482,7 @@ func TestRunBacklogV2CoordinatorAcceptsNativeArchiveSubmissionAndReplay(t *testi
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("coordinator did not stop")
 	}
 }
@@ -476,7 +492,7 @@ func TestRunBacklogV2CoordinatorAcceptsNativeArchiveSubmissionAndReplay(t *testi
 // failure: the schedule fired and moved its revision, which is the fence doing
 // its job, so the caller resubmits against the revision it now has.
 func awaitScheduleDisable(client backlogadmin.LocalClient, commandID string) (bool, error) {
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(5 * time.Second))
 	for {
 		response, err := client.Query(context.Background(), backlogadmin.Query{
 			Version: backlogadmin.Version, Kind: backlogadmin.QueryCommands,
@@ -554,7 +570,7 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 	}
 	// Generous: coordinator start-up under -race on a loaded macOS runner
 	// took longer than the two seconds this used to allow.
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(15 * time.Second))
 	for {
 		if _, err := os.Stat(socketPath); err == nil {
 			break
@@ -571,7 +587,7 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
 	var schedules backlogadmin.Response
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(testtiming.Bound(5 * time.Second))
 	for {
 		schedules, err = client.Query(context.Background(), backlogadmin.Query{
 			Version: backlogadmin.Version, Kind: backlogadmin.QuerySchedules,
@@ -595,7 +611,7 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 	// the system working, so re-read and resubmit rather than failing. Each
 	// attempt needs its own command ID, because a command is identified by it.
 	var commandID string
-	deadline = time.Now().Add(30 * time.Second)
+	deadline = time.Now().Add(testtiming.Bound(30 * time.Second))
 	for attempt := 1; ; attempt++ {
 		current, err := client.Query(context.Background(), backlogadmin.Query{
 			Version: backlogadmin.Version, Kind: backlogadmin.QuerySchedules,
@@ -642,7 +658,7 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 		t.Fatal(err)
 	}
 	defer reader.Close()
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(testtiming.Bound(5 * time.Second))
 	for {
 		records, err := reader.LoadCoordinatorRecords(context.Background())
 		if err != nil {
@@ -676,7 +692,7 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("coordinator did not stop")
 	}
 }

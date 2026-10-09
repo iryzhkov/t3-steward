@@ -17,6 +17,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -273,7 +274,7 @@ func TestPermanentCollectionFailureRealAsyncStaleFlight(t *testing.T) {
 			}
 			select {
 			case <-gate.started:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testtiming.Bound(5 * time.Second)):
 				t.Fatal("verification did not start")
 			}
 			if err := f.runtime.journal.update(func(state *journalState) error {
@@ -299,7 +300,7 @@ func TestPermanentCollectionFailureRealAsyncStaleFlight(t *testing.T) {
 			close(gate.release)
 			select {
 			case <-flight.done:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testtiming.Bound(5 * time.Second)):
 				t.Fatal("collection did not finish")
 			}
 			var permanent *permanentCollectionFailure

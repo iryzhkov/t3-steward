@@ -14,9 +14,10 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
-// awaitReleasing waits at most wait for done. If it is still pending, the
+// awaitReleasing waits at most testtiming.Bound(wait) for done. If it is still pending, the
 // FIFO at path is released by opening and closing writers until done
 // arrives, and blocked is reported, so no test leaves a reader waiting.
 func awaitReleasing[T any](t *testing.T, done <-chan T, path string, wait time.Duration) (value T, blocked bool) {
@@ -24,9 +25,9 @@ func awaitReleasing[T any](t *testing.T, done <-chan T, path string, wait time.D
 	select {
 	case value = <-done:
 		return value, false
-	case <-time.After(wait):
+	case <-time.After(testtiming.Bound(wait)):
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for {
 		select {
 		case value = <-done:
@@ -153,7 +154,9 @@ func TestCollectFailurePublishesPastAFIFOTaskConfiguration(t *testing.T) {
 // already up.
 func TestSnapshotTimeoutNamesTheStepThatWaited(t *testing.T) {
 	f := newWIPFixture(t, commitOutputs)
-	f.driver.Config.SnapshotTimeout = 300 * time.Millisecond
+	// The steps before staging must finish inside the snapshot's own time,
+	// so it is scaled for a loaded race run.
+	f.driver.Config.SnapshotTimeout = testtiming.Bound(300 * time.Millisecond)
 	writeTestFile(t, filepath.Join(f.workspace, "a.txt"), "changed\n")
 	path := filepath.Join(f.workspace, ".gitignore")
 	if err := syscall.Mkfifo(path, 0o600); err != nil {

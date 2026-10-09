@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -33,7 +35,7 @@ func TestHostInventoryManagedProjectReadiness(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(t3api.ShellSnapshot{Projects: []t3api.ProjectShell{{ID: "existing-id", Title: "existing-title"}}})
 			}))
 			defer server.Close()
-			control := t3control.New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+			control := t3control.New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 			settings := config.Default().BacklogV2
 			settings.Projects = map[string]config.V2Project{
 				"managed":          {},

@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // A FIFO named as the plan is refused rather than opened: opening it for
@@ -29,7 +31,7 @@ func TestCampaignCompileRefusesAFIFOPlanWithoutBlocking(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
 			t.Fatalf("err = %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtiming.Bound(10 * time.Second)):
 		t.Fatal("compile blocked opening a FIFO plan")
 	}
 }

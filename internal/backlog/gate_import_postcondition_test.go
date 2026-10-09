@@ -11,6 +11,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -137,7 +138,7 @@ func TestChangedOutputAfterGateFailsThroughImport(t *testing.T) {
 	req.WorkerID = "worker-a"
 	rewrite := `i=0; while [ $i -lt 400 ]; do echo bad > .s.tmp && mv .s.tmp source.txt; i=$((i+1)); done`
 	req.Task.Gate.Commands = []string{gateBackgroundChild(rewrite, done)}
-	req.Task.Gate.Timeout = 5 * time.Second
+	req.Task.Gate.Timeout = testtiming.Bound(5 * time.Second)
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "source.txt"}}
 	finalized, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, afterGate: releaseGateChild(t, done)}).Finalize(context.Background(), req)
 	if err != nil {
@@ -162,7 +163,7 @@ func finalizeWithBackgroundRewrite(t *testing.T, dir, output, rewrite string) {
 	req := h2GateRequest(dir, "attempt-1")
 	req.WorkerID = "worker-a"
 	req.Task.Gate.Commands = []string{gateBackgroundChild(rewrite, done)}
-	req.Task.Gate.Timeout = 5 * time.Second
+	req.Task.Gate.Timeout = testtiming.Bound(5 * time.Second)
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: output}}
 	finalized, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, afterGate: releaseGateChild(t, done)}).Finalize(context.Background(), req)
 	if err != nil {

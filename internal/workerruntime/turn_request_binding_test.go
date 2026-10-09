@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
@@ -167,7 +169,7 @@ func newFakeTurnT3(t *testing.T, threadID string) (*fakeTurnT3, *t3control.Contr
 		}
 	}))
 	t.Cleanup(server.Close)
-	return fake, t3control.New(t3api.New(server.URL, t3api.StaticToken("test"), 5*time.Second), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+	return fake, t3control.New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(5*time.Second)), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 }
 
 func refusal(id string, at int) fakeActivity {

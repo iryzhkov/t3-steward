@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -56,7 +58,7 @@ func busyEnrollmentWorker(t *testing.T) (*config.Config, *sqlite.Store, backlog.
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- workerruntime.ServeWorkerListener(ctx, listener, 24<<20, time.Minute, 4, host.HandleFrame)
+		done <- workerruntime.ServeWorkerListener(ctx, listener, 24<<20, testtiming.Bound(time.Minute), 4, host.HandleFrame)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 	store, err := sqlitetest.OpenMigrated(filepath.Join(root, "coordinator.db"))

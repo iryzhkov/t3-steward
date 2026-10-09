@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
@@ -52,7 +54,7 @@ func TestPersistentCoordinatorCatalogAndExecutionSessionsShareWorker(t *testing.
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- workerruntime.ServeWorkerListener(ctx, listener, 24<<20, time.Minute, 4, host.HandleFrame)
+		done <- workerruntime.ServeWorkerListener(ctx, listener, 24<<20, testtiming.Bound(time.Minute), 4, host.HandleFrame)
 	}()
 	defer func() {
 		cancel()

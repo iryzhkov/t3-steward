@@ -11,13 +11,15 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 var exchangeSessions atomic.Int64
 
 // exchangeAnswersWithin serves one snapshot exchange on host and fails the
-// test when it is not answered within the bound.
+// test when it is not answered within the bound, which callers scale with
+// testtiming.Bound.
 func exchangeAnswersWithin(t *testing.T, host *CatalogHost, within time.Duration, unblock func()) {
 	t.Helper()
 	id := fmt.Sprintf("snapshot-%d", exchangeSessions.Add(1))
@@ -53,7 +55,7 @@ func reconcileFinishes(t *testing.T, done <-chan error) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testtiming.Bound(15 * time.Second)):
 		t.Fatal("reconcile did not finish")
 	}
 }
@@ -111,7 +113,7 @@ func TestSlowPauseCompletionCheckDoesNotBlockAnExchange(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- host.Reconcile(context.Background()) }()
 	receiveWithin(t, driver.checking, 5*time.Second, "the completion check")
-	exchangeAnswersWithin(t, host, 3*time.Second, func() { driver.answer <- false })
+	exchangeAnswersWithin(t, host, testtiming.Bound(3*time.Second), func() { driver.answer <- false })
 	driver.answer <- true
 	reconcileFinishes(t, done)
 	// The collection that follows the completion needs its own observations;
@@ -200,7 +202,7 @@ func TestSlowPauseTurnObservationDoesNotBlockAnExchange(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- host.Reconcile(context.Background()) }()
 	receiveWithin(t, driver.observing, 5*time.Second, "the turn observation")
-	exchangeAnswersWithin(t, host, 3*time.Second, func() { driver.answer <- "turn-7" })
+	exchangeAnswersWithin(t, host, testtiming.Bound(3*time.Second), func() { driver.answer <- "turn-7" })
 	driver.answer <- "turn-7"
 	reconcileFinishes(t, done)
 	got := attemptRecord(t, runtime)
@@ -246,7 +248,7 @@ func TestSlowListingDoesNotBlockCacheInvalidation(t *testing.T) {
 	}()
 	select {
 	case <-invalidated:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtiming.Bound(2 * time.Second)):
 		close(inner.release)
 		t.Fatal("invalidation waited behind a slow thread listing")
 	}
@@ -323,9 +325,9 @@ func TestHungObservationsAreBoundedAndEveryAttemptIsProbed(t *testing.T) {
 		done := make(chan error, 1)
 		started := time.Now()
 		go func() { done <- host.Reconcile(context.Background()) }()
-		exchangeAnswersWithin(t, host, 2*time.Second, func() {})
+		exchangeAnswersWithin(t, host, testtiming.Bound(2*time.Second), func() {})
 		reconcileFinishes(t, done)
-		if elapsed := time.Since(started); elapsed > 1200*time.Millisecond {
+		if elapsed := time.Since(started); elapsed > testtiming.Bound(1200*time.Millisecond) {
 			t.Fatalf("tick %d took %s; want the probe budget to bound it", tick, elapsed)
 		}
 	}

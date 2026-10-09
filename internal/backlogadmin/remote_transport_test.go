@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -196,7 +197,7 @@ func TestCoordinatorExchangeHelperProcess(t *testing.T) {
 		Relay: LocalClient{
 			Path: os.Getenv(helperSocket), CoordinatorID: os.Getenv(helperCoordinator),
 			MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-			RequestTimeout: 10 * time.Second,
+			RequestTimeout: testtiming.Bound(10 * time.Second),
 		},
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
 	})
@@ -242,7 +243,7 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 		Listener: listener, Service: service, AllowedUID: uint32(os.Getuid()),
 		CoordinatorID:   testCoordinatorID,
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-		RequestTimeout: 10 * time.Second, MaxConcurrent: 8,
+		RequestTimeout: testtiming.Bound(10 * time.Second), MaxConcurrent: 8,
 	}
 	go func() { done <- server.Serve(ctx) }()
 	t.Cleanup(func() { stopLocalTransport(t, cancel, done) })
@@ -273,7 +274,7 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 			Address:          "normandy",
 			RemoteCommand:    "t3-steward",
 			Credentials:      testAdminCredentials(),
-			RequestTimeout:   30 * time.Second,
+			RequestTimeout:   testtiming.Bound(30 * time.Second),
 			MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
 			Factory: factory,
 		})
@@ -777,13 +778,13 @@ func TestLocalServerRefusesAnAssertionForAnotherCoordinator(t *testing.T) {
 		Listener: listener, Service: service, AllowedUID: uint32(os.Getuid()),
 		CoordinatorID:   testCoordinatorID,
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-		RequestTimeout: 5 * time.Second, MaxConcurrent: 4,
+		RequestTimeout: testtiming.Bound(5 * time.Second), MaxConcurrent: 4,
 	}
 	go func() { done <- server.Serve(ctx) }()
 	defer stopLocalTransport(t, cancel, done)
 	client := LocalClient{
 		Path: socketPath, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20,
-		MaxSubmissionBytes: 1 << 20, RequestTimeout: 5 * time.Second,
+		MaxSubmissionBytes: 1 << 20, RequestTimeout: testtiming.Bound(5 * time.Second),
 	}
 	for name, assertion := range map[string]*RemoteAdminAssertion{
 		"another coordinator": {Principal: "admin:omarchy-pc", Coordinator: "someone-else", RequestID: "req/1"},

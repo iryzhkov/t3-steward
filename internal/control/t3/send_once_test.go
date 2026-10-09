@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
@@ -41,7 +43,7 @@ func TestSendOnceUsesStableIdentitiesAndSkipsADeliveredMessage(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"thread": map[string]any{"id": "thread", "messages": messages}})
 	}))
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second), nil, false)
+	control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)), nil, false)
 	thread := domain.Thread{ID: "thread", ModelSelection: map[string]any{"provider": "test"}}
 
 	for range 2 {

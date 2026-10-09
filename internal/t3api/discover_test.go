@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func writeRuntimeState(t *testing.T, dataDir, origin string) {
@@ -32,8 +34,10 @@ func TestAwaitURLWaitsForTheServerToWriteItsRuntimeState(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		writeRuntimeState(t, dataDir, "http://127.0.0.1:3773/")
 	}()
+	retry := quickRetry
+	retry.Timeout = testtiming.Bound(retry.Timeout)
 	var retries int
-	url, err := AwaitURL(context.Background(), "", dataDir, quickRetry, func(err error, delay time.Duration) {
+	url, err := AwaitURL(context.Background(), "", dataDir, retry, func(err error, delay time.Duration) {
 		retries++
 		if !strings.Contains(err.Error(), "is the T3 server running?") || delay <= 0 || delay > quickRetry.MaxDelay {
 			t.Errorf("retry reported err=%v delay=%s", err, delay)
@@ -56,7 +60,7 @@ func TestAwaitURLGivesUpAfterItsBound(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "is the T3 server running?") || !strings.Contains(err.Error(), "waited 150ms") {
 		t.Fatalf("err = %v", err)
 	}
-	if elapsed < retry.Timeout || elapsed > 5*time.Second {
+	if elapsed < retry.Timeout || elapsed > testtiming.Bound(5*time.Second) {
 		t.Fatalf("gave up after %s, want about %s", elapsed, retry.Timeout)
 	}
 }
@@ -82,7 +86,7 @@ func TestAwaitURLDoesNotWaitWhenItNeedNot(t *testing.T) {
 	retry = quickRetry
 	retry.Timeout = time.Hour
 	started := time.Now()
-	if _, err := AwaitURL(ctx, "", t.TempDir(), retry, nil); err == nil || time.Since(started) > 5*time.Second {
+	if _, err := AwaitURL(ctx, "", t.TempDir(), retry, nil); err == nil || time.Since(started) > testtiming.Bound(5*time.Second) {
 		t.Fatalf("a cancelled wait returned err=%v after %s", err, time.Since(started))
 	}
 }

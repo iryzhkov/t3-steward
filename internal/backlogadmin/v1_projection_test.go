@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // violations lists the key paths of value, the JSON at path, that a strict
@@ -79,7 +80,7 @@ func TestV1ReadsKeepTheRC115ShapeForEveryQuery(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = conn.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 			sent := query
 			if err := writeLocalJSON(conn, localRequest{Version: LocalTransportVersion, Operation: localOperationQuery, Query: &sent}); err != nil {
 				t.Fatal(err)
@@ -236,7 +237,7 @@ func TestMutationAnswersKeepTheRC115Shape(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = conn.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 			request := tc.request
 			request.Version = LocalTransportVersion
 			if err := writeLocalJSON(conn, request); err != nil {

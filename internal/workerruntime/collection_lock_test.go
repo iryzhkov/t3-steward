@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -98,12 +99,14 @@ func seedAttempt(t *testing.T, runtime *Runtime, record AttemptRecord) {
 	}
 }
 
+// receiveWithin fails the test unless ch delivers within
+// testtiming.Bound(within).
 func receiveWithin(t *testing.T, ch <-chan struct{}, within time.Duration, what string) {
 	t.Helper()
 	select {
 	case <-ch:
-	case <-time.After(within):
-		t.Fatalf("%s did not happen within %s", what, within)
+	case <-time.After(testtiming.Bound(within)):
+		t.Fatalf("%s did not happen within %s", what, testtiming.Bound(within))
 	}
 }
 
@@ -157,7 +160,7 @@ func TestExchangeIsAnsweredWhileCollectionRuns(t *testing.T) {
 	var got answer
 	select {
 	case got = <-answered:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtiming.Bound(3 * time.Second)):
 		release()
 		t.Fatal("the snapshot exchange waited behind a running collection")
 	}
@@ -191,7 +194,7 @@ func TestExchangeIsAnsweredWhileCollectionRuns(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("reconcile did not finish after the collection did")
 	}
 	// The reconcile that started the collection took its result once it
@@ -240,7 +243,7 @@ func TestConcurrentPassesCollectOnce(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(20 * time.Second):
+	case <-time.After(testtiming.Bound(20 * time.Second)):
 		t.Fatal("the second pass did not finish")
 	}
 	record := attemptRecord(t, first)

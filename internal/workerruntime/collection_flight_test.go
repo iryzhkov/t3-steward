@@ -11,6 +11,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -108,7 +109,9 @@ func TestStoppedCollectionOutlivesReconcileDeadline(t *testing.T) {
 			workspaceReady: true,
 			observations:   []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
 		},
-		verify: 600 * time.Millisecond,
+		// The verification, the pass deadline and the window are scaled
+		// together, so their proportions are the same under the race detector.
+		verify: testtiming.Bound(600 * time.Millisecond),
 	}
 	runtime := newSlowVerifyRuntime(t, root, driver)
 	if _, err := runtime.AcceptOffers(context.Background(), workerproto.AssignmentOffers{Offers: []workerproto.AssignmentOffer{testOffer(t)}}); err != nil {
@@ -118,8 +121,8 @@ func TestStoppedCollectionOutlivesReconcileDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const tick = 100 * time.Millisecond
-	stop := time.Now().Add(5 * time.Second)
+	tick := testtiming.Bound(100 * time.Millisecond)
+	stop := time.Now().Add(testtiming.Bound(5 * time.Second))
 	phase := Phase("")
 	for passes := 0; time.Now().Before(stop); passes++ {
 		ctx, cancel := context.WithTimeout(context.Background(), tick)
@@ -175,8 +178,11 @@ func TestRunningCollectionEndsWithWorkerLifetime(t *testing.T) {
 	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	err := runtime.Reconcile(ctx)
+	// The pass starts the collection without waiting for it, so its deadline
+	// only bounds the pass's own work and is not what leaves the collection
+	// running past it.
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
+	err := runtime.Reconcile(withCollectionPass(ctx, &collectionPass{}))
 	cancel()
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +190,7 @@ func TestRunningCollectionEndsWithWorkerLifetime(t *testing.T) {
 	shutdown()
 	// The daemon drains on shutdown, so no verification it started is still
 	// running when the next process collects the attempt again.
-	drainCtx, stopDrain := context.WithTimeout(context.Background(), 5*time.Second)
+	drainCtx, stopDrain := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
 	defer stopDrain()
 	if err := DrainCollections(drainCtx); err != nil {
 		t.Fatal(err)
@@ -209,7 +215,9 @@ func TestRunningCollectionEndsWithWorkerLifetime(t *testing.T) {
 }
 
 // startSlowCollection claims an attempt, stops it, and runs one reconcile pass
-// that starts its collection and leaves it running in the background.
+// that starts its collection and leaves it running in the background. verify
+// is scaled by testtiming.Bound, so the collection is still running when the
+// pass has returned on a loaded host too.
 func startSlowCollection(t *testing.T, verify time.Duration) (*Runtime, *slowVerifyDriver) {
 	t.Helper()
 	root := t.TempDir()
@@ -219,7 +227,7 @@ func startSlowCollection(t *testing.T, verify time.Duration) (*Runtime, *slowVer
 			workspaceReady: true,
 			observations:   []backlog.DispatchThreadState{backlog.DispatchThreadStopped},
 		},
-		verify: verify,
+		verify: testtiming.Bound(verify),
 	}
 	runtime := newSlowVerifyRuntime(t, root, driver)
 	if _, err := runtime.AcceptOffers(context.Background(), workerproto.AssignmentOffers{Offers: []workerproto.AssignmentOffer{testOffer(t)}}); err != nil {
@@ -228,8 +236,10 @@ func startSlowCollection(t *testing.T, verify time.Duration) (*Runtime, *slowVer
 	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	err := runtime.Reconcile(ctx)
+	// The pass does not wait for the collection it starts; its deadline only
+	// bounds the pass's own work.
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
+	err := runtime.Reconcile(withCollectionPass(ctx, &collectionPass{}))
 	cancel()
 	if err != nil {
 		t.Fatal(err)
@@ -253,7 +263,7 @@ func attemptRecord(t *testing.T, runtime *Runtime) AttemptRecord {
 // its result is published but not yet taken by any pass.
 func waitCollectionFinished(t *testing.T, runtime *Runtime) AttemptRecord {
 	t.Helper()
-	stop := time.Now().Add(5 * time.Second)
+	stop := time.Now().Add(testtiming.Bound(5 * time.Second))
 	for time.Now().Before(stop) {
 		record := attemptRecord(t, runtime)
 		if !runtime.collectionRunning(record) {
@@ -366,7 +376,7 @@ func TestDeferredStopSurvivesFailedCollection(t *testing.T) {
 	t.Cleanup(func() {
 		shutdown()
 		if flight != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
 			defer cancel()
 			select {
 			case <-flight.done:
@@ -382,9 +392,14 @@ func TestDeferredStopSurvivesFailedCollection(t *testing.T) {
 	if err := runtime.markPhase("assignment-1", PhaseStopped, "", driver.workspace, "thread-1"); err != nil {
 		t.Fatal(err)
 	}
+	// No pass here waits for a collection: the collection only finishes when
+	// the test releases it, and a pass either starts it under a collectionPass
+	// or finds it already running or finished. The deadline therefore only
+	// bounds a pass's own work. At 50ms a loaded host exceeded it and the pass
+	// failed with context deadline exceeded.
 	reconcile := func(pass *collectionPass) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
 		defer cancel()
 		if pass != nil {
 			ctx = withCollectionPass(ctx, pass)
@@ -426,7 +441,7 @@ func TestDeferredStopSurvivesFailedCollection(t *testing.T) {
 	// Wait on this collection's publication signal, without spinning journal
 	// reads against 50ms pass deadlines or sleeping to guess its completion.
 	close(release)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
 	defer cancel()
 	select {
 	case <-flight.done:

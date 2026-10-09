@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // Frozen d232756 RuntimeStatus: kept independent of the live type.
@@ -84,7 +85,7 @@ func TestIntakeStatusStrictParentAndNewLocalClient(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			_ = conn.SetDeadline(time.Now().Add(time.Second))
+			_ = conn.SetDeadline(time.Now().Add(testtiming.Bound(time.Second)))
 			err = writeLocalJSON(conn, localRequest{Version: LocalTransportVersion, Operation: localOperationQuery, Query: &Query{Version: Version, Kind: QueryStatus}})
 			if err != nil {
 				t.Fatal(err)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // TestConsultationsPrefeatureCoordinatorMeasurements records the existing
@@ -176,7 +177,7 @@ func TestConsultationsPrefeatureIdleCoordinatorRSS(t *testing.T) {
 	}
 	rssSamples := make([]int64, 0, samples)
 	for i := 0; i < samples; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(15*time.Second))
 		command := exec.CommandContext(ctx, executable, "-test.run=^TestConsultationsPrefeatureIdleCoordinatorRSS$", "-test.count=1")
 		command.Env = append(os.Environ(), idleCoordinatorChild+"=1")
 		stdin, err := command.StdinPipe()

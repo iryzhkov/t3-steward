@@ -15,6 +15,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -77,7 +78,7 @@ func runQualificationTopology(t *testing.T, clientDelay time.Duration) {
 	// socket took longer than the 3 s this wait used to allow. The wait is
 	// generous, and a coordinator that exits ends it at once with its output.
 	socket := filepath.Join(root, "state.db.admin.sock")
-	deadline := time.NewTimer(qualificationSocketWait)
+	deadline := time.NewTimer(testtiming.Bound(qualificationSocketWait))
 	defer deadline.Stop()
 	for {
 		if _, err := os.Stat(socket); err == nil {
@@ -89,7 +90,7 @@ func runQualificationTopology(t *testing.T, clientDelay time.Duration) {
 		case <-deadline.C:
 			_ = coordinator.Process.Kill()
 			<-exited
-			t.Fatalf("coordinator socket was not created within %s\n%s", qualificationSocketWait, coordinatorOutput.String())
+			t.Fatalf("coordinator socket was not created within %s\n%s", testtiming.Bound(qualificationSocketWait), coordinatorOutput.String())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -162,7 +163,8 @@ func runQualificationTopology(t *testing.T, clientDelay time.Duration) {
 }
 
 // qualificationSocketWait bounds how long the topology waits for the
-// coordinator's admin socket.
+// coordinator's admin socket; it is scaled by testtiming.Bound where it is
+// used.
 const qualificationSocketWait = 30 * time.Second
 
 // TestBacklogV2AuthorizedMultiHostCanary is opt-in because it contacts the
@@ -258,7 +260,7 @@ func runQualificationCoordinator(t *testing.T, root string) {
 	t.Helper()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, testtiming.Bound(30*time.Second))
 	defer cancel()
 	if err := runBacklogV2Coordinator(ctx, qualificationConfig(root), slog.New(slog.NewTextHandler(io.Discard, nil))); err != nil {
 		t.Fatal(err)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestKernelExplicitWriterAndSupervisorCancellation(t *testing.T) {
@@ -25,7 +26,7 @@ func TestKernelExplicitWriterAndSupervisorCancellation(t *testing.T) {
 	spec.Cwd = "/data/0"
 	spec.Command = []string{"/bin/sh", "-c", "printf changed > source; printf published > /workspace/result"}
 	var output bytes.Buffer
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
 	err := Run(ctx, spec, Streams{Stdout: &output, Stderr: &output})
 	cancel()
 	if err != nil {
@@ -52,7 +53,7 @@ time.sleep(10)
 `}
 	reader, writer := io.Pipe()
 	defer reader.Close()
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {

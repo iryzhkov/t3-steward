@@ -15,6 +15,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // refusedTurnStartT3 is a T3 server whose only thread had its first turn
@@ -58,7 +59,7 @@ func refusedTurnStartT3(t *testing.T, threadID string) *t3control.Control {
 		}
 	}))
 	t.Cleanup(server.Close)
-	return t3control.New(t3api.New(server.URL, t3api.StaticToken("test"), 5*time.Second), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+	return t3control.New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(5*time.Second)), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 }
 
 // Field defect 2026-10-02: T3 refused a task's first turn and the attempt sat
@@ -116,7 +117,7 @@ func TestRefusedFirstTurnStartFailsTheAttemptWithT3sReason(t *testing.T) {
 	if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(started); elapsed > 3*time.Second {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(3*time.Second) {
 		t.Fatalf("collection waited %s for an assistant message a refused turn can never write", elapsed)
 	}
 	if len(publisher.results) != 1 {

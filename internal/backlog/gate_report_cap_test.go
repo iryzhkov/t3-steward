@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // failLastGateRunner succeeds every gate command except the last, which fails
@@ -40,7 +41,7 @@ func TestGateReportCapUsesUploadedEncoding(t *testing.T) {
 	}
 	run := func(n int) (domain.Task, GateReport) {
 		req := h2GateRequest(h2GateRepository(t), "cap")
-		req.Task.Gate = &domain.TaskGate{Commands: commands, Timeout: 5 * time.Second}
+		req.Task.Gate = &domain.TaskGate{Commands: commands, Timeout: testtiming.Bound(5 * time.Second)}
 		runner := &failLastGateRunner{last: commands[len(commands)-1], reason: strings.Repeat("<", n)}
 		report, _, err := (AttemptFinalizer{StorageRoot: t.TempDir(), Processes: runner}).runGate(context.Background(), req)
 		if err != nil {

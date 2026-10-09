@@ -14,6 +14,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 const (
@@ -59,7 +60,7 @@ func serveFakeCoordinator(t *testing.T, statePath string, answer func(map[string
 
 func (f *fakeLocalCoordinator) serve(conn net.Conn) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 	var size uint32
 	if binary.Read(conn, binary.BigEndian, &size) != nil || size > 1<<20 {
 		return

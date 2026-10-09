@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 )
 
@@ -107,7 +109,7 @@ func TestContainedTransportPinsSocketAndRejectsReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
-	client, err := NewContained(identity, time.Second)
+	client, err := NewContained(identity, testtiming.Bound(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +156,7 @@ func TestPinnedControlSocketSurvivesPathSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The already-open inode remains usable; a fresh lookup refuses the symlink.
-	conn, err := net.DialTimeout("unix", fmt.Sprintf("/proc/self/fd/%d", socket.Fd()), time.Second)
+	conn, err := net.DialTimeout("unix", fmt.Sprintf("/proc/self/fd/%d", socket.Fd()), testtiming.Bound(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +176,7 @@ func TestContainedTransportRejectsTokenEscape(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(path, "token")); err != nil {
 		t.Fatal(err)
 	}
-	client, err := NewContained(identity, time.Second)
+	client, err := NewContained(identity, testtiming.Bound(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}

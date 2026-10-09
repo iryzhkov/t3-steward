@@ -15,6 +15,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -245,7 +246,7 @@ func receiveM5Activation(t *testing.T, active <-chan config.Config) config.Confi
 	select {
 	case cfg := <-active:
 		return cfg
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtiming.Bound(10 * time.Second)):
 		t.Fatal("timed out waiting for configuration activation")
 		return config.Config{}
 	}
@@ -256,7 +257,7 @@ func receiveM5Activation(t *testing.T, active <-chan config.Config) config.Confi
 // one receipt file, so an outcome alone can match the previous reload's.
 func waitM5Receipt(t *testing.T, fixture *reloadFixture, outcome, digest string) backlogadmin.ReloadReceipt {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for time.Now().Before(deadline) {
 		receipt, err := readReloadReceipt(fixture.receipts.path)
 		if err == nil && receipt.Outcome == outcome && (digest == "" || receipt.ConfigurationDigest == digest) {

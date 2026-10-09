@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -27,7 +29,7 @@ func TestTaskWaitRemoteExchangeHelper(t *testing.T) {
 	server, err := backlogadmin.NewRemoteServer(backlogadmin.RemoteServerConfig{
 		CoordinatorID:   "test-coordinator",
 		Clients:         map[string]backlogadmin.AdminCredentials{credentials.ClientPrincipal: credentials},
-		Relay:           backlogadmin.LocalClient{Path: os.Getenv("T3_TASK_WAIT_TEST_SOCKET"), CoordinatorID: "test-coordinator", MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: 10 * time.Second},
+		Relay:           backlogadmin.LocalClient{Path: os.Getenv("T3_TASK_WAIT_TEST_SOCKET"), CoordinatorID: "test-coordinator", MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: testtiming.Bound(10 * time.Second)},
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
 	})
 	if err == nil {
@@ -64,7 +66,7 @@ func remoteTaskWaitFixture(t *testing.T) (config.Config, *sqlite.Store, *sqlite.
 	cfg.BacklogV2.LocalWorker.ID = "worker"
 	cfg.BacklogV2.CoordinatorClient = config.V2CoordinatorClient{
 		CoordinatorID: "test-coordinator", Address: "disposable.invalid", Connection: "ssh", RemoteCommand: "t3-steward", Credential: "secretref:f03-admin/test",
-		RequestTimeout: config.Duration(10 * time.Second), MessageLimits: config.V2MessageLimits{MaxBytes: 1 << 20, MaxFiles: 100, MaxArtifactBytes: 1 << 20},
+		RequestTimeout: config.Duration(testtiming.Bound(10 * time.Second)), MessageLimits: config.V2MessageLimits{MaxBytes: 1 << 20, MaxFiles: 100, MaxArtifactBytes: 1 << 20},
 	}
 	worker, err := sqlitetest.OpenMigrated(cfg.StatePath)
 	if err != nil {

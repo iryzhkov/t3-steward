@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 var (
@@ -265,7 +266,7 @@ func TestSSHTransportLocalMultiProcess(t *testing.T) {
 	var invokedName string
 	var invokedArgs []string
 	transport, err := NewSSHTransport(SSHConfig{
-		Address: "local-test", RemoteCommand: "worker-exchange", RemoteArguments: []string{"control"}, RequestTimeout: 2 * time.Second,
+		Address: "local-test", RemoteCommand: "worker-exchange", RemoteArguments: []string{"control"}, RequestTimeout: testtiming.Bound(2 * time.Second),
 		ConnectTimeout: time.Second, MaxMessageBytes: 64 << 10, MaxStderrBytes: 1024,
 		ResponsePrincipal: "worker:normandy", ResponseKeyID: "worker-key", ResponseSecret: testSecret,
 		Factory: func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -300,7 +301,7 @@ func TestSSHTransportDropRetryTimeoutCancellationAndLimits(t *testing.T) {
 	request := signedLiveEnvelope(t)
 	var calls atomic.Int32
 	transport, err := NewSSHTransport(SSHConfig{
-		Address: "local-test", RemoteCommand: "worker-exchange", RequestTimeout: 2 * time.Second,
+		Address: "local-test", RemoteCommand: "worker-exchange", RequestTimeout: testtiming.Bound(2 * time.Second),
 		ConnectTimeout: time.Second, MaxMessageBytes: 64 << 10, MaxStderrBytes: 1024,
 		ResponsePrincipal: "worker:normandy", ResponseKeyID: "worker-key", ResponseSecret: testSecret,
 		Factory: func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
@@ -324,13 +325,13 @@ func TestSSHTransportDropRetryTimeoutCancellationAndLimits(t *testing.T) {
 	_, err = timeoutTransport.RoundTrip(context.Background(), request)
 	assertProtocolCode(t, err, ErrorTimeout)
 
-	cancelTransport := localHelperTransportWithLimits(t, "sleep", time.Second, 64<<10)
+	cancelTransport := localHelperTransportWithLimits(t, "sleep", testtiming.Bound(time.Second), 64<<10)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err = cancelTransport.RoundTrip(ctx, request)
 	assertProtocolCode(t, err, ErrorCancelled)
 
-	limitTransport := localHelperTransportWithLimits(t, "oversize", 5*time.Second, 1024)
+	limitTransport := localHelperTransportWithLimits(t, "oversize", testtiming.Bound(5*time.Second), 1024)
 	_, err = limitTransport.RoundTrip(context.Background(), request)
 	assertProtocolCode(t, err, ErrorLimit)
 
@@ -568,7 +569,7 @@ func echoHandler(_ context.Context, envelope Envelope) (MessageType, any, error)
 }
 
 func localHelperTransport(t *testing.T, mode string) *SSHTransport {
-	return localHelperTransportWithLimits(t, mode, 2*time.Second, 64<<10)
+	return localHelperTransportWithLimits(t, mode, testtiming.Bound(2*time.Second), 64<<10)
 }
 
 func localHelperTransportWithLimits(t *testing.T, mode string, timeout time.Duration, maxBytes int64) *SSHTransport {

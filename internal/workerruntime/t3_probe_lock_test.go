@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -96,7 +97,7 @@ func TestSlowTurnObservationDoesNotBlockAnExchange(t *testing.T) {
 	var got answer
 	select {
 	case got = <-answered:
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtiming.Bound(3 * time.Second)):
 		driver.answer <- "turn-1"
 		t.Fatal("the snapshot exchange waited behind a slow T3 turn observation")
 	}
@@ -127,7 +128,7 @@ func TestSlowTurnObservationDoesNotBlockAnExchange(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testtiming.Bound(15 * time.Second)):
 		t.Fatal("reconcile did not finish after the observation answered")
 	}
 	record := attemptRecord(t, runtime)
@@ -160,7 +161,7 @@ func TestTurnObservationStaleAfterUnlockIsDiscarded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testtiming.Bound(15 * time.Second)):
 		t.Fatal("reconcile did not finish after the observation answered")
 	}
 	record := attemptRecord(t, runtime)
@@ -206,7 +207,7 @@ func TestSlowWorkspaceInspectionDoesNotBlockAnExchange(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testtiming.Bound(3 * time.Second)):
 		close(driver.resume)
 		t.Fatal("the snapshot exchange waited behind a slow workspace inspection")
 	}
@@ -216,7 +217,7 @@ func TestSlowWorkspaceInspectionDoesNotBlockAnExchange(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testtiming.Bound(15 * time.Second)):
 		t.Fatal("reconcile did not finish after the inspection answered")
 	}
 	if got := attemptRecord(t, runtime); got.Phase != PhasePrepared {

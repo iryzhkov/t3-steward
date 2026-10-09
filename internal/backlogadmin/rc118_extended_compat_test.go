@@ -15,6 +15,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func rc118RankedService(t *testing.T) *Service {
@@ -59,7 +60,7 @@ func TestRC118ReadsFreezeRankedReceiptsAtEveryDepth(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer conn.Close()
-				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				_ = conn.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 				if err := writeLocalJSON(conn, localRequest{Version: LocalTransportVersion, Operation: localOperationQuery, Query: &q}); err != nil {
 					t.Fatal(err)
 				}

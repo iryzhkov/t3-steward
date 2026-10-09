@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
@@ -27,7 +29,7 @@ func lookupServer(t *testing.T, shell, index []map[string]any) *Control {
 		}
 	}))
 	t.Cleanup(server.Close)
-	return New(t3api.New(server.URL, t3api.StaticToken("token"), time.Second), nil, false)
+	return New(t3api.New(server.URL, t3api.StaticToken("token"), testtiming.Bound(time.Second)), nil, false)
 }
 
 // LookupThread says which of four things T3's answer means for a thread, and

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // This exercises an actual independent user service. The process is a bounded
@@ -29,11 +31,11 @@ func TestSupervisorSystemdSurvivesCallerCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.Executable = executable
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(10*time.Second))
 	first, err := manager.Start(ctx, launch)
 	cancel()
 	defer func() {
-		ctx, stop := context.WithTimeout(context.Background(), 40*time.Second)
+		ctx, stop := context.WithTimeout(context.Background(), testtiming.Bound(40*time.Second))
 		defer stop()
 		if _, err := manager.Stop(ctx, launch); err != nil {
 			t.Errorf("fixture cleanup: %v", err)
@@ -43,7 +45,7 @@ func TestSupervisorSystemdSurvivesCallerCancellation(t *testing.T) {
 		t.Fatalf("start: %+v %v", first, err)
 	}
 	recovered := Supervisor{Root: manager.Root, Executable: manager.Executable}
-	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel = context.WithTimeout(context.Background(), testtiming.Bound(10*time.Second))
 	defer cancel()
 	same, err := recovered.Start(ctx, launch)
 	if err != nil || same.InvocationID != first.InvocationID || same.State != "active/running" || same.Stopped {

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
 
@@ -18,7 +20,7 @@ func TestUpdateThreadTitleDispatchesMetaUpdateWithTitleOnly(t *testing.T) {
 	recorder := &dispatchRecorder{}
 	server := httptest.NewServer(recorder)
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 	if err := control.UpdateThreadTitle(context.Background(), "thread-1", "[Steward] M16 · executor · running"); err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +48,7 @@ func TestUpdateThreadTitleRefusesEmptyInputAndReportsRejection(t *testing.T) {
 	recorder := &dispatchRecorder{status: http.StatusBadRequest, body: `{"error":"rejected"}`}
 	server := httptest.NewServer(recorder)
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 	if err := control.UpdateThreadTitle(context.Background(), "", "title"); err == nil {
 		t.Fatal("an empty thread id was accepted")
 	}

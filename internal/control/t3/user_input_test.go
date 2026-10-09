@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
@@ -31,7 +33,7 @@ func TestUserInputEventsDecodesTheQuestionCardAndItsAnswer(t *testing.T) {
 		_, _ = w.Write([]byte(userInputDetail))
 	}))
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second), nil, true)
+	control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)), nil, true)
 	events, err := control.UserInputEvents(context.Background(), "relay")
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +93,7 @@ func TestStartAskRelayCreatesTheThreadAndItsTurnWithDerivedIdentity(t *testing.T
 		_ = json.NewEncoder(w).Encode(map[string]any{"sequence": len(commands)})
 	}))
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second), nil, false)
+	control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)), nil, false)
 	start := domain.AskRelayStart{AskID: "tw-ask-1", ThreadID: domain.AskRelayThreadID("tw-ask-1"), ProjectID: "p",
 		Title: "Ask run/task: Pick one", Instance: "claudeAgent", Model: "claude-haiku-4-5", Prompt: "ask it"}
 	for range 2 {

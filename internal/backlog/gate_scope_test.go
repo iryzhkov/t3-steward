@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // A request with KillRemaining clears its scope before it starts and after it
@@ -104,7 +105,7 @@ func TestGateScopeCleanupFailureIsNotReportedAsTimeout(t *testing.T) {
 	run := writeExecutable(t, fake, "systemd-run", fmt.Sprintf("#!/bin/sh\ntouch %q\n", ran))
 	ctl := writeExecutable(t, fake, "systemctl", fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = show ]; then if [ -e %q ]; then echo active; else echo inactive; fi; fi\n", ran))
 	req := h2GateRequest(dir, "attempt-1")
-	req.Task.Gate = &domain.TaskGate{Commands: []string{"true"}, Timeout: 500 * time.Millisecond}
+	req.Task.Gate = &domain.TaskGate{Commands: []string{"true"}, Timeout: testtiming.Bound(500 * time.Millisecond)}
 	result, err := (AttemptFinalizer{StorageRoot: t.TempDir(), Processes: SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: 1500 * time.Millisecond}}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -125,7 +126,7 @@ func TestSystemdScopeRunnerKillRemainingDirectClearScope20ms(t *testing.T) {
 	}
 	started := time.Now()
 	err := runner.clearScope("t3-steward-direct-20ms.scope")
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(time.Second) {
 		t.Fatalf("direct clearScope took %s despite a 20ms cleanup bound", elapsed)
 	}
 	var cleanup *ScopeCleanupError
@@ -144,7 +145,7 @@ func TestScopeCleanupDeadlineDuringQueryKeepsObservedState(t *testing.T) {
 	fake := t.TempDir()
 	asked := filepath.Join(fake, "asked")
 	ctl := writeExecutable(t, fake, "systemctl", fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = show ]; then\n  if [ -e %q ]; then exec sleep 10; fi\n  touch %q\n  echo active\nfi\n", asked, asked))
-	err := (SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: 500 * time.Millisecond}).clearScope("t3-steward-test.scope")
+	err := (SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: testtiming.Bound(500 * time.Millisecond)}).clearScope("t3-steward-test.scope")
 	var cleanup *ScopeCleanupError
 	if !errors.As(err, &cleanup) || cleanup.Detail != "state active" {
 		t.Fatalf("deadline during a state query reported as %v", err)
@@ -183,12 +184,12 @@ func TestGateKillFailureMustNotApproveBadOutput(t *testing.T) {
 	fake := t.TempDir()
 	ctl := writeExecutable(t, fake, "systemctl", fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = kill ]; then\n  n=$(($(cat %[1]q 2>/dev/null || echo 0) + 1)); echo $n > %[1]q\n  if [ $n -gt 1 ]; then echo simulated-user-manager-kill-failure >&2; exit 1; fi\nfi\nexec %[2]q \"$@\"\n", filepath.Join(fake, "kills"), systemctlPath))
 	agent := `(inotifywait -qq -e open big.bin; printf 'bad\n' > out.txt) >/dev/null 2>&1 </dev/null & sleep 0.3`
-	req.Task.Gate = &domain.TaskGate{Commands: []string{agent, "grep -qx good out.txt"}, Timeout: 5 * time.Second}
+	req.Task.Gate = &domain.TaskGate{Commands: []string{agent, "grep -qx good out.txt"}, Timeout: testtiming.Bound(5 * time.Second)}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "big.bin"}, {Name: "out.txt"}}
 	t.Cleanup(func() {
 		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))).Run()
 	})
-	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: time.Second}}).Finalize(context.Background(), req)
+	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: testtiming.Bound(time.Second)}}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +241,7 @@ func TestGateChildCannotRewriteUntrackedOutputBeforeDigest(t *testing.T) {
 	id := fmt.Sprintf("gate-digest-%d", time.Now().UnixNano())
 	req := h2GateRequest(dir, id)
 	agent := `(inotifywait -qq -e open big.bin; printf 'bad\n' > out.txt) >/dev/null 2>&1 </dev/null & sleep 0.3`
-	req.Task.Gate = &domain.TaskGate{Commands: []string{agent, "grep -qx good out.txt"}, Timeout: 5 * time.Second}
+	req.Task.Gate = &domain.TaskGate{Commands: []string{agent, "grep -qx good out.txt"}, Timeout: testtiming.Bound(5 * time.Second)}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "big.bin"}, {Name: "out.txt"}}
 	t.Cleanup(func() {
 		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))).Run()
@@ -272,7 +273,9 @@ func TestGateRefinalizationAfterBackgroundChild(t *testing.T) {
 	dir := h2GateRepository(t)
 	id := fmt.Sprintf("gate-retry-%d", time.Now().UnixNano())
 	req := h2GateRequest(dir, id)
-	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt && { sleep 20 >/dev/null 2>&1 </dev/null & }"}, Timeout: 10 * time.Second}
+	// Keep the child alive beyond the scaled gate budget so waiting for it
+	// cannot hide a regression in scope cleanup or reuse.
+	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt && { sleep 120 >/dev/null 2>&1 </dev/null & }"}, Timeout: testtiming.Bound(10 * time.Second)}
 	unit := processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))
 	t.Cleanup(func() {
 		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", unit).Run()

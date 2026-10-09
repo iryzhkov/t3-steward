@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestParse(t *testing.T) {
@@ -148,7 +149,7 @@ func TestRunSIGINT(t *testing.T) {
 		}
 		os.Exit(0)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(10*time.Second))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRunSIGINT$")
 	cmd.Env = append(os.Environ(), "STEWARD_WAIT_SIGINT_HELPER=1")

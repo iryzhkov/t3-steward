@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func gateBindingGit(t *testing.T, dir string, args ...string) string {
@@ -28,7 +29,7 @@ func gateBindingFinalize(t *testing.T, dir, base, revision string) GateReport {
 	t.Helper()
 	storage := t.TempDir()
 	req := h2GateRequest(dir, "attempt-binding")
-	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt"}, Timeout: 5 * time.Second}
+	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt"}, Timeout: testtiming.Bound(5 * time.Second)}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "handoff", Commit: &domain.CommitOutput{Revision: revision}}}
 	req.Repository, req.BaseCommit = dir, base
 	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "campaign-refs")}

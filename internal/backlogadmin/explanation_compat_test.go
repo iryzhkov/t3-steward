@@ -14,6 +14,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // Frozen d2e8276 (rc.115) Blocker and Explanation: kept independent of the
@@ -92,7 +93,7 @@ func TestExplanationStrictParentAndNewLocalClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(time.Second))
+	_ = conn.SetDeadline(time.Now().Add(testtiming.Bound(time.Second)))
 	query := explanationQuery
 	if err := writeLocalJSON(conn, localRequest{Version: LocalTransportVersion, Operation: localOperationQuery, Query: &query}); err != nil {
 		t.Fatal(err)

@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // killOnCleanup ends a test process however the test leaves.
@@ -40,7 +42,7 @@ func startDetached(t *testing.T, dir, command string) int {
 	killOnCleanup(t, pid)
 	// The background child may not have replaced the shell's program yet.
 	program := strings.Fields(command)[0]
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(testtiming.Bound(10 * time.Second)); ; time.Sleep(10 * time.Millisecond) {
 		if raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil && strings.HasPrefix(string(raw), program+"\x00") {
 			break
 		}
@@ -136,7 +138,7 @@ func TestLiveCommandsExcludesTheWorkersOwnChildren(t *testing.T) {
 // once every one of its processes is running.
 func waitForPIDs(t *testing.T, path string, count int) []int {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for {
 		if raw, err := os.ReadFile(path); err == nil {
 			if fields := strings.Fields(string(raw)); len(fields) == count {
@@ -163,7 +165,7 @@ func waitForPIDs(t *testing.T, path string, count int) []int {
 // its presence in a report, or its absence, means anything.
 func waitInWorkspace(t *testing.T, pid int, workspace string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for {
 		if cwd, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "cwd")); err == nil && cwd == workspace {
 			return
@@ -358,7 +360,7 @@ func TestLiveCommandsFindsACommandTheProviderStillTracks(t *testing.T) {
 	// Both sleeps may still be replacing the shell's program; the scan is
 	// repeated until both run, and its last answer is checked.
 	var report LiveCommandReport
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(testtiming.Bound(10 * time.Second)); ; time.Sleep(10 * time.Millisecond) {
 		var err error
 		if report, err = scanLiveCommandsIn("linux", "/proc", os.Getpid(), workspace); err != nil {
 			t.Fatal(err)
@@ -421,7 +423,7 @@ func TestLiveCommandsFindsToolExecutionsWhoseShellIsGone(t *testing.T) {
 	// Wait until both commands have replaced their shells, as the provider's
 	// command has by the time an agent ends its turn.
 	for _, pid := range []int{inPlace, wrapped} {
-		for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		for deadline := time.Now().Add(testtiming.Bound(10 * time.Second)); ; time.Sleep(10 * time.Millisecond) {
 			if raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline")); err == nil && strings.HasPrefix(string(raw), "sleep\x00") {
 				break
 			}

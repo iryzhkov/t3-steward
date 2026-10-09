@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestEnsureProjectReconcilesCreation(t *testing.T) {
@@ -60,7 +61,7 @@ func TestEnsureProjectReconcilesCreation(t *testing.T) {
 			defer server.Close()
 			for i := 0; i < 2; i++ {
 				// A new adapter has no process-local memory of the first request.
-				control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+				control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)),
 					slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 				id, err := control.EnsureProject(context.Background(), input)
 				if err != nil || id != deterministicID(input.Key, "steward.project") {
@@ -126,7 +127,7 @@ func TestEnsureProjectRecreatesDeletedProjectFromOldAcceptedReceipt(t *testing.T
 	}))
 	defer server.Close()
 	for i := 0; i < 2; i++ {
-		control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+		control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)),
 			slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 		got, err := control.EnsureProject(context.Background(), input)
 		if err != nil || got != replacementID {
@@ -205,7 +206,7 @@ func TestEnsureProjectDelayedVisibilityStartsOneThread(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		// Reconstruct the adapter, as retry/restart does. Stable command IDs
 		// make the repeated thread request one T3 effect.
-		control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+		control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)),
 			slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 		projectID, err := control.EnsureProject(context.Background(), input)
 		if err != nil {
@@ -268,7 +269,7 @@ func TestEnsureProjectRestartBeforeVisibilityReplaysOneCommand(t *testing.T) {
 	defer server.Close()
 
 	newControl := func() *Control {
-		return New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+		return New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)),
 			slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
@@ -307,9 +308,9 @@ func TestEnsureProjectDelayedVisibilityFailsClosed(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(t3api.ShellSnapshot{Projects: projects})
 			}))
 			defer server.Close()
-			control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+			control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)),
 				slog.New(slog.NewTextHandler(io.Discard, nil)), false)
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(250*time.Millisecond))
 			if scenario == "cancelled" {
 				cancel()
 			} else {
@@ -378,7 +379,7 @@ func TestEnsureProjectRecreatesADeletedProject(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]int{"sequence": 1})
 	}))
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+	control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 	ctx := context.Background()
 	first, err := control.EnsureProject(ctx, input)
@@ -440,9 +441,9 @@ func TestEnsureProjectFailsClosed(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(t3api.ShellSnapshot{Projects: projects})
 			}))
 			defer server.Close()
-			control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+			control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)),
 				slog.New(slog.NewTextHandler(io.Discard, nil)), scenario == "dry run")
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(250*time.Millisecond))
 			defer cancel()
 			_, err := control.EnsureProject(ctx, input)
 			if (err == nil) != (scenario == "dry run") {
@@ -590,7 +591,7 @@ func (f *fakeProjectT3) active(root string) []string {
 }
 
 func newProjectControl(server *httptest.Server) *Control {
-	return New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
+	return New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 }
 
@@ -731,7 +732,7 @@ func TestEnsureProjectUnknownRefusalIsNotRetried(t *testing.T) {
 	f.seedLegacyHistory(input, 9)
 	_, fencedCommand := fencedProjectIdentity(input.Key, f.sequence)
 	f.refuse[fencedCommand] = "invariant nobody has seen before"
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(300*time.Millisecond))
 	defer cancel()
 	_, err := newProjectControl(server).EnsureProject(ctx, input)
 	if err == nil || !strings.Contains(err.Error(), "invariant nobody has seen before") {
@@ -758,7 +759,7 @@ func TestEnsureProjectCreationBudgetIsBounded(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "exhausted 4 creation dispatches") {
 			t.Fatalf("budget not enforced: %v", err)
 		}
-		if elapsed := time.Since(started); elapsed > 5*time.Second {
+		if elapsed := time.Since(started); elapsed > testtiming.Bound(5*time.Second) {
 			t.Fatalf("exhausting the budget took %s", elapsed)
 		}
 		f.mu.Lock()

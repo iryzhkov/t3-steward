@@ -17,6 +17,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/quotatelemetry"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestQuotaTelemetryRecorderNeverBlocksCoordinator(t *testing.T) {
@@ -48,14 +49,14 @@ func TestQuotaTelemetryRecorderNeverBlocksCoordinator(t *testing.T) {
 	before := coordinatorFileDigests(t, statePath)
 	started := time.Now()
 	recorder := startQuotaTelemetryRecorder(ctx, cfg, logger)
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(500*time.Millisecond) {
 		t.Fatalf("start took %s; it must return at once", elapsed)
 	}
 	waitForQuotaTelemetry(t, func() bool { return recorder.Stats().Failures >= 1 })
 	stopped := time.Now()
 	recorder.Stop()
-	if elapsed := time.Since(stopped); elapsed > 2*time.Second {
-		t.Fatalf("stop took %s; want under 2 seconds", elapsed)
+	if elapsed := time.Since(stopped); elapsed > testtiming.Bound(2*time.Second) {
+		t.Fatalf("stop took %s; want under %s", elapsed, testtiming.Bound(2*time.Second))
 	}
 	if stats := recorder.Stats(); stats.LastError == "" {
 		t.Fatalf("stats = %+v; want the failure counted with its error", stats)
@@ -98,7 +99,7 @@ func coordinatorFileDigests(t *testing.T, statePath string) [2][32]byte {
 
 func waitForQuotaTelemetry(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for !condition() {
 		if time.Now().After(deadline) {
 			t.Fatal("the recorder did not tick")

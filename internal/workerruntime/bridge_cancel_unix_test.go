@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -20,7 +21,7 @@ import (
 // result channel.
 func startBridge(ctx context.Context, input io.Reader, output io.Writer, conn net.Conn, limit int64) <-chan error {
 	done := make(chan error, 1)
-	go func() { done <- BridgeWorkerStream(ctx, input, output, conn, limit, time.Minute) }()
+	go func() { done <- BridgeWorkerStream(ctx, input, output, conn, limit, testtiming.Bound(time.Minute)) }()
 	return done
 }
 
@@ -29,7 +30,7 @@ func awaitBridge(t *testing.T, done <-chan error) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("bridge did not return after cancellation")
 		return nil
 	}
@@ -58,7 +59,7 @@ func TestBridgeReturnsOnCancelWhileBlockedOnInput(t *testing.T) {
 	if err := awaitBridge(t, done); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled bridge error = %v, want context canceled", err)
 	}
-	if err := outputReader.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+	if err := outputReader.SetReadDeadline(time.Now().Add(testtiming.Bound(2 * time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := outputReader.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {

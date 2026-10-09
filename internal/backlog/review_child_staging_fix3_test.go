@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestReviewChildStagingFix3PublishedBeforeOwner(t *testing.T) {
@@ -95,7 +97,7 @@ func TestReviewChildStagingFix3PublishedBeforeOwner(t *testing.T) {
 			case <-waiting:
 			case early := <-secondCh:
 				t.Fatal("caller did not wait at real publication boundary", early.err)
-			case <-time.After(5 * time.Second):
+			case <-time.After(testtiming.Bound(5 * time.Second)):
 				t.Fatal("caller never reached held lock")
 			}
 			if evidence != stageFix1Evidence(t, namespace) || before != independentDeclaredTables(t, stagingSQL(t, f)) {

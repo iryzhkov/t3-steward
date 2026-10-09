@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -36,7 +38,9 @@ func busyCatalogWorker(t *testing.T) (*CatalogHost, CatalogProjection, func(work
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- ServeWorkerListener(ctx, listener, 24<<20, time.Minute, 4, host.HandleFrame) }()
+	go func() {
+		done <- ServeWorkerListener(ctx, listener, 24<<20, testtiming.Bound(time.Minute), 4, host.HandleFrame)
+	}()
 	t.Cleanup(func() { cancel(); <-done })
 	frames := workerproto.FrameCodec{MaxBytes: 24 << 20}
 	codec := workerproto.Codec{MaxBytes: 8 << 20}
@@ -289,7 +293,7 @@ func TestWorkerListenerSendsOnlyAnsweredRefusals(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeWorkerListener(ctx, listener, 1<<20, time.Minute, 1, func(_ context.Context, raw []byte) ([]byte, error) {
+		done <- ServeWorkerListener(ctx, listener, 1<<20, testtiming.Bound(time.Minute), 1, func(_ context.Context, raw []byte) ([]byte, error) {
 			if string(raw) == "refuse" {
 				return []byte("signed refusal"), &AnsweredError{Err: errors.New("busy")}
 			}
@@ -343,7 +347,7 @@ func TestWorkerListenerLogsAnOversizeFrame(t *testing.T) {
 	done := make(chan error, 1)
 	handlerCalled := false
 	go func() {
-		done <- ServeWorkerListener(ctx, listener, 16, time.Minute, 1, func(context.Context, []byte) ([]byte, error) {
+		done <- ServeWorkerListener(ctx, listener, 16, testtiming.Bound(time.Minute), 1, func(context.Context, []byte) ([]byte, error) {
 			handlerCalled = true
 			return []byte("ok"), nil
 		})

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
@@ -53,7 +55,7 @@ func TestArchiveUsesCommitReceiptWhenArchivedThreadLeavesShell(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			control := New(t3api.New(server.URL, t3api.StaticToken("token"), time.Second), nil, false)
+			control := New(t3api.New(server.URL, t3api.StaticToken("token"), testtiming.Bound(time.Second)), nil, false)
 			err := control.ArchiveSettledThread(context.Background(), domain.Thread{ID: "thread", SettledAt: &settled})
 			if (err != nil) != test.wantError {
 				t.Fatalf("err=%v wantError=%t", err, test.wantError)
@@ -80,7 +82,7 @@ func TestArchiveRefusesChangedSettlement(t *testing.T) {
 		w.WriteHeader(500)
 	}))
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("token"), time.Second), nil, false)
+	control := New(t3api.New(server.URL, t3api.StaticToken("token"), testtiming.Bound(time.Second)), nil, false)
 	if err := control.ArchiveSettledThread(context.Background(), domain.Thread{ID: "thread", SettledAt: &old}); err == nil {
 		t.Fatal("new settlement archived")
 	}

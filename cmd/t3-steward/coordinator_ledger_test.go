@@ -12,6 +12,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/jocasta"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 type unusedLedgerStates struct{}
@@ -43,10 +44,10 @@ func TestCoordinatorLedgerNeverBlocksTheBoundary(t *testing.T) {
 	started := time.Now()
 	ledger.Tick(context.Background())
 	ledger.Tick(context.Background())
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(time.Second) {
 		t.Fatalf("ledger ticks blocked the boundary for %s", elapsed)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(5 * time.Second))
 	for passes.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
@@ -78,7 +79,7 @@ func TestCoordinatorLedgerNeverBlocksTheBoundary(t *testing.T) {
 	go func() { blocked.stop(); close(stopped) }()
 	select {
 	case <-stopped:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("stop did not cancel the running pass")
 	}
 

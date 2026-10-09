@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 type leaseTestStore struct {
@@ -60,7 +61,7 @@ func TestLeaseLocalAndSSHCarriers(t *testing.T) {
 	}
 	ctx, cancel2 := context.WithCancel(context.Background())
 	done2 := make(chan error, 1)
-	server := &LocalServer{Listener: listener, Service: service, AllowedUID: uint32(os.Getuid()), CoordinatorID: serverID, MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: time.Second, MaxConcurrent: 8}
+	server := &LocalServer{Listener: listener, Service: service, AllowedUID: uint32(os.Getuid()), CoordinatorID: serverID, MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: testtiming.Bound(time.Second), MaxConcurrent: 8}
 	go func() { done2 <- server.Serve(ctx) }()
 	defer stopLocalTransport(t, cancel2, done2)
 	replayRoot := t.TempDir()
@@ -69,7 +70,7 @@ func TestLeaseLocalAndSSHCarriers(t *testing.T) {
 		command.Env = append(os.Environ(), helperEnabled+"=1", helperReplayRoot+"="+replayRoot, helperSocket+"="+path, helperCoordinator+"="+serverID, helperOperation+"="+args[len(args)-1])
 		return command
 	}
-	remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: serverID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: 30 * time.Second, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
+	remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: serverID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: testtiming.Bound(30 * time.Second), MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +178,7 @@ func TestLeaseOlderCoordinatorCarrierMessages(t *testing.T) {
 		}
 		done <- writeLocalResponse(conn, localResponse{Version: LocalTransportVersion, Error: err.Error(), ErrorClass: ClassProtocol})
 	}()
-	local := LocalClient{Path: path, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: time.Second}
+	local := LocalClient{Path: path, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: testtiming.Bound(time.Second)}
 	_, err = local.Lease(context.Background(), leaseTestRequest())
 	if ClassOf(err) != ClassProtocol || !strings.Contains(err.Error(), "the coordinator does not support leases; upgrade it") {
 		t.Fatalf("old local: %v", err)
@@ -191,7 +192,7 @@ func TestLeaseOlderCoordinatorCarrierMessages(t *testing.T) {
 			command.Env = append(os.Environ(), "T3_LEASE_OLD_COORDINATOR="+mode)
 			return command
 		}
-		remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: testCoordinatorID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: 30 * time.Second, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
+		remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: testCoordinatorID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: testtiming.Bound(30 * time.Second), MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
 		if err != nil {
 			t.Fatal(err)
 		}

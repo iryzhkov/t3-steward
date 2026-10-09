@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // memoryStore is an outbox with the store's contract and none of its SQL:
@@ -460,7 +462,7 @@ func TestCommandSinkTimeoutKillsTheProcessGroup(t *testing.T) {
 	if err := sink.Deliver(ctx, runFailed("run-1")); err == nil {
 		t.Fatal("a timed-out command reported delivery")
 	}
-	if elapsed := time.Since(start); elapsed > 5*time.Second {
+	if elapsed := time.Since(start); elapsed > testtiming.Bound(5*time.Second) {
 		t.Fatalf("the timeout took %s", elapsed)
 	}
 	raw, err := os.ReadFile(pidFile)
@@ -471,7 +473,7 @@ func TestCommandSinkTimeoutKillsTheProcessGroup(t *testing.T) {
 	if _, err := fmt.Sscan(strings.TrimSpace(string(raw)), &pid); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(2 * time.Second))
 	for processAlive(pid) {
 		if time.Now().After(deadline) {
 			t.Fatalf("background child %d survived the timeout", pid)
