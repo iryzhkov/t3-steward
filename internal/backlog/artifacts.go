@@ -88,6 +88,9 @@ type VerificationReport struct {
 	Output      string    `json:"output"`
 	StartedAt   time.Time `json:"startedAt"`
 	CompletedAt time.Time `json:"completedAt"`
+	// TempDirectories are the real temporary directories the command was
+	// given in place of the worker's TMPDIR and GOTMPDIR.
+	TempDirectories []TempDirectory `json:"tempDirectories,omitempty"`
 }
 
 // FinalizedAttempt contains artifacts ready for coordinator persistence and the
@@ -604,19 +607,24 @@ func (f AttemptFinalizer) validateRequest(request AttemptFinalization) error {
 }
 
 func (f AttemptFinalizer) runVerification(ctx context.Context, processID, workspace, command string) (VerificationReport, error) {
+	temp, err := ResolveTempDirectories(nil)
+	if err != nil {
+		return VerificationReport{}, err
+	}
 	started := f.now()
 	result, err := f.processRunner().Run(ctx, ProcessRequest{
 		ID: processID, Dir: workspace, Program: "/bin/sh",
 		// Set the umask only in the verification child, matching an agent's
 		// conventional shell without changing the worker's private writes.
 		// Pass the command as an argument so the wrapper never interpolates it.
-		Args:   []string{"-c", `umask 022 && exec "$0" "$@"`, "/bin/sh", "-c", command},
-		Limits: ProcessLimitsFromContext(ctx),
+		Args:        []string{"-c", `umask 022 && exec "$0" "$@"`, "/bin/sh", "-c", command},
+		Limits:      ProcessLimitsFromContext(ctx),
+		Environment: tempEnvironment(temp),
 	})
 	completed := f.now()
 	report := VerificationReport{
 		Command: command, ExitCode: result.ExitCode, Output: result.Output,
-		StartedAt: started, CompletedAt: completed,
+		StartedAt: started, CompletedAt: completed, TempDirectories: temp,
 	}
 	if err == nil {
 		return report, nil

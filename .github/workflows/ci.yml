@@ -44,7 +44,18 @@ jobs:
             go-test-${{ runner.os }}-
       - run: go build ./...
       - run: go vet ./...
-      - run: go test -timeout 10m ./...
+      # On Linux the plain tests run with TMPDIR a symbolic link to a real
+      # directory, as on a worker whose temporary directory was moved to another
+      # disk, so that a test handing its temporary directory to code that
+      # refuses symlinks fails here rather than on that worker. The race job and
+      # macOS keep the ordinary layout.
+      - if: runner.os == 'Linux'
+        run: |
+          mkdir -p "$RUNNER_TEMP/real-tmp"
+          ln -s "$RUNNER_TEMP/real-tmp" "$RUNNER_TEMP/tmp-link"
+          TMPDIR="$RUNNER_TEMP/tmp-link" go test -timeout 10m ./...
+      - if: runner.os != 'Linux'
+        run: go test -timeout 10m ./...
       - if: github.event_name == 'push'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

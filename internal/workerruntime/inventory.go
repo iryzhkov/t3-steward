@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/iryzhkov/t3-steward/internal/domain"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 type HostInventoryProbe struct {
@@ -16,6 +20,24 @@ type HostInventoryProbe struct {
 	Capability func(context.Context, string) bool
 	// ProjectAvailable must observe the local T3 project catalog.
 	ProjectAvailable func(context.Context, string) (bool, error)
+	// Warn receives each host warning the snapshot finds, such as a TMPDIR
+	// that is a symbolic link. A warning does not degrade the worker's health.
+	// Nil logs each distinct warning once per process.
+	Warn func(string)
+}
+
+// loggedInventoryWarnings holds the warnings already logged, so that a
+// snapshot taken every few seconds does not repeat them.
+var loggedInventoryWarnings sync.Map
+
+func (p HostInventoryProbe) warn(warning string) {
+	if p.Warn != nil {
+		p.Warn(warning)
+		return
+	}
+	if _, logged := loggedInventoryWarnings.LoadOrStore(warning, true); !logged {
+		slog.Warn("worker host warning; verification and gate commands get the resolved temporary directory", "component", "worker-inventory", "warning", warning)
+	}
 }
 
 func (p HostInventoryProbe) Observe(ctx context.Context, wanted domain.WorkerInventory) (domain.WorkerInventory, error) {
@@ -31,6 +53,9 @@ func (p HostInventoryProbe) Observe(ctx context.Context, wanted domain.WorkerInv
 	result.Health = domain.WorkerHealthReady
 	result.AcceptBacklog = wanted.AcceptBacklog
 	result.ObservedAt = time.Now().UTC()
+	for _, warning := range backlog.TempDirectoryWarnings(nil) {
+		p.warn(warning)
+	}
 	var capabilities []string
 	for _, name := range wanted.Capabilities {
 		if p.Capability != nil && p.Capability(ctx, name) {

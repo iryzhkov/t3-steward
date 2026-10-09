@@ -4,10 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 )
 
 func TestCanonicalRootResolvesSymlinkedParentOnly(t *testing.T) {
-	base := t.TempDir()
+	base := testutil.RealTempDir(t)
 	target := filepath.Join(base, "target")
 	if err := os.Mkdir(target, 0700); err != nil {
 		t.Fatal(err)
@@ -28,6 +30,8 @@ func TestCanonicalRootResolvesSymlinkedParentOnly(t *testing.T) {
 	}
 	if err = privateDirectory(filepath.Join(link, "contained")); err == nil {
 		t.Fatal("storage named through a symlinked parent accepted")
+	} else if want := "supervisor state path contains a symlink: " + link + " is a symlink to " + target; err.Error() != want {
+		t.Fatalf("symlinked parent error = %q, want %q", err, want)
 	}
 
 	// A symlink at the storage path itself is not resolved, so it stays refused.

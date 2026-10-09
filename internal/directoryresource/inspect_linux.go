@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/iryzhkov/t3-steward/internal/symlinkpath"
 )
 
 // Open pins the registered inode and its ancestry using descriptor-relative,
@@ -34,6 +36,9 @@ func Open(r Registration) (*os.File, Identity, error) {
 		next, err := unix.Openat(fd, part, unix.O_PATH|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		unix.Close(fd)
 		if err != nil {
+			if described := symlinkpath.Describe(r.Path); described != "" {
+				return nil, Identity{}, fmt.Errorf("open registered directory %q: %w (%s)", r.Path, err, described)
+			}
 			return nil, Identity{}, fmt.Errorf("open registered directory %q: %w", r.Path, err)
 		}
 		fd = next

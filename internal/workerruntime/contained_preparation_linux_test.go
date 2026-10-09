@@ -13,10 +13,11 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 )
 
 func TestContainedPreparationReusesPublishedWorkspaceAfterReadinessFailure(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	t.Cleanup(func() {
 		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err == nil && info.IsDir() {

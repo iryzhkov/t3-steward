@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -39,7 +40,7 @@ func TestScannedCommandLinesAreRedactedBeforeTheyAreShortened(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			secret := tc.secret
-			root := t.TempDir()
+			root := testutil.RealTempDir(t)
 			workspace := filepath.Join(root, "workspace")
 			if err := os.Mkdir(workspace, 0o700); err != nil {
 				t.Fatal(err)
