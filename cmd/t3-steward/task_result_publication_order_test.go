@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"golang.org/x/sys/unix"
 )
 
@@ -122,7 +124,7 @@ func TestResultPublicationProcessHelper(t *testing.T) {
 
 func resultPublicationChild(t *testing.T, directory, mode string) *exec.Cmd {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(2*time.Minute))
 	t.Cleanup(cancel)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestResultPublicationProcessHelper$")
 	cmd.Env = append(os.Environ(), "RESULT_TEST_DIRECTORY="+directory, "RESULT_TEST_MODE="+mode)

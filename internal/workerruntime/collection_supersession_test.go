@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // startGatedCollection starts the collection of a collecting attempt in a pass
@@ -32,7 +33,7 @@ func startGatedCollection(t *testing.T) (*Runtime, *gatedCollectDriver, *atomic.
 	}
 	return runtime, driver, collects, func() {
 		release()
-		if !pass.wait(context.Background(), 5*time.Second) {
+		if !pass.wait(context.Background(), testtiming.Bound(5*time.Second)) {
 			t.Fatal("the collection did not finish once released")
 		}
 	}

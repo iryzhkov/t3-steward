@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
@@ -260,7 +262,7 @@ func TestReviewCheckpointEndToEndOverLocalTransport(t *testing.T) {
 	server := &backlogadmin.LocalServer{
 		Listener: listener, Service: coordinatorLocalService{admin: h.admin}, AllowedUID: uint32(os.Getuid()),
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-		RequestTimeout: 30 * time.Second, MaxConcurrent: 4,
+		RequestTimeout: testtiming.Bound(30 * time.Second), MaxConcurrent: 4,
 	}
 	go func() { done <- server.Serve(serveCtx) }()
 	defer func() {
@@ -269,7 +271,7 @@ func TestReviewCheckpointEndToEndOverLocalTransport(t *testing.T) {
 			t.Fatal(err)
 		}
 	}()
-	client := backlogadmin.LocalClient{Path: path, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: 30 * time.Second}
+	client := backlogadmin.LocalClient{Path: path, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, RequestTimeout: testtiming.Bound(30 * time.Second)}
 	request := h.request
 	response, err := client.NodeWait(ctx, backlogadmin.NodeWaitOperation{Action: backlogadmin.ReviewCheckpointAction, Checkpoint: &request})
 	if err != nil {

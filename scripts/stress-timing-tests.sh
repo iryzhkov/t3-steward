@@ -61,8 +61,8 @@ fi
 # checks that assert a duration, and the waits a loaded host has been seen to
 # exceed. Every other wait scaled by Bound is covered by `make test`.
 if [ "$phase" = all ] || [ "$phase" = bounds ]; then
-	run -count=3 -run 'TestRepositoryProbeIsBoundedForAWorkerThatNeverAnswers|TestRepositoryRefResolutionTimeout|TestCoordinatorLedgerNeverBlocksTheBoundary|TestQuotaTelemetryRecorderNeverBlocksCoordinator|TestDaemonsWaitForT3DiscoveryAtStart|TestCampaignCompileRefusesAFIFOPlanWithoutBlocking' ./cmd/t3-steward
-	run -count=3 -run 'TestFileLockWaitHonorsContext|TestSystemdScopeRunnerKillRemainingDirectClearScope20ms|TestResolveExactRefTimesOut|TestCancelledRun|TestKillRemainingCleanup|TestWorkspacePreparerTimesOutAndCleansSetup|TestGateScope|TestScopeCleanupDeadlineDuringQueryKeepsObservedState' ./internal/backlog
+	run -count=3 -run 'TestRepositoryProbeIsBoundedForAWorkerThatNeverAnswers|TestRepositoryRefResolutionTimeout|TestCoordinatorLedgerNeverBlocksTheBoundary|TestQuotaTelemetryRecorderNeverBlocksCoordinator|TestDaemonsWaitForT3DiscoveryAtStart|TestCampaignCompileRefusesAFIFOPlanWithoutBlocking|TestAwaitCoordinatorStartRefusesWhatTheStartupTestsMustNotPass|TestRunBacklogV2' ./cmd/t3-steward
+	run -count=3 -run 'TestFileLockWaitHonorsContext|TestSystemdScopeRunnerKillRemainingDirectClearScope20ms|TestResolveExactRefTimesOut|TestCancelledRun|TestKillRemainingCleanup|TestWorkspacePreparerTimesOutAndCleansSetup|TestGateScope|TestGateRefinalizationAfterBackgroundChild|TestScopeCleanupDeadlineDuringQueryKeepsObservedState' ./internal/backlog
 	run -count=3 -run 'TestSSHArtifactPartialReadCloseAborts|TestLocalTransportShutdownClosesIdleConnection|TestLocalTransportBoundsIdleClientsAndBackpressure' ./internal/backlogadmin
 	run -count=3 -run 'TestEnsureProjectCreationBudgetIsBounded' ./internal/control/t3
 	run -count=3 -run 'TestCommandSinkTimeoutKillsTheProcessGroup' ./internal/ownernotify

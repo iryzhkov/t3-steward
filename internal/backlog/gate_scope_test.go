@@ -273,7 +273,9 @@ func TestGateRefinalizationAfterBackgroundChild(t *testing.T) {
 	dir := h2GateRepository(t)
 	id := fmt.Sprintf("gate-retry-%d", time.Now().UnixNano())
 	req := h2GateRequest(dir, id)
-	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt && { sleep 20 >/dev/null 2>&1 </dev/null & }"}, Timeout: 10 * time.Second}
+	// Keep the child alive beyond the scaled gate budget so waiting for it
+	// cannot hide a regression in scope cleanup or reuse.
+	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt && { sleep 120 >/dev/null 2>&1 </dev/null & }"}, Timeout: testtiming.Bound(10 * time.Second)}
 	unit := processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))
 	t.Cleanup(func() {
 		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", unit).Run()

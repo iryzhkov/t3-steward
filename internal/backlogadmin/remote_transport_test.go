@@ -197,7 +197,7 @@ func TestCoordinatorExchangeHelperProcess(t *testing.T) {
 		Relay: LocalClient{
 			Path: os.Getenv(helperSocket), CoordinatorID: os.Getenv(helperCoordinator),
 			MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-			RequestTimeout: 10 * time.Second,
+			RequestTimeout: testtiming.Bound(10 * time.Second),
 		},
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
 	})
@@ -243,7 +243,7 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 		Listener: listener, Service: service, AllowedUID: uint32(os.Getuid()),
 		CoordinatorID:   testCoordinatorID,
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-		RequestTimeout: 10 * time.Second, MaxConcurrent: 8,
+		RequestTimeout: testtiming.Bound(10 * time.Second), MaxConcurrent: 8,
 	}
 	go func() { done <- server.Serve(ctx) }()
 	t.Cleanup(func() { stopLocalTransport(t, cancel, done) })
@@ -274,7 +274,7 @@ func newRemoteHarness(t *testing.T, replay bool) remoteHarness {
 			Address:          "normandy",
 			RemoteCommand:    "t3-steward",
 			Credentials:      testAdminCredentials(),
-			RequestTimeout:   30 * time.Second,
+			RequestTimeout:   testtiming.Bound(30 * time.Second),
 			MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
 			Factory: factory,
 		})

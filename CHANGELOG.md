@@ -95,7 +95,8 @@ or rc.115 coordinator.
   `internal/testtiming` package, with the hang they detect lengthened where
   it no longer exceeded the scaled bound. Every other wait a test fails on
   when it expires (select and channel timeouts, polling deadlines, context
-  and connection deadlines, and the short request, gate and cleanup budgets
+  and connection deadlines, coordinator startup, HTTP client requests,
+  subprocess publication, and request, gate and cleanup budgets
   tests configure) is scaled the same way; waits whose expiry is the expected
   outcome, or that only check that nothing happened, are left as they were.
   Two waits that guessed with a fixed pause now wait for the state they need:

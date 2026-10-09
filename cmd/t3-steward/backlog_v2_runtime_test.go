@@ -86,9 +86,8 @@ func setCoordinatorTestRoots(t *testing.T, cfg *config.Config) string {
 // coordinatorStartupLimit and coordinatorShutdownLimit bound how long
 // runCoordinatorUntilStarted waits for readiness and, once it has cancelled
 // the coordinator, for it to return. They are failure bounds, not durations a
-// passing test waits out. The shutdown limit is scaled by
-// testtiming.Bound where it is used; the startup limit is already longer than
-// any loaded start-up observed and is left unscaled.
+// passing test waits out. Both limits use testtiming.Bound at the call site:
+// the race factor gives startup ten minutes, below the race package timeout.
 const (
 	coordinatorStartupLimit  = 2 * time.Minute
 	coordinatorShutdownLimit = 30 * time.Second
@@ -107,7 +106,7 @@ func runCoordinatorUntilStarted(t *testing.T, cfg config.Config, logger *slog.Lo
 	t.Helper()
 	handled, err, failure := awaitCoordinatorStart(func(ctx context.Context) (bool, error) {
 		return runBacklogV2(ctx, cfg, logger)
-	}, coordinatorStartupLimit, testtiming.Bound(coordinatorShutdownLimit))
+	}, testtiming.Bound(coordinatorStartupLimit), testtiming.Bound(coordinatorShutdownLimit))
 	if failure != nil {
 		t.Fatal(failure)
 	}
@@ -171,6 +170,20 @@ func TestAwaitCoordinatorStartRefusesWhatTheStartupTestsMustNotPass(t *testing.T
 	}
 	if handled, err, failure := awaitCoordinatorStart(ready, limit, limit); failure != nil || err != nil || !handled {
 		t.Fatalf("a clean start and shutdown: handled=%t err=%v failure=%v", handled, err, failure)
+	}
+
+	// Readiness may arrive after scheduling or startup work. Exercise the
+	// asynchronous path with a delay smaller than the scaled failure budget.
+	delayed := func(ctx context.Context) (bool, error) {
+		select {
+		case <-time.After(testtiming.Bound(20 * time.Millisecond)):
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+		return ready(ctx)
+	}
+	if handled, err, failure := awaitCoordinatorStart(delayed, limit, limit); failure != nil || err != nil || !handled {
+		t.Fatalf("a delayed start and clean shutdown: handled=%t err=%v failure=%v", handled, err, failure)
 	}
 
 	silent := func(context.Context) (bool, error) { return true, nil }

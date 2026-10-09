@@ -59,7 +59,7 @@ func refusedTurnStartT3(t *testing.T, threadID string) *t3control.Control {
 		}
 	}))
 	t.Cleanup(server.Close)
-	return t3control.New(t3api.New(server.URL, t3api.StaticToken("test"), 5*time.Second), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+	return t3control.New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(5*time.Second)), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
 }
 
 // Field defect 2026-10-02: T3 refused a task's first turn and the attempt sat

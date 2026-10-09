@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // R-21: an authenticated request never follows a redirect, wherever it points,
@@ -55,7 +57,7 @@ func TestAuthenticatedRequestsDoNotFollowRedirects(t *testing.T) {
 			sinkRequests.Store(0)
 			sinkAuthorized.Store(0)
 			location = test.location
-			client := New(origin.URL, StaticToken("redirect marker"), time.Second)
+			client := New(origin.URL, StaticToken("redirect marker"), testtiming.Bound(time.Second))
 			_, err := client.ShellSnapshot(context.Background())
 			if sinkAuthorized.Load() != 0 {
 				t.Fatalf("redirect to %s delivered the authorization header", test.location)
@@ -88,7 +90,7 @@ func TestUnauthenticatedDiscoveryStillFollowsRedirects(t *testing.T) {
 		_, _ = w.Write([]byte(`{"environmentId":"env-1"}`))
 	}))
 	defer origin.Close()
-	client := New(origin.URL, StaticToken("redirect marker"), time.Second)
+	client := New(origin.URL, StaticToken("redirect marker"), testtiming.Bound(time.Second))
 	if _, err := client.Descriptor(context.Background()); err != nil {
 		t.Fatalf("descriptor through a redirect: %v", err)
 	}

@@ -21,7 +21,7 @@ import (
 // result channel.
 func startBridge(ctx context.Context, input io.Reader, output io.Writer, conn net.Conn, limit int64) <-chan error {
 	done := make(chan error, 1)
-	go func() { done <- BridgeWorkerStream(ctx, input, output, conn, limit, time.Minute) }()
+	go func() { done <- BridgeWorkerStream(ctx, input, output, conn, limit, testtiming.Bound(time.Minute)) }()
 	return done
 }
 

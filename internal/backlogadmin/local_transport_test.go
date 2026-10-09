@@ -141,7 +141,7 @@ func shortTempRoot(t *testing.T) string {
 
 func startLocalTransport(t *testing.T, allowedUID uint32, service LocalService) (LocalClient, context.CancelFunc, <-chan error) {
 	t.Helper()
-	return startLocalTransportWithTimeout(t, allowedUID, service, time.Second)
+	return startLocalTransportWithTimeout(t, allowedUID, service, testtiming.Bound(time.Second))
 }
 
 func startLocalTransportWithTimeout(t *testing.T, allowedUID uint32, service LocalService, requestTimeout time.Duration) (LocalClient, context.CancelFunc, <-chan error) {

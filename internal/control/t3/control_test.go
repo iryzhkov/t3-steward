@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 )
@@ -98,7 +100,7 @@ func TestResolveProjectID(t *testing.T) {
 	}))
 	defer server.Close()
 	control := New(
-		t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second),
+		t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		false,
 	)
@@ -139,7 +141,7 @@ func TestCreateAndStartThreadSerializesPreparedWorkspace(t *testing.T) {
 	defer server.Close()
 
 	control := New(
-		t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second),
+		t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		false,
 	)
@@ -190,7 +192,7 @@ func TestCreateThreadRejectionReturnsDeterministicIDAndPreservesWorkspace(t *tes
 	defer server.Close()
 
 	control := New(
-		t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second),
+		t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		false,
 	)
@@ -235,7 +237,7 @@ func TestCreateThreadTransportErrorReturnsDeterministicIDAndPreservesWorkspace(t
 	server.Close()
 
 	control := New(
-		t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second),
+		t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		false,
 	)
@@ -266,7 +268,7 @@ func TestCreateThreadWithoutWorkspaceSerializesNullFields(t *testing.T) {
 	server := httptest.NewServer(recorder)
 	defer server.Close()
 
-	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second), nil, false)
+	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)), nil, false)
 	gotID, err := control.CreateAndStartThread(context.Background(), NewThreadInput{ProjectID: "project-1", Title: "legacy"})
 	if err == nil {
 		t.Fatal("create unexpectedly succeeded")
@@ -291,7 +293,7 @@ func TestCreateAndStartThreadUsesDeterministicDispatchToken(t *testing.T) {
 	server := httptest.NewServer(recorder)
 	defer server.Close()
 	control := New(
-		t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second),
+		t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		false,
 	)
@@ -360,7 +362,7 @@ func TestSettleThreadUsesDeterministicEffectAndConfirmsProjection(t *testing.T) 
 		}
 	}))
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second), nil, false)
+	control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)), nil, false)
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := control.SettleThread(context.Background(), "thread-1", "dispatch-1"); err != nil {
 			t.Fatalf("settle attempt %d: %v", attempt+1, err)

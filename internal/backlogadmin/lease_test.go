@@ -70,7 +70,7 @@ func TestLeaseLocalAndSSHCarriers(t *testing.T) {
 		command.Env = append(os.Environ(), helperEnabled+"=1", helperReplayRoot+"="+replayRoot, helperSocket+"="+path, helperCoordinator+"="+serverID, helperOperation+"="+args[len(args)-1])
 		return command
 	}
-	remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: serverID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: 30 * time.Second, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
+	remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: serverID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: testtiming.Bound(30 * time.Second), MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestLeaseOlderCoordinatorCarrierMessages(t *testing.T) {
 			command.Env = append(os.Environ(), "T3_LEASE_OLD_COORDINATOR="+mode)
 			return command
 		}
-		remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: testCoordinatorID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: 30 * time.Second, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
+		remote, err := NewSSHClient(SSHClientConfig{CoordinatorID: testCoordinatorID, Address: "normandy", RemoteCommand: "t3-steward", Credentials: testAdminCredentials(), RequestTimeout: testtiming.Bound(30 * time.Second), MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20, Factory: factory})
 		if err != nil {
 			t.Fatal(err)
 		}

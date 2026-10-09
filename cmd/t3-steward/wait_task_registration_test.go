@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -83,7 +85,7 @@ func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 	server := &backlogadmin.LocalServer{
 		Listener: listener, Service: coordinatorLocalService{admin: service}, CoordinatorID: "test-coordinator",
 		AllowedUID: uint32(os.Getuid()), MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20,
-		MaxSubmissionBytes: 1 << 20, RequestTimeout: 10 * time.Second, MaxConcurrent: 8,
+		MaxSubmissionBytes: 1 << 20, RequestTimeout: testtiming.Bound(10 * time.Second), MaxConcurrent: 8,
 	}
 	go func() { done <- server.Serve(ctx) }()
 	t.Cleanup(func() {
@@ -93,7 +95,7 @@ func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 
 	cfg := config.Default()
 	cfg.StatePath = statePath
-	cfg.BacklogV2.Transport = config.V2Transport{Kind: "ssh", RequestTimeout: config.Duration(10 * time.Second)}
+	cfg.BacklogV2.Transport = config.V2Transport{Kind: "ssh", RequestTimeout: config.Duration(testtiming.Bound(10 * time.Second))}
 	cfg.BacklogV2.MessageLimits = config.V2MessageLimits{MaxBytes: 1 << 20, MaxArtifactBytes: 1 << 20}
 
 	t.Setenv(domain.TaskWaitEnvWorkflowRunID, "run-1")

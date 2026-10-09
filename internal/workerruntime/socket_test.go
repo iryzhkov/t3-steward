@@ -29,7 +29,7 @@ func TestWorkerSocketPersistsAcrossReconnectAndStopsIdlePeers(t *testing.T) {
 	var effects atomic.Int32
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeWorkerListener(ctx, listener, 1024, time.Second, 2, func(_ context.Context, raw []byte) ([]byte, error) { effects.Add(1); return raw, nil })
+		done <- ServeWorkerListener(ctx, listener, 1024, testtiming.Bound(time.Second), 2, func(_ context.Context, raw []byte) ([]byte, error) { effects.Add(1); return raw, nil })
 	}()
 	frames := workerproto.FrameCodec{MaxBytes: 1024}
 	for i := 0; i < 2; i++ {

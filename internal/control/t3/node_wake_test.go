@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
+
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
 	waitdelivery "github.com/iryzhkov/t3-steward/internal/wait"
@@ -33,7 +35,7 @@ func TestNodeWakeUsesObservableStableMessageIdentity(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"thread": map[string]any{"id": "thread", "messages": []map[string]any{{"id": nodeWakeID(token, "message"), "role": "user", "text": "wake"}}}})
 	}))
 	defer server.Close()
-	control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second), nil, true)
+	control := New(t3api.New(server.URL, t3api.StaticToken("test"), testtiming.Bound(time.Second)), nil, true)
 	thread := domain.Thread{ID: "thread", ModelSelection: map[string]any{"provider": "test"}}
 	if err := control.SendNodeWake(context.Background(), thread, token, "wake"); err != nil {
 		t.Fatal(err)
