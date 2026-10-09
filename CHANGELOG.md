@@ -16,6 +16,10 @@ or rc.115 coordinator.
 
 ### Added
 
+- Ask registration checks coordinator routing without the three-second snapshot
+  status probe, preserving the client timeout and transient transport errors.
+  SSH capability probes retain both user and system SSH configuration.
+
 - Dispatch host probes require bounded, cached authenticated coordinator status,
   preserve HTTPS credential path and username, and inspect SSH identities selected
   for the project destination rather than unrelated default keys.

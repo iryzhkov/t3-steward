@@ -260,7 +260,8 @@ are cached for five minutes; expiry requires a new authenticated observation.
 A revoked credential may therefore remain advertised until that cache expires.
 Repository probes remain local: `git-push-<project>` proves that credentials are
 present, not that the remote grants write access. HTTPS probes disable prompts;
-SSH probes evaluate aliases, ports, IdentityFile, IdentityAgent and IdentitiesOnly.
+SSH probes evaluate aliases, ports, IdentityFile, IdentityAgent and IdentitiesOnly
+using OpenSSH's normal user and system configuration.
 A push-credential answer is also kept for five minutes.
 
 A task asks for one with `placement.requires`. Placement then chooses a worker
@@ -278,6 +279,9 @@ brief's safe default or ends the task failed naming the reason. Relaying asks
 through the worker channel is not implemented: that channel is opened by the
 coordinator and carries no client verbs, and the wake that delivers the answer
 also needs the coordinator client. Declare `ask-relay-v1` for tasks that may ask.
+The ask gate checks only that a route and resolvable credentials exist. Registration
+authenticates using the client's configured request timeout; a transient transport
+failure keeps its transport error class rather than becoming `ask-relay-unavailable`.
 
 ## Turns that end while their commands still run
 

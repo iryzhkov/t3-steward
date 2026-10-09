@@ -64,7 +64,7 @@ func TestAskOnAClientlessWorkerBlocksVisiblyAndParksNothing(t *testing.T) {
 
 	// With a route to the coordinator the same ask parks the task, so the
 	// block is the missing route and nothing else.
-	askCoordinatorReach = hostCoordinatorReach
+	askCoordinatorReach = askCoordinatorRoute
 	if err := runAsk(ctx, cfg, spec, identity, &out); err != nil {
 		t.Fatalf("the same ask with a route: %v", err)
 	}

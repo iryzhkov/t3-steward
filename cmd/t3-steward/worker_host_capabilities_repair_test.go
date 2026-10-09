@@ -171,7 +171,22 @@ func TestReviewSSHConfiguredProjectIdentity(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	control := exec.Command("ssh", "-G", "-F", configPath, "project-alias")
+	// OpenSSH resolves ~ from the account database, not the test HOME.
+	// Wrap only the test executable to load the fixture while requiring the
+	// production invocation to preserve OpenSSH's normal config selection.
+	realSSH, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := "#!/bin/sh\nfor arg do test \"$arg\" != -F || exit 91; done\nexec \"$TEST_REAL_SSH\" -F \"$TEST_SSH_CONFIG\" \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte(wrapper), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TEST_REAL_SSH", realSSH)
+	t.Setenv("TEST_SSH_CONFIG", configPath)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	control := exec.Command("ssh", "-G", "project-alias")
 	if output, err := control.CombinedOutput(); err != nil || !strings.Contains(string(output), "identityfile "+identity) {
 		t.Fatalf("fixture: %v %s", err, output)
 	}

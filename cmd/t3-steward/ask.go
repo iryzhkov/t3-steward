@@ -230,7 +230,14 @@ const askRelayUnavailableCode = "ask-relay-unavailable"
 
 // askCoordinatorReach answers whether this host can carry an ask to the
 // coordinator. Tests replace it.
-var askCoordinatorReach = hostCoordinatorReach
+var askCoordinatorReach = askCoordinatorRoute
+
+// Route construction resolves credentials but sends no status probe. NodeWait
+// authenticates the request using the client's configured timeout.
+func askCoordinatorRoute(cfg config.Config) error {
+	_, err := hostCoordinatorTransport(cfg)
+	return err
+}
 
 // errAskRelayUnavailable is the typed block for an ask on a worker without a
 // coordinator client. Without it the ask failed with a bare transport error
@@ -254,7 +261,7 @@ func runAsk(ctx context.Context, cfg config.Config, spec askSpec, identity taskI
 	if reach := askCoordinatorReach(cfg); reach != nil {
 		return errAskRelayUnavailable(reach)
 	}
-	transport, err := newCoordinatorTransport(cfg)
+	transport, err := hostCoordinatorTransport(cfg)
 	if err != nil {
 		return err
 	}

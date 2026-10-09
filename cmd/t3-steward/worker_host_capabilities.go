@@ -154,7 +154,7 @@ func (p *hostCapabilityProbe) coordinatorPresent(ctx context.Context) bool {
 	return present
 }
 
-// hostCoordinatorReach also gates one-shot asks, without snapshot caching.
+// hostCoordinatorReach performs an uncached authenticated observation.
 func hostCoordinatorReach(cfg config.Config) error {
 	ctx, cancel := context.WithTimeout(context.Background(), hostPushProbeTimeout)
 	defer cancel()
@@ -422,9 +422,7 @@ func sshIdentityPresent(ctx context.Context, repository string) bool {
 	if err != nil {
 		return false
 	}
-	if config := filepath.Join(home, ".ssh", "config"); fileExists(config) {
-		args = append(args, "-F", config)
-	}
+	// Let OpenSSH load both user and system configuration, just as Git does.
 	command := exec.CommandContext(ctx, "ssh", append(args, destination)...)
 	var output boundedBuffer
 	output.limit = gitCredentialMaxOutput
@@ -482,11 +480,6 @@ func sshIdentityPresent(ctx context.Context, repository string) bool {
 		}
 	}
 	return false
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
 }
 
 // gitCredentialPresent asks the configured credential helpers, never a person:
