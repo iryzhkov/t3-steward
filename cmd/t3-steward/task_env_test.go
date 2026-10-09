@@ -11,10 +11,11 @@ import (
 // F-4: the documented request-id pattern used $T3_STEWARD_ATTEMPT_REVISION,
 // a variable that is never injected (identity comes from .t3-steward/task.env
 // and send_thread_environment is off), so every documented park produced an
-// id ending in "-". The default now derives from the resolved identity, a
+// id ending in "-". The default now derives from the resolved identity and,
+// since W2, the condition's own arguments, a
 // truncated id is warned about, and "task env" prints the identity for a
 // custom id.
-func TestTaskWaitRequestIDDefaultsToParkAttemptRevision(t *testing.T) {
+func TestTaskWaitRequestIDDefaultsToParkAttemptRevisionAndCondition(t *testing.T) {
 	ctx := context.Background()
 	cfg, store := taskWaitCLIFixture(t)
 	if err := cmdTaskWaitAdd(ctx, cfg, []string{"--task", "current", "--", "false"}); err != nil {
@@ -24,8 +25,9 @@ func TestTaskWaitRequestIDDefaultsToParkAttemptRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || records[0].RequestID != "park-attempt-1-7" {
-		t.Fatalf("registered waits = %+v, want one with request id park-attempt-1-7", records)
+	want := "park-attempt-1-7-" + taskWaitArgsDigest([]string{"--task", "current", "--", "false"})
+	if len(records) != 1 || records[0].RequestID != want {
+		t.Fatalf("registered waits = %+v, want one with request id %s", records, want)
 	}
 }
 

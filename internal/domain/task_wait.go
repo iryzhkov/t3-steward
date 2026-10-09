@@ -1,6 +1,9 @@
 package domain
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -176,6 +179,12 @@ type TaskWait struct {
 	Wake           WakeMode      `json:"wake"`
 	MaxDuration    time.Duration `json:"maxDuration"`
 	RequestID      string        `json:"requestId"`
+	// ConditionDigest is TaskWaitRegistration.ConditionDigest of the request
+	// that created this wait, before the coordinator canonicalised it. A replay
+	// of the request ID is compared against it, so a different condition under
+	// a reused ID is refused instead of answered with this wait. Records written
+	// before it existed have none, and their replays are compared as before.
+	ConditionDigest string `json:"conditionDigest,omitempty"`
 
 	// Name and Condition describe what is being waited for, for the operator
 	// reading a queue and for the wake message the agent receives.
@@ -308,6 +317,28 @@ type TaskWaitRegistration struct {
 	Ask *AskRequest `json:"ask,omitempty"`
 }
 
+// ConditionDigest identifies what this registration waits for: its kind,
+// name, condition text, deadline treatment and structured condition. Two
+// registrations with the same request ID and different digests are two
+// different conditions, and the second must never be answered with the first
+// one's wait: that answer told a task it was parked on run B when only run A
+// was being watched.
+func (r TaskWaitRegistration) ConditionDigest() string {
+	raw, err := json.Marshal(struct {
+		Kind      WaitKind            `json:"kind"`
+		Name      string              `json:"name"`
+		Condition string              `json:"condition"`
+		OrTimeout bool                `json:"orTimeout"`
+		Node      *NodeWaitCondition  `json:"node"`
+		Quota     *QuotaWaitCondition `json:"quota"`
+	}{r.Kind.OrShell(), r.Name, r.Condition, r.OrTimeout, r.Node, r.Quota})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
 // MaxTaskWaitDuration bounds any single task-bound wait. Directory writer
 // bindings have no deadline by design and are held across a wait, so the bound
 // on how long the fleet can be blocked has to come from the wait itself.
@@ -346,6 +377,11 @@ var ErrTaskWaitForeignThread = errors.New("task-bound wait names an attempt runn
 // ErrTaskWaitReplayChanged reports a repeated request ID whose registration
 // differs from the one already committed.
 var ErrTaskWaitReplayChanged = errors.New("task-bound wait request ID replay changed the registration")
+
+// ErrTaskWaitReplayCondition reports a repeated request ID that names a
+// different condition from the wait it already registered. It is the silent
+// loss of a second condition in one park, refused by name.
+var ErrTaskWaitReplayCondition = fmt.Errorf("%w: the request ID already registered a different condition", ErrTaskWaitReplayChanged)
 
 // ErrTaskWaitReplaySettled reports a repeated request ID whose wait has already
 // settled, so replaying it cannot park anything.
@@ -490,7 +526,10 @@ func (c TaskWaitWakeContext) Resumption() bool {
 // Prompt renders the wake message that starts the resumed turn.
 func (c TaskWaitWakeContext) Prompt() string {
 	var builder strings.Builder
-	if c.Resumption() {
+	if c.Resumption() && len(c.Waits) > 1 {
+		// One park can hold several conditions, and each one is reported.
+		builder.WriteString("The steward is waking this task: its registered waits have settled. Each condition's outcome follows.\n\n")
+	} else if c.Resumption() {
 		builder.WriteString("The steward is waking this task: its registered wait has settled.\n\n")
 	} else {
 		// The turn is already running. Saying so matters: the agent is being

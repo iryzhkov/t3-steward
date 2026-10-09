@@ -49,6 +49,12 @@ that parks safely and a task that is verified against work it has not done.
       no wait still undecided, and no settled wait whose outcome has yet to
       reach the thread.
       Only valid inside a task: outside one it is an error that says so.
+      One park can hold several conditions: run wait add --task current once
+      per condition before ending the turn. By default (--all) the task
+      resumes once every condition has settled, and the wake reports each
+      one's outcome; --any on a condition wakes the task when that condition
+      settles. Every registration prints its own wait id and says how the
+      park wakes.
 
   INTERACTIVE WAIT  (no --task current)
       For an ordinary session. It is NON-MUTATING with respect to workflow
@@ -107,7 +113,10 @@ state= conclusion= url=; node run= task= attempt= revision= progress=
 [control= pauseReason=] and, for a terminal run, failed=<comma list> and
 result="t3-steward task result <run>"; quota pool= phase= percent=. Values with a
 space are quoted, unknown keys are to be ignored, key order is not promised. A
-blank line and the prose follow.
+wake that carries several waits names the first and adds count=<n>; a task's
+wake also adds waits=<id>:<outcome>,... listing every condition it reports. A
+blank line and the prose follow; the prose reports every condition with its
+evidence.
 
 Commands:
   add --task current [flags] <condition>
@@ -171,18 +180,32 @@ add flags:
                      required.
   --dir PATH         Working directory for a shell check (default: current).
   --group NAME       Group with other waits of the same thread (interactive).
-  --wake each|all    Wake on the first settlement (default) or once every wait
-                     has settled. A group, and a task's --wake all set, is all
-                     local kinds or all coordinator kinds; mixing the two is
-                     refused, naming both members.
+  --all              Task-bound, and the default for --task current: this
+                     condition joins the park's all set, and the task resumes
+                     once every condition of the set has settled. Same as
+                     --wake all.
+  --any              Task-bound: the task resumes as soon as this condition
+                     settles, whatever else the park holds. Give it on every
+                     condition to wake on the first. Same as --wake each.
+  --wake each|all    Wake on the first settlement (the interactive default) or
+                     once every wait has settled (the task-bound default). A
+                     group, and a task's all set, is all local kinds or all
+                     coordinator kinds; mixing the two is refused, naming both
+                     members (register the other side with --any). Give one of
+                     --wake, --all and --any.
   --request-id ID    Stable registration ID, for retrying one registration
-                     safely. Default for --task current: park-<attempt>-<revision>
-                     from this task's identity, which is stable for a retry and
-                     different for every later park. Repeating an ID while that
-                     wait is still live and holding this attempt returns the
-                     same wait. Repeating it after the wait settled is refused:
-                     the ID names one park, not a standing permission to park
-                     again. A custom ID that must differ per park can include
+                     safely. Default for --task current:
+                     park-<attempt>-<revision>-<digest>, from this task's
+                     identity and a digest of this command's arguments (--json
+                     aside): stable for a retry of the same command, different
+                     for every other condition of the park and for every later
+                     park. Repeating an ID while that wait is still live and
+                     holding this attempt returns the same wait. Repeating it
+                     after the wait settled is refused: the ID names one park,
+                     not a standing permission to park again. Repeating it for
+                     a different condition is refused too, naming the wait it
+                     already is; it is never answered with that wait. A custom
+                     ID that must differ per park can include
                      $(t3-steward task env --get revision); the T3_STEWARD_*
                      variables are not in the environment unless
                      t3.send_thread_environment is on (off by default). A
@@ -228,8 +251,10 @@ Examples, inside a task:
   t3-steward wait add --task current --quota claude-main --phase normal
   t3-steward wait add --task current --attention approval --prompt "Deploy to production?"
   t3-steward wait add --task current --name "deploy finished" -- ./scripts/deployed.sh
+  t3-steward wait add --task current --node <run-a> && t3-steward wait add --task current --node <run-b>
 
-Then end the turn. Nothing is collected or verified until the steward resumes
+The last one parks the task on two conditions and resumes it when both runs
+have ended. Then end the turn. Nothing is collected or verified until the steward resumes
 this same thread with the outcome.
 `
 

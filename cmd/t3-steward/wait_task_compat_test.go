@@ -53,7 +53,7 @@ func TestShellTaskWaitRegistrationIsByteCompatibleWithRC69(t *testing.T) {
 	if err := decodeRC69(t, registration); err != nil {
 		t.Fatalf("a shell registration carries a field rc.69 refuses: %v", err)
 	}
-	if registration.RequestID != "ci" || registration.AttemptID != "attempt-1" || registration.IssuedRevision != 7 || registration.Wake != domain.WakeEach || registration.Condition == "" {
+	if registration.RequestID != "ci" || registration.AttemptID != "attempt-1" || registration.IssuedRevision != 7 || registration.Wake != domain.WakeAll || registration.Condition == "" {
 		t.Fatalf("registration = %+v", registration)
 	}
 

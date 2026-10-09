@@ -109,13 +109,13 @@ func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 // attempt, must both reach the coordinator as the mode the command was given.
 // A wake mode that does not survive the command, the transport or the store
 // turns every each wait into an all wait, which is the F6 observation exactly.
+// Since W2 the task-bound default is all, so each is asked for by name, once
+// as --any and once as --wake each.
 func TestTaskWaitRegistrationCarriesTheWakeModeThroughTheRealTransport(t *testing.T) {
 	ctx := context.Background()
 	cfg, store := taskWaitCLIFixture(t)
-	// The first registration names no wake mode, exactly as a task that takes
-	// the documented default does; the second names it. Both mean each.
 	if err := cmdTaskWaitAdd(ctx, cfg, []string{
-		"--task", "current", "--request-id", "req-1", "--name", "req-1", "--", "false",
+		"--task", "current", "--any", "--request-id", "req-1", "--name", "req-1", "--", "false",
 	}); err != nil {
 		t.Fatalf("registering req-1: %v", err)
 	}

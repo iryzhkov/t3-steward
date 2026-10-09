@@ -16,6 +16,22 @@ or rc.115 coordinator.
 
 ### Added
 
+- Several conditions per task-bound wait (W2). A second `wait add --task
+  current` in the same park used to print the first wait's id and
+  "registered" and keep only the first condition, so a task waiting for runs
+  A and B woke after A alone. The default request id is now
+  `park-<attempt>-<revision>-<digest of the arguments>`, so each condition is
+  its own wait and a retry of the same command still replays. Task-bound
+  waits default to `--wake all`, spelled `--all`, and `--any` (`--wake each`)
+  wakes on one condition; `--all` and `--any` are refused on interactive
+  waits and in combination with `--wake`. Every registration prints "Wake:
+  all" or "Wake: any". The coordinator records a condition digest on each
+  task wait and refuses a reused request id for a different condition
+  instead of replaying the earlier wait. A grouped task wake adds
+  `waits=<id>:<outcome>,...` to its trailer, and its prose says the waits
+  settled and reports each. Output changes: task wait JSON gains
+  `conditionDigest`; a mixed-side all set refusal now suggests `--any`.
+
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first

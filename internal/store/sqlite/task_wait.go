@@ -134,6 +134,9 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 	if now.IsZero() {
 		return wait, errors.New("task-bound wait registration needs a timestamp")
 	}
+	// The digest is taken before validation canonicalises a structured
+	// condition, so a retry of the same command compares equal.
+	digest := request.ConditionDigest()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return wait, err
@@ -153,6 +156,13 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 			wait.Kind.OrShell() != request.Kind.OrShell() || !sameAttentionRegistration(wait.Attention, request.Attention) ||
 			!sameAskRegistration(wait.Ask, request.Ask) {
 			return domain.TaskWait{}, domain.ErrTaskWaitReplayChanged
+		}
+		// A second condition under a reused request ID is refused, never
+		// answered with the first one's wait: that answer is how a task parked
+		// on run A and run B woke after run A alone.
+		if wait.ConditionDigest != "" && wait.ConditionDigest != digest {
+			return domain.TaskWait{}, fmt.Errorf("%w: request ID %q is wait %s, which waits for %q; register the new condition without --request-id, or with a different one, to add it to this park",
+				domain.ErrTaskWaitReplayCondition, request.RequestID, wait.ID, wait.Condition)
 		}
 		// A replay may only report a park that is actually in force. The wait
 		// and the attempt are checked separately because they can disagree: a
@@ -233,7 +243,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		request.Attention.DecisionDeadline = now.Add(request.MaxDuration).UTC()
 	}
 
-	wait, err = parkTaskWaitTx(ctx, tx, request, attempt, now)
+	wait, err = parkTaskWaitTx(ctx, tx, request, digest, attempt, now)
 	if err != nil {
 		return domain.TaskWait{}, err
 	}
@@ -241,15 +251,17 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 }
 
 // parkTaskWaitTx persists a validated registration and its parent CAS together.
-// Validation and transaction ownership stay with the caller.
-func parkTaskWaitTx(ctx context.Context, tx *sql.Tx, request domain.TaskWaitRegistration, attempt domain.Attempt, now time.Time) (domain.TaskWait, error) {
+// Validation and transaction ownership stay with the caller, and so does the
+// condition digest, which is taken before validation canonicalises the request;
+// a caller with its own replay check passes none.
+func parkTaskWaitTx(ctx context.Context, tx *sql.Tx, request domain.TaskWaitRegistration, digest string, attempt domain.Attempt, now time.Time) (domain.TaskWait, error) {
 	expected := attempt.Revision
 	id := taskWaitID(request.RequestID)
 	wait := domain.TaskWait{
 		ID: id, WorkflowRunID: request.WorkflowRunID, TaskID: request.TaskID,
 		AttemptID: request.AttemptID, IssuedRevision: request.IssuedRevision,
 		ThreadID: request.ThreadID, Wake: request.Wake, MaxDuration: request.MaxDuration,
-		RequestID: request.RequestID, Name: request.Name, Condition: request.Condition,
+		RequestID: request.RequestID, ConditionDigest: digest, Name: request.Name, Condition: request.Condition,
 		Kind: request.Kind.OrShell(), OrTimeout: request.OrTimeout, Node: request.Node, Quota: request.Quota, Attention: request.Attention, Ask: request.Ask,
 		RegisteredRevision: expected + 1,
 		RegisteredAt:       now.UTC(),
@@ -286,7 +298,7 @@ func refuseMixedTaskWaitSetTx(ctx context.Context, tx *sql.Tx, request domain.Ta
 		if wait.Kind.OrShell().Coordinator() == request.Kind.OrShell().Coordinator() {
 			continue
 		}
-		return fmt.Errorf("a --wake all set is all local kinds or all coordinator kinds: wait %s (%s, %s) and this %s wait (%s) would mix them; register this one with --wake each, or wait for %s to settle",
+		return fmt.Errorf("a --wake all set is all local kinds or all coordinator kinds: wait %s (%s, %s) and this %s wait (%s) would mix them; register this one with --any (--wake each), or wait for %s to settle",
 			wait.ID, wait.Kind.OrShell(), sideOf(wait.Kind), request.Kind.OrShell(), sideOf(request.Kind), wait.ID)
 	}
 	return nil

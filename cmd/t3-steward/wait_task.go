@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -143,26 +146,105 @@ func readTaskIdentityFileFrom(directory string) (map[string]string, error) {
 }
 
 // taskWaitRequestID settles the registration id of a task-bound wait. With no
-// --request-id it is derived from the resolved identity, "park-<attempt>-
-// <revision>", which is stable for a retry of the same park and different for
-// every later park of the same task; the random id remains only for an
-// identity with no attempt, which registration refuses anyway. An explicit id
-// that ends in "-" is almost always a shell variable that was empty when the
-// command line was built, so it is warned about, but still used: a repeated
-// registration must keep returning the same wait.
-func taskWaitRequestID(explicit string, identity taskIdentity, warnings io.Writer) string {
+// --request-id it is derived from the resolved identity and the command's own
+// arguments, "park-<attempt>-<revision>-<digest>". The identity part is stable
+// for a retry of the same park and different for every later park of the same
+// task; the digest part is stable for a retry of the same command and different
+// for every other condition registered in the same park. Without it the second
+// condition of a park reused the first one's id and was answered with the first
+// one's wait, so a task waiting for runs A and B woke after A alone. The random
+// id remains only for an identity with no attempt, which registration refuses
+// anyway. An explicit id that ends in "-" is almost always a shell variable
+// that was empty when the command line was built, so it is warned about, but
+// still used: a repeated registration must keep returning the same wait.
+func taskWaitRequestID(explicit string, identity taskIdentity, args []string, warnings io.Writer) string {
 	if explicit == "" {
 		if identity.AttemptID == "" {
 			return strings.TrimPrefix(newWaitID(), "w-")
 		}
-		return fmt.Sprintf("park-%s-%d", identity.AttemptID, identity.AttemptRevision)
+		return fmt.Sprintf("park-%s-%d-%s", identity.AttemptID, identity.AttemptRevision, taskWaitArgsDigest(args))
 	}
 	if strings.HasSuffix(explicit, "-") {
 		fmt.Fprintf(warnings, "warning: --request-id %q ends in \"-\", which usually means an empty shell variable was interpolated into it; "+
-			"the identity is in .t3-steward/task.env, not the environment (unless t3.send_thread_environment is on), so use $(t3-steward task env --get revision) or omit --request-id to derive park-%s-%d\n",
+			"the identity is in .t3-steward/task.env, not the environment (unless t3.send_thread_environment is on), so use $(t3-steward task env --get revision) or omit --request-id to derive park-%s-%d-<digest>\n",
 			explicit, identity.AttemptID, identity.AttemptRevision)
 	}
 	return explicit
+}
+
+// taskWaitArgsDigest is the condition part of a derived request id: the first
+// twelve hex digits of a hash of the `wait add` arguments. --json is left out
+// because it changes only how the answer is printed, so a retry that adds it
+// still replays the same wait. The arguments are hashed rather than the parsed
+// condition because a relative condition such as --for 30m resolves to a
+// different instant on every run, and a retry must not become a new wait.
+func taskWaitArgsDigest(args []string) string {
+	hash := sha256.New()
+	for index, arg := range args {
+		if arg == "--" {
+			for _, rest := range args[index:] {
+				hash.Write([]byte(rest))
+				hash.Write([]byte{0})
+			}
+			break
+		}
+		switch arg {
+		case "--json", "-json", "--json=true", "-json=true", "--json=false", "-json=false":
+			continue
+		}
+		hash.Write([]byte(arg))
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))[:12]
+}
+
+// taskWakeModeFlags settles the wake mode of a `wait add` from --wake, --all
+// and --any. A task-bound wait takes all unless told otherwise: the several
+// conditions of one park are a set the task wants complete, and a single
+// condition wakes the same way under either mode. An interactive wait keeps
+// each, and composes with --group NAME --wake all as before.
+func taskWakeModeFlags(fs *flag.FlagSet, wake string, all, any, taskBound bool) (string, error) {
+	wakeGiven := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "wake" {
+			wakeGiven = true
+		}
+	})
+	given := 0
+	for _, set := range []bool{wakeGiven, all, any} {
+		if set {
+			given++
+		}
+	}
+	switch {
+	case given > 1:
+		return "", errors.New("--all, --any and --wake are three spellings of one choice; give one")
+	case (all || any) && !taskBound:
+		return "", errors.New("--all and --any apply to --task current; an interactive wait chooses with --group NAME --wake each|all")
+	case all:
+		return "all", nil
+	case any:
+		return "each", nil
+	case wakeGiven:
+		if wake != "each" && wake != "all" {
+			return "", errors.New("--wake must be each or all")
+		}
+		return wake, nil
+	case taskBound:
+		return "all", nil
+	default:
+		return "each", nil
+	}
+}
+
+// parkWakeSentence tells the agent how the conditions of its park combine, so
+// a second registration is never a guess about whether it was kept.
+func parkWakeSentence(mode string) string {
+	if mode == "each" {
+		return "Wake: any. This task resumes as soon as this condition settles, whatever else this park holds."
+	}
+	return "Wake: all. This task resumes once every --all condition of this park has settled, each reported with its own outcome. " +
+		"To add another condition, run `t3-steward wait add --task current` again before ending the turn."
 }
 
 // localTaskWaitRegistration is the coordinator registration of a task-bound
@@ -204,7 +286,7 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	if spec.Dir == "" {
 		spec.Dir, _ = os.Getwd()
 	}
-	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, os.Stderr)
+	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, args, os.Stderr)
 
 	local := wait.Wait{
 		ID: newWaitID(), ThreadID: identity.ThreadID, Name: spec.Name, Kind: spec.Kind, Command: spec.Command, Dir: spec.Dir,
@@ -286,6 +368,7 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	}
 	fmt.Printf("task-bound wait %s (%s) registered for attempt %s on thread %s: %s.\n",
 		registered.ID, spec.Kind, registered.AttemptID, registered.ThreadID, spec.registrationSummary(code, firstLine))
+	fmt.Println(parkWakeSentence(string(registered.Wake)))
 	fmt.Println("This task is now parked. End this turn now: nothing is collected and nothing is verified")
 	fmt.Println("until the steward resumes this same thread with the outcome.")
 	return nil
