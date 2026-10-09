@@ -801,7 +801,11 @@ task as soon as that condition settles. An all set is all local kinds or all
 coordinator kinds; a registration that would mix the two is refused and names
 `--any` as the way to add it. A reused `--request-id` for a different condition,
 including the same command in another `--dir`, is refused rather than answered
-with the earlier wait.
+with the earlier wait. Relative shell directories are resolved before probing;
+the coordinator digest binds that path and the exact argv even if the local
+save is lost. Older shell records with incomplete identity are refused on
+replay. Shell registrations require an identity-aware coordinator; older
+strict coordinators reject the new `shell` field.
 
 ```sh
 t3-steward wait add --task current --node <run-a>

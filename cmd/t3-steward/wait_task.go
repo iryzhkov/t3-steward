@@ -258,19 +258,20 @@ func parkWakeSentence(mode string) string {
 		"To add another condition, run `t3-steward wait add --task current` again before ending the turn."
 }
 
-// localTaskWaitRegistration is the coordinator registration of a task-bound
-// wait of a local kind. The kind is sent only when it is not shell: the
-// coordinator decodes the request strictly and treats an absent kind as
-// shell, so a plain shell registration stays byte-compatible with a
-// coordinator that predates kinds, while time, github and --or-timeout carry
-// the fields such a coordinator cannot settle and are refused by it with an
-// unknown-field error rather than parked on a wait it does not understand.
+// localTaskWaitRegistration records complete shell identity at the coordinator
+// boundary. Older strict coordinators refuse the new shell field rather than
+// accepting a registration whose replay identity they cannot protect.
 func localTaskWaitRegistration(spec localWaitSpec, identity taskIdentity) domain.TaskWaitRegistration {
 	kind := spec.Kind
 	if kind == domain.WaitKindShell {
 		kind = ""
 	}
+	var shell *domain.ShellWaitCondition
+	if spec.Kind == domain.WaitKindShell {
+		shell = &domain.ShellWaitCondition{Dir: spec.Dir, Command: spec.Command}
+	}
 	return domain.TaskWaitRegistration{
+		Shell:     shell,
 		RequestID: spec.RequestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
 		AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
 		ThreadID: identity.ThreadID, Wake: domain.WakeMode(spec.WakeMode), MaxDuration: spec.Timeout,
@@ -295,7 +296,11 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return err
 	}
 	if spec.Dir == "" {
-		spec.Dir, _ = os.Getwd()
+		spec.Dir = "."
+	}
+	spec.Dir, err = filepath.Abs(spec.Dir)
+	if err != nil {
+		return fmt.Errorf("resolve wait directory: %w", err)
 	}
 	checkDir := ""
 	if spec.Kind == domain.WaitKindShell {

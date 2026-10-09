@@ -277,6 +277,11 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 // and a quota condition keeps everything but the reset time it was given.
 // Anything that cannot be brought to that form is reported as different.
 func sameLegacyConditionTx(ctx context.Context, tx *sql.Tx, stored domain.TaskWait, request domain.TaskWaitRegistration, quotaStaleAfter time.Duration) (bool, error) {
+	// Legacy records cannot prove directory/argv identity. Refuse a complete
+	// shell registration instead of adopting its check under the old wait.
+	if request.Shell != nil {
+		return false, nil
+	}
 	if stored.OrTimeout != request.OrTimeout {
 		return false, nil
 	}

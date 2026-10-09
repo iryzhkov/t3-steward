@@ -217,6 +217,11 @@ func TestTaskWaitLegacyReplayOfALocalCondition(t *testing.T) {
 		t.Fatalf("a legacy local record answered another command: %v", err)
 	}
 	other = request
+	other.Shell = &domain.ShellWaitCondition{Dir: t.TempDir(), Command: []string{"./ready.sh", "a"}}
+	if _, err := store.RegisterTaskWait(ctx, other, now); !errors.Is(err, domain.ErrTaskWaitReplayCondition) {
+		t.Fatalf("a legacy local record accepted unprovable shell execution identity: %v", err)
+	}
+	other = request
 	other.OrTimeout = true
 	if _, err := store.RegisterTaskWait(ctx, other, now); !errors.Is(err, domain.ErrTaskWaitReplayCondition) {
 		t.Fatalf("a legacy local record answered another deadline treatment: %v", err)

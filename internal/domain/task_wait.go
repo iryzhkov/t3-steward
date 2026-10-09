@@ -304,6 +304,8 @@ type TaskWaitRegistration struct {
 	MaxDuration    time.Duration `json:"maxDuration"`
 	Name           string        `json:"name,omitempty"`
 	Condition      string        `json:"condition,omitempty"`
+	// Shell carries execution identity even if the host crashes before saving its check.
+	Shell *ShellWaitCondition `json:"shell,omitempty"`
 	// Kind is the wait kind; empty means shell.
 	Kind      WaitKind `json:"kind,omitempty"`
 	OrTimeout bool     `json:"orTimeout,omitempty"`
@@ -315,6 +317,13 @@ type TaskWaitRegistration struct {
 	Attention *AttentionRequest `json:"attention,omitempty"`
 	// Ask is the structured question of an ask wait.
 	Ask *AskRequest `json:"ask,omitempty"`
+}
+
+// ShellWaitCondition preserves the exact execution identity of a shell check.
+// Dir is resolved by the registering host before probing or registration.
+type ShellWaitCondition struct {
+	Dir     string   `json:"dir"`
+	Command []string `json:"command"`
 }
 
 // ConditionDigest identifies what this registration waits for: its kind,
@@ -331,7 +340,8 @@ func (r TaskWaitRegistration) ConditionDigest() string {
 		OrTimeout bool                `json:"orTimeout"`
 		Node      *NodeWaitCondition  `json:"node"`
 		Quota     *QuotaWaitCondition `json:"quota"`
-	}{r.Kind.OrShell(), r.Name, r.Condition, r.OrTimeout, r.Node, r.Quota})
+		Shell     *ShellWaitCondition `json:"shell,omitempty"`
+	}{r.Kind.OrShell(), r.Name, r.Condition, r.OrTimeout, r.Node, r.Quota, r.Shell})
 	if err != nil {
 		return ""
 	}

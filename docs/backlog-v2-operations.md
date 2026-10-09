@@ -1410,10 +1410,16 @@ differs (`the request ID already registered a different condition`), naming
 the wait the id already is. A record written before the digest existed is
 compared on the condition it stored (a node target after resolving the
 replayed one); when they differ, or cannot be shown to match, the replay is
-refused the same way. What the coordinator record does not hold, a shell
-check's directory and exact argument vector, a time wait's instant and a
-GitHub target's repository, is compared against the local check already
-saved for the request id, and a change is refused before anything is sent.
+refused the same way. Shell directories are resolved to absolute paths before
+probing and saving. The coordinator digest includes that directory and the
+exact argument vector, so a crash before the local check is saved cannot let
+a replay adopt a different shell condition. An older saved relative directory
+cannot identify its original working directory and is refused. Older shell
+registrations lacking complete identity are also refused on replay; use a new
+request id. Shell registrations now require an identity-aware coordinator:
+older strict coordinators reject the new `shell` field. A time wait's instant
+and a GitHub target's repository are also compared against the saved local
+check, and a change is refused before anything is sent.
 
 A task-bound wait takes `--wake all` unless told otherwise (`--all` is the
 same; `--any` is `--wake each`), and the registration says which: "Wake: all"

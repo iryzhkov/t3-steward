@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -13,9 +14,9 @@ import (
 )
 
 // errTaskCheckConditionChanged reports a registration whose request ID this
-// host already checks for a different local condition. The coordinator record
-// does not carry everything a local check runs with, such as a shell check's
-// directory, so this host is where such a change is caught.
+// host already checks for a different local condition. The host checks saved
+// identity before registration; the coordinator digest also protects shell
+// identity when the local check is missing.
 var errTaskCheckConditionChanged = errors.New("the request ID already registered a different condition")
 
 // registeredTaskCheck is this host's local check for the task-bound wait
@@ -40,6 +41,8 @@ func taskCheckConditionDifference(saved, local wait.Wait) string {
 		return fmt.Sprintf("kind %s, not %s", local.Kind.OrShell(), saved.Kind.OrShell())
 	case !slices.Equal(saved.Command, local.Command):
 		return fmt.Sprintf("command %q, not %q", local.Command, saved.Command)
+	case saved.Kind.OrShell() == "shell" && !filepath.IsAbs(saved.Dir):
+		return "an older relative directory whose original working directory cannot be established"
 	case saved.Dir != local.Dir:
 		return fmt.Sprintf("directory %s, not %s", local.Dir, saved.Dir)
 	case !sameInstant(saved.At, local.At):
