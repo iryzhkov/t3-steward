@@ -12,6 +12,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // P0.2: t3-steward run started at boot before T3 had written its runtime
@@ -22,7 +23,9 @@ func TestDaemonsWaitForT3DiscoveryAtStart(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := config.Default()
 	cfg.T3.DataDir = t.TempDir()
-	cfg.T3.DiscoveryTimeout = config.Duration(30 * time.Second)
+	// The timeout stays well above the scaled bound below, so a wait that ran
+	// to the timeout still fails the bound.
+	cfg.T3.DiscoveryTimeout = config.Duration(2 * time.Minute)
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 		path := t3api.RuntimeStatePath(cfg.T3.DataDir)
@@ -34,7 +37,7 @@ func TestDaemonsWaitForT3DiscoveryAtStart(t *testing.T) {
 	if err := awaitT3Discovery(context.Background(), cfg, logger); err != nil {
 		t.Fatalf("a T3 server that wrote its state late was not waited for: %v", err)
 	}
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(10*time.Second) {
 		t.Fatalf("waited %s for a state written after 200ms", elapsed)
 	}
 

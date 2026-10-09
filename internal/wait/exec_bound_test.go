@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // A command that times out returns at its run timeout even when a
@@ -13,7 +15,8 @@ import (
 func TestCommandWaitTimeoutDoesNotWaitForDescendant(t *testing.T) {
 	started := time.Now()
 	_, code, err := execCommand(context.Background(), Wait{
-		Command:    []string{"/bin/sh", "-c", "sleep 2; true"},
+		// The descendant sleeps longer than the scaled bound below.
+		Command:    []string{"/bin/sh", "-c", "sleep 10; true"},
 		Dir:        t.TempDir(),
 		RunTimeout: 20 * time.Millisecond,
 	})
@@ -21,7 +24,7 @@ func TestCommandWaitTimeoutDoesNotWaitForDescendant(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "run timeout") || code != -1 {
 		t.Fatalf("timed-out command = (%d, %v), want run timeout", code, err)
 	}
-	if elapsed > time.Second {
+	if elapsed > testtiming.Bound(time.Second) {
 		t.Fatalf("20ms run timeout returned after %s: a descendant held the command open", elapsed.Round(time.Millisecond))
 	}
 }
@@ -50,14 +53,15 @@ func TestCommandWaitKeepsABoundedOutputTail(t *testing.T) {
 func TestCommandWaitSucceedsDespiteABackgroundChildHoldingOutput(t *testing.T) {
 	started := time.Now()
 	out, code, err := execCommand(context.Background(), Wait{
-		Command:    []string{"/bin/sh", "-c", "echo met; sleep 3 & exit 0"},
+		// The background child sleeps longer than the scaled bound below.
+		Command:    []string{"/bin/sh", "-c", "echo met; sleep 20 & exit 0"},
 		Dir:        t.TempDir(),
 		RunTimeout: 30 * time.Second,
 	})
 	if err != nil || code != 0 || out != "met\n" {
 		t.Fatalf("successful command = (%q, %d, %v), want met with exit 0", out, code, err)
 	}
-	if elapsed := time.Since(started); elapsed > 2500*time.Millisecond {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(2500*time.Millisecond) {
 		t.Fatalf("successful command waited %s for its background child", elapsed.Round(time.Millisecond))
 	}
 }
