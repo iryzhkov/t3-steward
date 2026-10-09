@@ -100,8 +100,9 @@ resolved pool is saturated, moves to the best other eligible, ungated candidate
 of its receipt whose pool has room and whose effort is recorded. The
 assignment's placement records the move, the pools and the reason, and campaign
 explain prints it. Retries, started attempts, tasks with review-independence
-constraints and explicit pins (including task run --role, resolved by the
-client) are never moved.
+constraints, producers of constrained downstream reviews and explicit model or
+worker pins are never moved. Unpinned task run --role submissions retain their
+role. An effort override cannot exceed the alternative candidate's policy effort.
 
 
 Multi-task work is authored as a static version 2 DAG. Every task declared in
@@ -756,8 +757,9 @@ resolved pool is saturated, moves to the best other eligible, ungated candidate
 of its receipt whose pool has room and whose effort is recorded. The
 assignment's placement records the move, the pools and the reason, and campaign
 explain prints it. Retries, started attempts, tasks with review-independence
-constraints and explicit pins (including task run --role, resolved by the
-client) are never moved.
+constraints, producers of constrained downstream reviews and explicit model or
+worker pins are never moved. Unpinned task run --role submissions retain their
+role. An effort override cannot exceed the alternative candidate's policy effort.
 
 
 

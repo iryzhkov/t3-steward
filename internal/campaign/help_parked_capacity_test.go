@@ -26,7 +26,7 @@ func TestHelpDocumentsParkedCapacityAndSaturation(t *testing.T) {
 		for _, want := range []string{
 			"ranks in the saturated band: below every pool with room, above gated pools",
 			"resolved pool is saturated, moves to the best other eligible, ungated candidate",
-			"explicit pins (including task run --role, resolved by the client) are never moved",
+			"worker pins are never moved. Unpinned task run --role submissions retain their",
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s help lacks %q", name, want)

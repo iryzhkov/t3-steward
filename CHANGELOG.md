@@ -49,8 +49,11 @@ or rc.115 coordinator.
   room. The assignment's placement records `routeReresolution` (role, from and
   to route and pool, effort, ranking, reason), which `campaign explain` prints.
   Explicit pins, retries, started attempts and tasks with review-independence
-  constraints are never moved. Role receipts now record each candidate's
-  `effort`; older receipts are moved only when the task overrides the effort.
+  constraints or constrained downstream reviewers are never moved. Unpinned
+  `task run --role` submissions retain their role for coordinator resolution;
+  explicit model and worker pins stay fixed. Role receipts record each
+  candidate's `effort`, and alternatives without a policy ceiling or below
+  the task's effort override are skipped.
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first

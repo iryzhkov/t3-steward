@@ -229,6 +229,41 @@ func TestM13ReviewRoleDoesNotWeakenRound(t *testing.T) {
 		t.Fatal("explicit role bypassed diversity")
 	}
 }
+func TestTaskRunRolePreservesExplicitPinsAndEffort(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	raw := strings.ReplaceAll(strings.ReplaceAll(m13Policy, "claude/opus", "t3-primary/opus"), "codex/sol", "t3-primary/claude-haiku-4-5")
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, flags := range [][]string{{"--model", "t3-primary/opus"}, {"--worker", "omarchy-pc"}} {
+		h := newTaskRunHarness()
+		c := h.cli()
+		c.policyPath = path
+		query := c.query
+		c.query = func(ctx context.Context, q backlogadmin.Query) (backlogadmin.Response, error) {
+			if q.Kind == backlogadmin.QueryWorkers {
+				return backlogadmin.Response{Workers: []backlogadmin.Worker{{Providers: []backlogadmin.WorkerProviderAuthorization{{Instance: "t3-primary", Models: []string{"opus", "claude-haiku-4-5"}}}}}}, nil
+			}
+			return query(ctx, q)
+		}
+		args := append([]string{"--role", "execute", "--effort", "low", "--project", "steward", "--ref", "main", "--no-notify", "--json"}, flags...)
+		args = append(args, "--", "hello")
+		if err := c.run(context.Background(), args); err != nil {
+			t.Fatal(err)
+		}
+		manifest, _ := h.manifest(t)
+		if len(manifest.Routes) != 1 || manifest.Routes[0].Options["effort"] != "low" {
+			t.Fatalf("pin or effort lost: %+v", manifest)
+		}
+		for _, task := range manifest.Tasks {
+			if task.Role != "" {
+				t.Fatalf("explicit pin gained re-resolvable role: %+v", task)
+			}
+		}
+	}
+}
+
 func TestM13TaskRetainsFrozenProvenanceAndRefusesCatalogFailure(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	raw := strings.ReplaceAll(strings.ReplaceAll(m13Policy, "claude/opus", "t3-primary/opus"), "codex/sol", "t3-primary/claude-haiku-4-5")
@@ -239,6 +274,22 @@ func TestM13TaskRetainsFrozenProvenanceAndRefusesCatalogFailure(t *testing.T) {
 	h := newTaskRunHarness()
 	c := h.cli()
 	c.policyPath = path
+	c.campaign.viability = func(_ context.Context, request backlogadmin.ViabilityRequest) (backlogadmin.ViabilityMatrix, error) {
+		p, err := parseRoutePolicy([]byte(raw))
+		if err != nil {
+			return backlogadmin.ViabilityMatrix{}, err
+		}
+		selections, failures := resolveCampaignPolicy(p, request.Tasks, h.projects, func(backlogadmin.ViabilityTask, string, bool) bool { return true }, time.Now())
+		matrix := backlogadmin.ViabilityMatrix{Outcome: backlogadmin.ViabilityReady}
+		for _, task := range request.Tasks {
+			selection := selections[task.Name]
+			if reason, ok := failures[task.Name]; ok {
+				t.Fatalf("role resolution: %+v", reason)
+			}
+			matrix.Tasks = append(matrix.Tasks, backlogadmin.ViabilityTaskResult{Task: task.Name, RoleSelection: &selection})
+		}
+		return matrix, nil
+	}
 	originalQuery := c.query
 	failCatalog := false
 	c.query = func(ctx context.Context, q backlogadmin.Query) (backlogadmin.Response, error) {
@@ -255,8 +306,13 @@ func TestM13TaskRetainsFrozenProvenanceAndRefusesCatalogFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	manifest, files := h.manifest(t)
-	if manifest.Routes[0].Options["effort"] != "high" {
-		t.Fatal("effort not sent")
+	if len(manifest.Routes) != 0 {
+		t.Fatal("unpinned role was submitted as a concrete route")
+	}
+	for name, task := range manifest.Tasks {
+		if task.Role != "execute" || len(task.Routes) != 0 || task.Options["effort"] != "" {
+			t.Fatalf("task %s lost unpinned role or gained a policy-effort override: %+v", name, task)
+		}
 	}
 	if files["route-policy.yaml"] != raw || !strings.Contains(files["route-selection.json"], "route-selection/v1") {
 		t.Fatalf("missing retained provenance: %+v", files)

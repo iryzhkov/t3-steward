@@ -159,6 +159,18 @@ func TestM172TaskQuotaReplayAndFailure(t *testing.T) {
 		}
 		return original(ctx, q)
 	}
+	c.campaign.viability = func(_ context.Context, request backlogadmin.ViabilityRequest) (backlogadmin.ViabilityMatrix, error) {
+		selections, failures := resolveCampaignPolicy(p, request.Tasks, h.projects, func(backlogadmin.ViabilityTask, string, bool) bool { return true }, now)
+		matrix := backlogadmin.ViabilityMatrix{Outcome: backlogadmin.ViabilityReady}
+		for _, task := range request.Tasks {
+			if reason, ok := failures[task.Name]; ok {
+				t.Fatalf("role resolution: %+v", reason)
+			}
+			selection := selections[task.Name]
+			matrix.Tasks = append(matrix.Tasks, backlogadmin.ViabilityTaskResult{Task: task.Name, RoleSelection: &selection})
+		}
+		return matrix, nil
+	}
 	args := []string{"--role", "execute", "--project", "steward", "--ref", "main", "--no-notify", "--json", "--", "hello"}
 	if err := c.run(context.Background(), args); err != nil {
 		t.Fatal(err)

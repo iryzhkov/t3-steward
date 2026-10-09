@@ -248,5 +248,7 @@ receipt itself is not rewritten: the assignment's placement records the move as
 `routeReresolution` with role, from and to route and pool, effort, ranking and
 reason, and `campaign explain` prints it. Retries, started attempts, tasks with
 a review-independence constraint (producer families or a cross-provider
-result) and explicit pins are never moved. A `task run --role` route is resolved
-by the client and submitted as a pin, so it is not moved either.
+result), producers of constrained downstream reviews and explicit model or worker
+pins are never moved. Unpinned `task run --role` submissions retain their role and
+are resolved by the coordinator. An effort override must fit the alternative
+candidate's recorded policy ceiling; otherwise that candidate is skipped.

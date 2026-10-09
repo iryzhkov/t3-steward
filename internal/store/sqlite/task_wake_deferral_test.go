@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,6 +212,99 @@ func TestWakeDeferralNamesEveryCause(t *testing.T) {
 	}
 }
 
+// Resource-sized wakes release and reacquire CPU and memory independently of
+// executor slots and pool slots: both slot limits have room in these fixtures.
+func TestParkAndWakeRespectCPUAndMemoryReservations(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		capacity domain.AllocatableCapacity
+		detail   string
+	}{
+		{"cpu", domain.AllocatableCapacity{ExecutorSlots: 4, CPUUnits: 1, MemoryMB: 2048}, "cpu demand"},
+		{"memory", domain.AllocatableCapacity{ExecutorSlots: 4, CPUUnits: 4, MemoryMB: 512}, "memory demand"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, parent, now, cutoffs := governedWakeFixture(t, 4, 4)
+			holder, _ := holdingAttempt(t, store, "resource-holder", "worker", now)
+			setWakeResources(t, store, test.capacity, domain.ResourceDemand{CPUUnits: 1, MemoryMB: 512})
+			parentWait := parkAndSettle(t, store, parent, "resource-parent", now)
+			wakeAt := now.Add(2 * time.Second)
+			assertDeferred := func(waitID string) {
+				t.Helper()
+				wakes, err := store.WakeTaskWaitsBefore(ctx, wakeAt, cutoffs)
+				if err != nil || len(wakes) != 0 {
+					t.Fatalf("resource-constrained wake = %+v err=%v, want deferred", wakes, err)
+				}
+				deferral := loadTaskWait(t, store, waitID).WakeDeferral
+				if deferral == nil || deferral.Code != domain.WakeDeferredExecutorCapacity ||
+					!strings.Contains(deferral.Detail, test.detail) {
+					t.Fatalf("deferral = %+v, want %s despite free executor and pool slots", deferral, test.detail)
+				}
+				assertSlotsWithinLimits(t, store, 0, 4, 4)
+			}
+			assertWoken := func(attemptID string) {
+				t.Helper()
+				wakes, err := store.WakeTaskWaitsBefore(ctx, wakeAt, cutoffs)
+				if err != nil || len(wakes) != 1 || wakes[0].AttemptID != attemptID {
+					t.Fatalf("wake = %+v err=%v, want only %s after the holder parks", wakes, err, attemptID)
+				}
+				if got := loadAttempt(t, store, attemptID); got.Control != domain.ControlResuming {
+					t.Fatalf("woken control = %s, want resuming", got.Control)
+				}
+				assertSlotsWithinLimits(t, store, 1, 4, 4)
+			}
+
+			assertDeferred(parentWait.ID)
+			// Parking a live holder releases its sizes before its wait settles.
+			holder = loadAttempt(t, store, holder.ID)
+			holderWait, err := store.RegisterTaskWait(ctx, taskWaitRegistration(holder, "resource-holder", domain.WakeEach), wakeAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertWoken(parent.ID)
+			// A resumed turn immediately reserves its sizes, before the worker
+			// reports running, so the other settled wake cannot overcommit them.
+			if _, err := store.SettleTaskWait(ctx, holderWait.ID, domain.TaskWaitResult{Outcome: domain.TaskWaitMet}, wakeAt); err != nil {
+				t.Fatal(err)
+			}
+			assertDeferred(holderWait.ID)
+			parent = loadAttempt(t, store, parent.ID)
+			parent.Control, parent.Revision = domain.ControlRunning, parent.Revision+1
+			if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Attempts: []domain.Attempt{parent}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.RegisterTaskWait(ctx, taskWaitRegistration(parent, "resource-parent-again", domain.WakeEach), wakeAt); err != nil {
+				t.Fatal(err)
+			}
+			assertWoken(holder.ID)
+		})
+	}
+}
+
+func setWakeResources(t *testing.T, store *Store, capacity domain.AllocatableCapacity, demand domain.ResourceDemand) {
+	t.Helper()
+	ctx := context.Background()
+	records, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range records.Assignments {
+		frozen := demand
+		records.Assignments[index].ExecutorDemand = &frozen
+	}
+	if err := store.SaveCoordinatorRecords(ctx, CoordinatorRecords{Assignments: records.Assignments}); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := store.LoadWorkerSnapshots(ctx)
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("load resource snapshot: count=%d err=%v", len(snapshots), err)
+	}
+	snapshot := snapshots[0]
+	snapshot.Inventory.Allocatable = capacity
+	writeTaskWakeSnapshotFixture(t, store, snapshot)
+}
+
 // The legacy pass without coordinator worker evidence fails closed on every
 // governed wake; it has no evidence of why, so it records nothing.
 func TestLegacyWakePassRecordsNoDeferral(t *testing.T) {
@@ -248,6 +342,10 @@ func TestParkAndWakeNeverExceedSlotsOrPoolLimit(t *testing.T) {
 				}
 				attempts = append(attempts, id)
 			}
+			setWakeResources(t, store, domain.AllocatableCapacity{
+				ExecutorSlots: slots, CPUUnits: 3, MemoryMB: 1536,
+			}, domain.ResourceDemand{CPUUnits: 1.5, MemoryMB: 768})
+			assertSlotsWithinLimits(t, store, -1, slots, poolLimit)
 			random := rand.New(rand.NewSource(seed))
 			clock := now
 			sequence, woken, deferred := 0, 0, 0
@@ -339,6 +437,8 @@ func assertSlotsWithinLimits(t *testing.T, store *Store, step, slots, poolLimit 
 		attempts[attempt.ID] = attempt
 	}
 	executor, provider := 0, 0
+	var cpu float64
+	memory := 0
 	for _, assignment := range records.Assignments {
 		attempt, found := attempts[assignment.AttemptID]
 		if !found || attempt.Progress.Terminal() {
@@ -346,11 +446,26 @@ func assertSlotsWithinLimits(t *testing.T, store *Store, step, slots, poolLimit 
 		}
 		if assignment.WorkerID == "worker" && domain.AssignmentOwnsExecutorCapacity(attempt, assignment) {
 			executor++
+			demand, known := domain.AssignmentExecutorDemand(attempt, assignment)
+			if !known {
+				t.Fatalf("step %d: resource reservation for %s is not frozen", step, assignment.ID)
+			}
+			cpu += demand.CPUUnits
+			memory += demand.MemoryMB
 		}
 		if assignment.Route.QuotaPoolID == "pool" && assignment.State != domain.AssignmentCompleted &&
 			assignment.State != domain.AssignmentReleased && attempt.Control.HoldsProviderSlot() {
 			provider++
 		}
+	}
+	snapshots, err := store.LoadWorkerSnapshots(context.Background())
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("step %d: snapshot count=%d err=%v", step, len(snapshots), err)
+	}
+	capacity := snapshots[0].Inventory.Allocatable
+	if (capacity.CPUUnits > 0 && cpu > capacity.CPUUnits) ||
+		(capacity.MemoryMB > 0 && memory > capacity.MemoryMB) {
+		t.Fatalf("step %d: reserved CPU %v/%v and memory %d/%d", step, cpu, capacity.CPUUnits, memory, capacity.MemoryMB)
 	}
 	if executor > slots || provider > poolLimit {
 		t.Fatalf("step %d: %d executor slots of %d and %d pool slots of %d are held", step, executor, slots, provider, poolLimit)

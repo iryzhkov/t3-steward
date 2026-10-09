@@ -23,17 +23,15 @@ type roleAlternative struct {
 //
 // It returns nothing, and the task is planned exactly as submitted, unless
 // every one of these holds:
-//   - the task was resolved from a role by the coordinator (an explicit pin,
-//     including a `task run --role` route the client resolved, is never moved);
+//   - the task was resolved from a role (an explicit pin is never moved);
 //   - its attempt is the first, ready and has never been assigned or started;
 //   - it carries no review-independence constraint, so moving it can never put
 //     a reviewer on its producer's provider family;
 //   - the resolved route's pool is saturated and the candidate's pool has room
 //     and is not closed or draining.
 //
-// A candidate needs a known effort: the task's own effort override, or the
-// effort its receipt recorded for it. A receipt written before candidate
-// efforts were recorded is therefore not re-resolved.
+// A candidate needs a recorded policy effort. The task's own effort override
+// must not exceed it. Receipts without candidate efforts are not re-resolved.
 func (router *providerRouter) saturatedRoleAlternatives(task domain.Task, attempt domain.Attempt, now time.Time) []roleAlternative {
 	selection := task.RoleSelection
 	if task.Role == "" || selection == nil || len(task.Routes) != 1 || len(selection.Candidates) == 0 {
@@ -79,7 +77,8 @@ func (router *providerRouter) saturatedRoleAlternatives(task domain.Task, attemp
 		if effort == "" {
 			effort = candidate.Effort
 		}
-		if effort != "low" && effort != "medium" && effort != "high" {
+		levels := map[string]int{"low": 1, "medium": 2, "high": 3}
+		if levels[effort] == 0 || levels[candidate.Effort] == 0 || levels[effort] > levels[candidate.Effort] {
 			continue
 		}
 		toPool := router.candidatePool("", instance, candidate.Pool)
@@ -156,12 +155,37 @@ func verdictPool(verdicts []domain.RoleCandidateVerdict, route string) string {
 	return ""
 }
 
+// hasDependentReviewConstraint protects frozen downstream review selections.
+// Producer routes stay fixed when any dependent review carries an independence
+// constraint; changing the producer would invalidate that immutable receipt.
+func hasDependentReviewConstraint(producer domain.Task, tasks []domain.Task) bool {
+	for _, task := range tasks {
+		selection := task.RoleSelection
+		constrained := task.ReviewOutput != nil || task.ReviewRequirements != nil || task.ReviewJudge ||
+			(selection != nil && (selection.Diversity.CrossProvider || len(selection.Diversity.ProducerFamilies) != 0))
+		if !constrained {
+			continue
+		}
+		for _, name := range task.Needs {
+			if name == producer.Name || name == producer.ID {
+				return true
+			}
+		}
+		for name := range task.DependencyInputs {
+			if name == producer.Name || name == producer.ID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // planEntry plans one task, first on the alternatives of a saturated role task
 // and otherwise as submitted. An alternative is used only if it produces a
 // proposal; when none does, the decision is the one for the submitted route,
 // so explain reports the saturated pool rather than an alternative's blocker.
 func planEntry(input PlanInput, router *providerRouter, constraints []PlanningConstraintSession, entry planningTaskEntry, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, domain.Task, error) {
-	if entry.ready {
+	if entry.ready && !hasDependentReviewConstraint(entry.task, entry.state.Tasks) {
 		for _, alternative := range router.saturatedRoleAlternatives(entry.task, entry.attempt, input.Now) {
 			decision, proposal, err := planTask(input, router, constraints, entry.workflow, entry.state,
 				alternative.task, entry.attempt, entry.order, resourceOwners, checkoutOwners)

@@ -95,6 +95,93 @@ func TestRoleTaskWithRoomKeepsItsRoute(t *testing.T) {
 	}
 }
 
+func TestReviewReresolutionEffortDoesNotExceedAlternativePolicy(t *testing.T) {
+	task := roleTask("alpha")
+	task.RoleEffort = "medium"
+	task.RoleSelection.Candidates[1].Effort = "low"
+	plan, err := BuildPlan(reresolutionInput(1, 1, task))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Proposals) != 0 || plannerDecision(t, plan, "alpha").RouteReresolution != nil {
+		t.Fatal("override above candidate policy must leave task queued")
+	}
+}
+
+func TestReviewReresolutionPreservesDownstreamCrossProviderSelection(t *testing.T) {
+	producer := roleTask("alpha")
+	reviewer := routingTask("beta", "claude", "opus")
+	reviewer.Role = "review"
+	reviewer.Routes[0].Options = map[string]string{"effort": "medium"}
+	reviewer.RoleSelection = &domain.RoleSelection{
+		Role: "review", Route: "claude/opus", Effort: "medium",
+		Diversity: domain.RoleDiversity{CrossProvider: true, ProducerFamilies: []string{"openai"}},
+	}
+	reviewer.Needs = []string{producer.Name}
+	input := reresolutionInput(1, 1, producer, reviewer)
+	input.RouteEstimates = append(input.RouteEstimates,
+		routingEstimate("beta-1", "worker", "claude", "opus", map[string]string{"effort": "medium"}, 10))
+	plan, err := BuildPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var producerRoute domain.ProviderRoute
+	for _, p := range plan.Proposals {
+		if p.AttemptID == "alpha-1" {
+			producerRoute = *p.Route
+		}
+	}
+	if producerRoute.ProviderInstanceID != "" || plannerDecision(t, plan, "alpha").RouteReresolution != nil {
+		t.Fatal("producer with frozen dependent review must remain on its original route")
+	}
+	producerRoute = producer.Routes[0]
+	for i := range input.Workflows[0].State.Attempts {
+		a := &input.Workflows[0].State.Attempts[i]
+		if a.ID == "alpha-1" {
+			a.Progress, a.Control = domain.ProgressSucceeded, domain.ControlStopped
+		}
+	}
+	next, err := BuildPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(next.Proposals) != 1 || next.Proposals[0].AttemptID != "beta-1" {
+		t.Fatalf("reviewer was not planned after original producer succeeded: %+v", next.Proposals)
+	}
+	for _, p := range next.Proposals {
+		if p.AttemptID == "beta-1" && p.Route.ProviderInstanceID == producerRoute.ProviderInstanceID {
+			t.Fatalf("producer and cross-provider reviewer both planned on %s; frozen reviewer receipt still says %+v",
+				p.Route.ProviderInstanceID, reviewer.RoleSelection.Diversity)
+		}
+	}
+}
+
+func TestRoleReresolutionAllowsLowerEffortOverride(t *testing.T) {
+	task := roleTask("alpha")
+	task.RoleEffort = "low"
+	plan, err := BuildPlan(reresolutionInput(1, 1, task))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Proposals) != 1 || plan.Proposals[0].Route.Options["effort"] != "low" {
+		t.Fatalf("lower effort override lost: %+v", plan.Proposals)
+	}
+}
+
+func TestRoleReresolutionProtectsReviewDependencyInputs(t *testing.T) {
+	producer := roleTask("alpha")
+	reviewer := routingTask("beta", "claude", "opus")
+	reviewer.ReviewJudge = true
+	reviewer.DependencyInputs = map[string][]string{producer.ID: {"implementation"}}
+	plan, err := BuildPlan(reresolutionInput(1, 1, producer, reviewer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plannerDecision(t, plan, "alpha").RouteReresolution != nil {
+		t.Fatal("producer of constrained dependency input moved")
+	}
+}
+
 // Explicit pins and every other excluded case stay on the saturated route and
 // report the concurrency blocker instead of moving.
 func TestRoleReresolutionNeverMovesExcludedTasks(t *testing.T) {
@@ -113,6 +200,10 @@ func TestRoleReresolutionNeverMovesExcludedTasks(t *testing.T) {
 			input.Workflows[0].State.Attempts[0].StartedAt = &started
 		},
 		"a candidate without a recorded effort": func(task *domain.Task, _ *PlanInput) {
+			task.RoleSelection.Candidates[1].Effort = ""
+		},
+		"override without a recorded policy ceiling": func(task *domain.Task, _ *PlanInput) {
+			task.RoleEffort = "low"
 			task.RoleSelection.Candidates[1].Effort = ""
 		},
 		"a review-independence constraint": func(task *domain.Task, _ *PlanInput) {
