@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // A cancelled run returns within its cleanup bound even when the user manager
@@ -40,10 +42,10 @@ func TestCancelledRunReturnsWithinCleanupBoundWhenSystemctlHangs(t *testing.T) {
 	var got outcome
 	select {
 	case got = <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtiming.Bound(10 * time.Second)):
 		t.Fatal("cancelled run did not return while systemctl hung")
 	}
-	if elapsed := time.Since(cancelled); elapsed > time.Second {
+	if elapsed := time.Since(cancelled); elapsed > testtiming.Bound(time.Second) {
 		t.Fatalf("cancellation took %s despite a 20ms cleanup bound", elapsed.Round(time.Millisecond))
 	}
 	if !errors.Is(got.err, context.Canceled) {
@@ -110,10 +112,10 @@ func TestCancelledRunReturnsWhenDescendantHoldsOutputAndScopeKillFails(t *testin
 	var err error
 	select {
 	case err = <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtiming.Bound(10 * time.Second)):
 		t.Fatal("cancelled run waited for a descendant holding its output")
 	}
-	if elapsed := time.Since(cancelled); elapsed > 2*time.Second {
+	if elapsed := time.Since(cancelled); elapsed > testtiming.Bound(2*time.Second) {
 		t.Fatalf("cancellation took %s despite a 200ms cleanup bound", elapsed.Round(time.Millisecond))
 	}
 	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "kill process scope") {
@@ -217,7 +219,7 @@ func TestKillRemainingCleanupReturnsWithinBoundWhenSystemctlChildHoldsOutput(t *
 			})
 			select {
 			case <-output.ready:
-			case <-time.After(5 * time.Second):
+			case <-time.After(testtiming.Bound(5 * time.Second)):
 				t.Fatal("systemctl output never observed held-output-ready")
 			}
 			parentGroup, parentErr := syscall.Getpgid(command.Process.Pid)
@@ -230,8 +232,8 @@ func TestKillRemainingCleanupReturnsWithinBoundWhenSystemctlChildHoldsOutput(t *
 			}
 			t.Logf("held-output-ready: live child=%d separate group=%d setup=%s", pid, group, time.Since(setup))
 			// Rescue a broken implementation without letting its Wait goroutine
-			// or the escaped child survive the test. This is beyond the 1s bound.
-			rescue := time.AfterFunc(2*time.Second, func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
+			// or the escaped child survive the test. This is beyond the bound below.
+			rescue := time.AfterFunc(testtiming.Bound(2*time.Second), func() { _ = syscall.Kill(-pid, syscall.SIGKILL) })
 			defer rescue.Stop()
 			started := time.Now()
 			timer := time.AfterFunc(20*time.Millisecond, cancel)
@@ -239,7 +241,7 @@ func TestKillRemainingCleanupReturnsWithinBoundWhenSystemctlChildHoldsOutput(t *
 			waited = true
 			timer.Stop()
 			elapsed := time.Since(started)
-			if elapsed > time.Second {
+			if elapsed > testtiming.Bound(time.Second) {
 				t.Fatalf("held-output Wait took %s despite a 20ms cancellation bound", elapsed.Round(time.Millisecond))
 			}
 			if ctx.Err() != context.Canceled || err == nil || command.ProcessState == nil {
