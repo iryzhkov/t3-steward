@@ -137,10 +137,12 @@ Text, JSON and task dry-run receipts show the ranking version, chosen route and
 candidate eligibility, band, pool and reason. The pinned `route-selection.json`
 keeps stable provenance, the ranking version, the chosen route and every
 candidate's eligibility, band, pool and reason: the reason a candidate was
-skipped, or `route-ranking/v1: POOL BAND` for a ranked one. Live percentages and
-observation ages are excluded, because the file is part of the archive the run
-key covers: changed readings within the same bands retain the same run key,
-while a changed band or chosen route is a different ranking and a new key.
+skipped, or the causal ranking explanation (such as stale/missing windows,
+exhausted windows or admission closed/constrained). Live percentages,
+observation ages and reset times are excluded, because the file is part of
+the archive the run key covers: changed readings with the same bands and
+causes retain the same run key, while a changed cause, band or chosen route
+produces a new key.
 Changing the ranking version changes run keys once. Unknown quota falls back to
 policy order while still recording v1 as the ranking used.
 

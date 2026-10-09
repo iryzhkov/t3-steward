@@ -74,6 +74,10 @@ or rc.115 coordinator.
 
 ### Fixed
 
+- Pinned role-ranking receipts retain why candidates are stale, missing,
+  exhausted or admission-gated, instead of reducing every reason to its
+  pool and band. Volatile usage, observation ages and reset times remain
+  outside the run key; a changed causal explanation changes the key.
 - Campaign and schedule role ranking reads fresh quota. `campaign check`,
   campaign submission and schedule occurrences ranked every candidate
   `unknown` and fell back to policy order whenever the coordinator's quota
