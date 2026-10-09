@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -105,7 +106,7 @@ func TestRepositoryProbeIsBoundedForAWorkerThatNeverAnswers(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want the probe budget's deadline", err)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
+	if elapsed := time.Since(start); elapsed > testtiming.Bound(2*time.Second) {
 		t.Fatalf("probe took %v, want it bounded by its budget", elapsed)
 	}
 }
