@@ -569,6 +569,31 @@ func threadTerminal(ctx context.Context, export func(context.Context, string) ([
 	return false, thread.TurnID, nil
 }
 
+// undecodableRequestTerminal decides a collection whose thread archive could
+// not be decoded (err) while threadTerminal read the current start request,
+// which no turn has adopted yet. The archive is read again on a few passes,
+// under the same bound as the completion judgement, in case the export was
+// caught mid-write. After that, whether T3 refused the request cannot be read
+// from the archive, so only the shell's own evidence ends it: a session that
+// failed at or after the request. The request is then collected under its own
+// identity and the completion judgement fails the attempt as
+// thread-archive-invalid. Without that evidence the request may still start a
+// turn, and collecting it would take the workspace from a live provider turn,
+// so the collection keeps deferring with a reason that names the archive, and
+// triage lists the deferral once it is old.
+func (d *LocalDriver) undecodableRequestTerminal(pkg workerproto.ExecutionPackage, thread domain.Thread, err error) (bool, string, error) {
+	exhausted, passes := archiveDecodeExhausted(pkg, err)
+	if !exhausted {
+		return false, "", fmt.Errorf("thread archive could not be decoded (pass %d of %d): %w", passes, maxArchiveDecodePasses, err)
+	}
+	if !sessionFailedCurrentRequest(thread) {
+		return false, "", fmt.Errorf("the current turn start request is unresolved and its thread archive could not be decoded on %d passes; collection waits for T3 to start or fail the request: %w", passes, err)
+	}
+	d.logger().Warn("the thread archive cannot be decoded and the session failed after the current turn start request; collecting the request without the archive's judgement",
+		"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "passes", passes, "error", err)
+	return true, turnRequestIdentity(thread), nil
+}
+
 // writeTaskIdentity records the attempt's identity inside the prepared
 // workspace, before any thread is dispatched, so an agent can name itself when
 // it registers a task-bound wait.
@@ -983,7 +1008,10 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	message, archive := "", []byte("{}")
 	terminal, identity := true, ""
 	if thread != nil {
-		if terminal, identity, err = d.threadTerminal(ctx, *thread); err != nil {
+		if terminal, identity, err = d.threadTerminal(ctx, *thread); isThreadArchiveInvalid(err) {
+			terminal, identity, err = d.undecodableRequestTerminal(pkg, *thread, err)
+		}
+		if err != nil {
 			return fmt.Errorf("collect thread state: %w", err)
 		}
 	}

@@ -93,6 +93,42 @@ func TestInterpretedActivityFieldsOfAnUnexpectedShapeAreWarnings(t *testing.T) {
 	}
 }
 
+// Review finding (repair round 2): a payload that is not an object on a kind
+// Steward interprets lost the interpreted field without a word. It is still
+// read, as a refusal with no detail, and it is now a warning; the same
+// payload on a kind Steward does not interpret, or no payload at all, is not.
+func TestAnInterpretedActivityWhosePayloadIsNotAnObjectIsAWarning(t *testing.T) {
+	for _, payload := range []string{`["refused"]`, `"schema changed"`, `42`, `true`} {
+		refusal := `{"id":"activity-refused","kind":"provider.turn.start.failed","createdAt":"2026-10-08T03:30:00Z","payload":` + payload + `}`
+		runtime := `{"id":"activity-runtime","kind":"runtime.error","turnId":"turn-1","createdAt":"2026-10-08T03:19:00Z","payload":` + payload + `}`
+		archive := []byte(v045Archive(v045CompletedTurn, v045ReadySession, refusal, runtime))
+		reason, err := ResultCompletionFailure(archive, "thread-1", "")
+		if want := TurnStartRefusedFailure + ": T3 recorded no detail"; err != nil || reason != want {
+			t.Fatalf("payload %s: reason=%q err=%v", payload, reason, err)
+		}
+		warnings, err := ThreadArchiveWarnings(archive)
+		if err != nil || len(warnings) != 2 {
+			t.Fatalf("payload %s: warnings=%q err=%v, want one for each interpreted activity", payload, warnings, err)
+		}
+		for index, want := range []string{`"activity-refused" (provider.turn.start.failed)`, `"activity-runtime" (runtime.error)`} {
+			if !strings.Contains(warnings[index], want) || !strings.Contains(warnings[index], "not an object") || !strings.Contains(warnings[index], payload) {
+				t.Fatalf("payload %s: warning %q does not name %s and its payload", payload, warnings[index], want)
+			}
+		}
+
+		uninterpreted := `{"id":"activity-tool","kind":"tool.completed","createdAt":"2026-10-08T03:10:00Z","payload":` + payload + `}`
+		if warnings, err := ThreadArchiveWarnings([]byte(v045Archive(v045CompletedTurn, v045ReadySession, uninterpreted))); err != nil || len(warnings) != 0 {
+			t.Fatalf("payload %s on an uninterpreted kind: warnings=%q err=%v", payload, warnings, err)
+		}
+	}
+	for _, payload := range []string{``, `,"payload":null`, `,"payload":{}`} {
+		refusal := `{"id":"activity-refused","kind":"provider.turn.start.failed","createdAt":"2026-10-08T03:30:00Z"` + payload + `}`
+		if warnings, err := ThreadArchiveWarnings([]byte(v045Archive(v045CompletedTurn, v045ReadySession, refusal))); err != nil || len(warnings) != 0 {
+			t.Fatalf("payload %q: warnings=%q err=%v, want none for an absent field", payload, warnings, err)
+		}
+	}
+}
+
 // An activity entry that is not an object, or whose identity fields are not
 // strings, is skipped rather than refused: it cannot be a refusal or a runtime
 // error Steward would act on.

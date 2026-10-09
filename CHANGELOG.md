@@ -83,11 +83,17 @@ or rc.115 coordinator.
   triage said nothing. The decoder now keeps every activity payload as raw
   JSON and reads only the two fields Steward interprets, a refused turn
   start's `detail` and a runtime error's `message`; one of those in another
-  shape is read as its JSON text and logged as a warning on the attempt, and
-  an activity entry that is not an object is skipped. An archive that still
+  shape is read as its JSON text and logged as a warning on the attempt, as
+  is an activity of either kind whose payload is not an object, and an
+  activity entry that is not an object is skipped. An archive that still
   cannot be decoded is read again on at most three consecutive collection
-  passes with the same error; then the worker collects the declared outputs
-  and commits and publishes the archive beside them, and the coordinator
+  passes with the same error, whether the completion judgement or the check
+  of a resumed request that no turn has adopted yet meets it. For such a
+  request the worker then goes ahead only if the session failed after the
+  request, since otherwise T3 may still start its turn, and keeps deferring
+  with the reason meanwhile. Once it goes ahead, the worker collects the
+  declared outputs and commits and publishes the archive beside them, and the
+  coordinator
   fails the attempt as `infrastructure failure thread-archive-invalid: ...`
   while importing its outputs, verification evidence and the archive,
   instead of rejecting the whole result. `triage` lists a new

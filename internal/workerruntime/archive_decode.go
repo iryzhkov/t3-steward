@@ -36,13 +36,22 @@ func archiveDecodeKey(pkg workerproto.ExecutionPackage) string {
 // archiveDecodeExhausted records one more pass that failed to decode the
 // archive with err, and reports whether the bound is reached: the same error
 // on maxArchiveDecodePasses consecutive passes. It returns the passes counted.
+//
+// The same error is the same decoding failure, whichever reader met it: a
+// collection reads the archive for the current start request and then for
+// the completion judgement, and the two readers name themselves differently.
 func archiveDecodeExhausted(pkg workerproto.ExecutionPackage, err error) (bool, int) {
 	key := archiveDecodeKey(pkg)
+	cause := err.Error()
+	var invalid *backlog.ThreadArchiveInvalidError
+	if errors.As(err, &invalid) && invalid.Err != nil {
+		cause = invalid.Err.Error()
+	}
 	archiveDecodeFailures.Lock()
 	defer archiveDecodeFailures.Unlock()
 	count := archiveDecodeFailures.passes[key]
-	if count.err != err.Error() {
-		count = archiveDecodeCount{err: err.Error()}
+	if count.err != cause {
+		count = archiveDecodeCount{err: cause}
 	}
 	count.passes++
 	archiveDecodeFailures.passes[key] = count

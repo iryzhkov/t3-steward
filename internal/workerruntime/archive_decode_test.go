@@ -103,6 +103,127 @@ func TestAnUndecodableArchiveStopsDeferringAndTheResultsAreStillCollected(t *tes
 	}
 }
 
+// Review finding (repair round 2): a resumed or woken request that no turn
+// adopted is read from the archive before the completion judgement, to see
+// whether T3 refused it, and an undecodable archive there deferred the
+// collection on every pass. The same bound now applies to that read. Once it
+// is reached, a session that failed after the request ends the request and
+// the results are collected; without that evidence the request may still
+// start a turn, so the collection keeps deferring and publishes nothing.
+func TestAnUndecodableArchiveOfAnUnadoptedRequestIsBounded(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		session fakeSession
+		collect bool
+	}{
+		{name: "session failed after the request", session: fakeSession{status: "error", updated: 3}, collect: true},
+		{name: "session failed before the request", session: fakeSession{status: "error", updated: 1}},
+		{name: "session ready", session: fakeSession{status: "ready", updated: 3}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, commit := makeGitRepository(t)
+			pkg := testPackage()
+			pkg.Environment.Repository = "https://example.com/steward.git"
+			pkg.Environment.Ref = commit
+			pkg.Outputs = []domain.ArtifactDeclaration{{Name: "answer.txt", MediaType: "text/plain"}}
+			t.Cleanup(func() { forgetArchiveDecode(pkg) })
+			catalog, err := backlog.NewProjectCatalog(
+				[]backlog.ProjectDefinition{{Name: "steward", Repository: "https://example.com/steward.git", DefaultRef: commit, T3ProjectTemplate: "development", SetupProfile: "go"}},
+				[]backlog.SetupProfile{{Name: "go", Commands: []string{"true"}, Timeout: time.Minute}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake, control := newFakeTurnT3(t, pkg.Identity.ThreadID)
+			// An earlier turn completed; the user message at 2 is a newer
+			// request no turn has adopted.
+			session := test.session
+			fake.set(fakeTurnThread{messages: []int{0, 2}, turn: &fakeTurn{id: "turn-1", state: "completed", requested: 0}, session: &session})
+			fake.editDetail = func(detail map[string]any) { detail["hasPendingApprovals"] = "no" }
+			root := t.TempDir()
+			publisher := &recordingPublisher{}
+			driver, err := NewLocalDriver(LocalDriver{
+				Config:  LocalDriverConfig{CatalogRevision: "catalog-1", ArtifactRoot: filepath.Join(root, "artifacts"), RunsRoot: filepath.Join(root, "runs")},
+				Catalog: catalog,
+				Workspace: backlog.WorkspacePreparer{
+					Cache:     staticRepositoryCache{path: repository},
+					Processes: successfulProcessRunner{},
+				},
+				Finalizer: backlog.AttemptFinalizer{Processes: successfulProcessRunner{}, Now: func() time.Time { return runtimeTestNow }, NewID: func(string) string { return "verification-1" }},
+				Source:    mapArtifactSource{pkg.Prompt.ID: []byte("prompt")},
+				Publisher: publisher, T3: control, Now: func() time.Time { return runtimeTestNow },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			workspace, err := driver.Prepare(context.Background(), pkg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(workspace, "answer.txt"), []byte("answer\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			for pass := 1; pass < maxArchiveDecodePasses; pass++ {
+				err := driver.Collect(context.Background(), pkg, workspace)
+				if !isThreadArchiveInvalid(err) || !strings.Contains(err.Error(), "could not be decoded") {
+					t.Fatalf("pass %d: error = %v, want a deferral naming the undecodable archive", pass, err)
+				}
+				if len(publisher.results) != 0 {
+					t.Fatalf("pass %d published before the bound was reached", pass)
+				}
+			}
+			if !test.collect {
+				for pass := maxArchiveDecodePasses; pass <= maxArchiveDecodePasses+2; pass++ {
+					err := driver.Collect(context.Background(), pkg, workspace)
+					if !isThreadArchiveInvalid(err) || !strings.Contains(err.Error(), "request is unresolved") {
+						t.Fatalf("pass %d: error = %v, want a deferral naming the unresolved request", pass, err)
+					}
+				}
+				if len(publisher.results) != 0 {
+					t.Fatal("a request that may still start a turn was collected")
+				}
+				return
+			}
+			if err := driver.Collect(context.Background(), pkg, workspace); err != nil {
+				t.Fatalf("the pass at the bound still deferred: %v", err)
+			}
+			if len(publisher.results) != 1 {
+				t.Fatalf("published=%d, want one result", len(publisher.results))
+			}
+			result := publisher.results[0]
+			var output bool
+			for _, artifact := range result.Finalized.Artifacts {
+				output = output || (artifact.Kind == domain.ArtifactOutput && artifact.Name == "answer.txt")
+			}
+			if !output || !result.Finalized.Completion.ExplicitSuccess {
+				t.Fatalf("the declared output was not collected: completion=%+v artifacts=%+v", result.Finalized.Completion, result.Finalized.Artifacts)
+			}
+			_, err = backlog.ResultCompletionFailure(result.ThreadArchive, pkg.Identity.ThreadID, result.FinalMessage)
+			if !isThreadArchiveInvalid(err) {
+				t.Fatalf("the published archive decodes: %v", err)
+			}
+			if err := driver.Cleanup(context.Background(), pkg, workspace); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+// The bound counts the same decoding failure whichever reader met it: the
+// current-request read and the completion judgement name themselves
+// differently.
+func TestArchiveDecodeBoundCountsTheSameCauseAcrossReaders(t *testing.T) {
+	pkg := testPackage()
+	t.Cleanup(func() { forgetArchiveDecode(pkg) })
+	cause := errors.New("json: cannot unmarshal string into Go struct field .thread.hasPendingApprovals of type bool")
+	archiveDecodeExhausted(pkg, &backlog.ThreadArchiveInvalidError{Err: cause})
+	archiveDecodeExhausted(pkg, &backlog.ThreadArchiveInvalidError{Err: cause})
+	if done, passes := archiveDecodeExhausted(pkg, &backlog.ThreadArchiveInvalidError{Context: "result import", Err: cause}); !done || passes != maxArchiveDecodePasses {
+		t.Fatalf("the judgement's read restarted the count: done=%v passes=%d", done, passes)
+	}
+}
+
 // The bound counts the same error on consecutive passes: a different error is
 // a different read, and starts the count again.
 func TestArchiveDecodeBoundCountsTheSameErrorOnly(t *testing.T) {

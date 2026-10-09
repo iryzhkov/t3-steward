@@ -175,13 +175,25 @@ func optionalJSONString(raw json.RawMessage, ok bool) (string, bool) {
 }
 
 // payloadText is the text of one field of the activity's payload, which
-// Steward interprets. A string is its text; an absent or null field, or a
-// payload that is not an object, has none. Any other shape is rendered as
-// compact JSON, so the provider's account still reaches the failure reason,
-// and warning says so.
+// Steward interprets. A string is its text; an absent or null field, or an
+// absent or null payload, has none. Any other shape is rendered as compact
+// JSON, so the provider's account still reaches the failure reason, and
+// warning says so. A payload that is not an object has no fields to read, and
+// warning says that instead.
 func (a archiveActivity) payloadText(field string) (text, warning string) {
+	if len(bytes.TrimSpace(a.Payload)) == 0 {
+		return "", ""
+	}
 	var payload map[string]json.RawMessage
 	if json.Unmarshal(a.Payload, &payload) != nil {
+		var compact bytes.Buffer
+		if json.Compact(&compact, a.Payload) != nil {
+			compact.Reset()
+			compact.WriteString("invalid JSON")
+		}
+		return "", fmt.Sprintf("activity %q (%s) has a payload that is not an object (%s); its payload.%s is not read", a.ID, a.Kind, providerDetail(compact.String()), field)
+	}
+	if payload == nil {
 		return "", ""
 	}
 	raw := bytes.TrimSpace(payload[field])
