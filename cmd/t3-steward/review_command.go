@@ -205,22 +205,54 @@ func reviewProject(name string, projects []backlogadmin.Project) (backlogadmin.P
 	return backlogadmin.Project{}, errors.New("review requires a catalog project; pass --project P (see t3-steward projects)")
 }
 
+// instanceProviderFamilies maps the provider instance IDs T3 itself defines to
+// the provider family behind them. Only these built-in IDs are evidence of a
+// provider: an operator-named instance or a multi-vendor instance such as
+// opencode can front any provider, so its routes still need an explicit
+// backlog_v2.review_routes provider_family.
+var instanceProviderFamilies = map[string]string{
+	"claudeAgent": "claude",
+	"codex":       "openai",
+}
+
+// reviewRouteFamily returns the provider family of a catalog route: the
+// configured provider_family when there is one, otherwise the family of its
+// built-in provider instance, otherwise empty.
+func reviewRouteFamily(r backlogadmin.ProjectRoute) string {
+	if r.ProviderFamily != "" {
+		return r.ProviderFamily
+	}
+	return instanceProviderFamilies[r.Instance]
+}
+
+// reviewRouteRemedy names the backlog_v2.review_routes entry an operator adds
+// on the coordinator to classify one route for review.
+func reviewRouteRemedy(route, family, tier string) string {
+	if family == "" {
+		family = "FAMILY"
+	}
+	return fmt.Sprintf("add backlog_v2.review_routes entry \"%s: {provider_family: %s, tier: %s}\" on the coordinator", route, family, tier)
+}
+
 func reviewRoutes(project backlogadmin.Project) (map[string]backlogadmin.ProjectRoute, int, error) {
 	routes := map[string]backlogadmin.ProjectRoute{}
 	families := map[string]bool{}
 	for _, w := range project.Workers {
 		for _, r := range w.Routes {
 			key := r.Instance + "/" + r.Model
+			r.ProviderFamily = reviewRouteFamily(r)
 			if old, ok := routes[key]; ok && (old.ProviderFamily != r.ProviderFamily || old.Tier != r.Tier) {
 				return nil, 0, fmt.Errorf("conflicting catalog review metadata for %s", key)
 			}
 			if r.ProviderFamily == "" {
-				return nil, 0, fmt.Errorf("provider diversity cannot be verified: catalog route %s lacks provider_family; configure backlog_v2.review_routes", key)
+				tier := r.Tier
+				if tier == "" {
+					tier = "economy|executor|critical"
+				}
+				return nil, 0, fmt.Errorf("provider diversity cannot be verified: catalog route %s lacks provider_family and instance %q has no built-in provider family; %s", key, r.Instance, reviewRouteRemedy(key, "", tier))
 			}
 			routes[key] = r
-			if r.ProviderFamily != "" {
-				families[r.ProviderFamily] = true
-			}
+			families[r.ProviderFamily] = true
 		}
 	}
 	return routes, len(families), nil
@@ -241,8 +273,15 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 			return fmt.Errorf("route %q must be INSTANCE/MODEL", route)
 		}
 		m, ok := routes[route]
-		if !ok || m.ProviderFamily == "" || m.Tier == "" {
-			return fmt.Errorf("route %s lacks catalog review metadata; configure backlog_v2.review_routes provider_family and tier", route)
+		if !ok {
+			return fmt.Errorf("route %s has no catalog review metadata: no worker advertises it for project %s; see t3-steward projects", route, project.Name)
+		}
+		if m.ProviderFamily == "" || m.Tier == "" {
+			tier := "executor"
+			if strings.HasPrefix(role, "swarm:") {
+				tier = "economy"
+			}
+			return fmt.Errorf("route %s lacks catalog review tier; %s", route, reviewRouteRemedy(route, m.ProviderFamily, tier))
 		}
 		round.Reviewers = append(round.Reviewers, review.Reviewer{ID: id, Role: role, Route: route, Required: required, ProviderFamily: m.ProviderFamily, Tier: m.Tier})
 		return nil
@@ -280,7 +319,7 @@ func buildReviewCampaign(a reviewArgs, projects []backlogadmin.Project, now time
 		for _, route := range a.swarmModels {
 			m, ok := routes[route]
 			if !ok || m.Tier != "economy" || m.ProviderFamily == "" {
-				return "", fmt.Errorf("swarm route %s requires catalog economy-tier metadata", route)
+				return "", fmt.Errorf("swarm route %s requires catalog economy-tier metadata; %s", route, reviewRouteRemedy(route, m.ProviderFamily, "economy"))
 			}
 		}
 		previous := ""

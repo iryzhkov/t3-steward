@@ -28,8 +28,13 @@ required. CLI Phase A role selection is described in [route-policy.md](route-pol
 Quota-aware selection remains deferred. Inside a task, `review --task current`
 opens the review declared in its manifest; see [m16-review-checkpoint.md](m16-review-checkpoint.md).
 
-The coordinator catalog must classify routes explicitly; instance aliases are
-not evidence of different providers. Configure the following on the coordinator:
+The coordinator catalog classifies routes. A route without an explicit
+`provider_family` takes the family of its built-in T3 provider instance:
+`claudeAgent` routes are `claude` and `codex` routes are `openai`. An explicit
+`provider_family` always wins. Any other instance, including operator-named
+aliases and multi-vendor instances such as `opencode`, is not evidence of a
+provider and needs an explicit `provider_family`. Configure the following on the
+coordinator:
 
 ```yaml
 backlog_v2:
@@ -46,13 +51,19 @@ text is the model ID. Model IDs may contain more slashes or colons, such as
 
 These are metadata, not route authorization or role policy. The existing worker
 catalog still authorizes routes. The projects query attaches metadata to its
-advertised routes. Classify every advertised route's provider family so diversity
-can be verified; selected routes also require a tier. Allowed tiers are economy,
+advertised routes. Every advertised route needs a provider family, explicit or
+derived from its instance, so diversity can be verified; selected routes also
+require a tier, which is never derived. Allowed tiers are economy,
 executor and critical. Independent reviewers require executor or critical;
 the judge requires executor; swarm lenses require economy. The coordinator
 checks the manifest against its own catalog before accepting it. When the
 project offers two provider families, independent reviewers plus judge must
-include at least two. Missing metadata is a refusal with a configuration remedy.
+include at least two; a review whose reviewers share one family is refused even
+when the families were derived. Missing metadata is a refusal that names the
+route and the exact entry to add, for example
+`add backlog_v2.review_routes entry "claudeAgent/claude-haiku-5-5: {provider_family: claude, tier: executor}" on the coordinator`.
+When the family cannot be derived the entry reads `provider_family: FAMILY`
+for the operator to fill in.
 
 Every reviewer runs as a new campaign task with a new session identity. The
 caller is never reused as a reviewer; sharing its provider is allowed.

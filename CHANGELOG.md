@@ -126,6 +126,11 @@ or rc.115 coordinator.
   REASON`), which `backlog explain` also prints, so neither the worker
   protocol nor the admin read shape changes; a coordinator sees it from
   workers of this release.
+- Standalone `t3-steward review` derives missing provider families for built-in
+  `claudeAgent` and `codex` routes, while explicit `provider_family` values
+  remain authoritative and same-provider selections remain refused when the
+  catalog offers two families. Remaining metadata refusals name the route and
+  the exact `backlog_v2.review_routes` entry to add. See docs/review.md.
 - The worker's own Git commands (workspace preparation, commit bundle and
   campaign ref imports) keep Git's automatic maintenance in the foreground
   (`gc.autoDetach=false`, `maintenance.autoDetach=false`, appended to any
