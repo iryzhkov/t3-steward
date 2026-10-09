@@ -64,8 +64,10 @@ func RankRoutes(in RouteRankInput) ([]RouteRankEntry, error) {
 		entries = append(entries, e)
 	}
 	if allUnknown {
+		// Keep each pool's own reason: why a pool is unknown (missing, stale
+		// and since when) is the receipt's evidence, not noise.
 		for i := range entries {
-			entries[i].Reason = RouteRankingV1 + ": quota unknown for every candidate; policy order"
+			entries[i].Reason += "; quota unknown for every candidate; policy order"
 		}
 	}
 	sort.Slice(entries, func(i, j int) bool {

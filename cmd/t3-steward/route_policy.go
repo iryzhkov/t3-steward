@@ -405,13 +405,10 @@ func policySnapshotInputs(existing pinnedinput.Snapshot, p *routePolicy, selecti
 	for _, e := range existing.Manifest.Entries {
 		paths = append(paths, filepath.Join(dir, e.Name))
 	}
-	// Quota is live telemetry. Pin only the ranking version alongside stable
-	// provenance and the chosen route, never live reasons or candidate bands.
 	pinned := append([]policySelection(nil), selections...)
 	for i := range pinned {
 		if pinned[i].Ranking != "" {
-			pinned[i].Candidates = nil
-			pinned[i].Reason = pinned[i].Ranking
+			pinned[i] = pinnedRankedSelection(pinned[i])
 		}
 	}
 	raw, err := json.Marshal(pinned)
@@ -430,6 +427,28 @@ func policySnapshotInputs(existing pinnedinput.Snapshot, p *routePolicy, selecti
 	}
 	return pinnedinput.SnapshotFiles(paths)
 }
+
+// pinnedRankedSelection is the ranking receipt route-selection.json retains:
+// every candidate's eligibility, band and pool, with the reason each was
+// skipped or the band it ranked in. The pinned file is part of the archive the
+// run key covers, so live readings (used percentages, observation ages) stay
+// in the printed receipt only: changed readings within the same bands replay
+// the same run, and a changed band is a different ranking and a new key.
+func pinnedRankedSelection(s policySelection) policySelection {
+	s.Reason = s.Ranking
+	s.Candidates = append([]policyRankCandidate(nil), s.Candidates...)
+	for i := range s.Candidates {
+		c := &s.Candidates[i]
+		if c.Eligible {
+			c.Reason = s.Ranking + ": " + c.Band
+			if c.Pool != "" {
+				c.Reason = s.Ranking + ": " + c.Pool + " " + c.Band
+			}
+		}
+	}
+	return s
+}
+
 func policyInputs(files []string, p *routePolicy, selections []policySelection) (pinnedinput.Snapshot, error) {
 	snap, err := pinnedinput.SnapshotFiles(files)
 	if err != nil {

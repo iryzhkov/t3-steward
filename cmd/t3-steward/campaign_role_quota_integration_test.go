@@ -337,7 +337,9 @@ func TestCampaignRoleQuotaUnreliableWindowsStillFailAdmission(t *testing.T) {
 	}
 }
 
-func TestCampaignRoleQuotaChecksDisabledKeepsPolicyOrderAndAdmission(t *testing.T) {
+// Disabled checks gate nothing and admit as before, but the readings the
+// workers report still rank: the exhausted policy leader loses its preference.
+func TestCampaignRoleQuotaChecksDisabledRanksReadingsAndAdmits(t *testing.T) {
 	admin, store, gate, _ := campaignRankedQuotaFixture(t)
 	records, err := store.LoadCoordinatorRecords(context.Background())
 	if err != nil {
@@ -376,7 +378,12 @@ func TestCampaignRoleQuotaChecksDisabledKeepsPolicyOrderAndAdmission(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records.Tasks) != 1 || records.Tasks[0].RoleSelection == nil || records.Tasks[0].RoleSelection.Route != "claude/model" {
-		t.Fatalf("disabled quota changed policy-order compatibility: %+v", records.Tasks)
+	if len(records.Tasks) != 1 || records.Tasks[0].RoleSelection == nil || records.Tasks[0].RoleSelection.Route != "codex/model" {
+		t.Fatalf("disabled quota checks hid fresh readings from ranking: %+v", records.Tasks)
+	}
+	for _, candidate := range records.Tasks[0].RoleSelection.Candidates {
+		if !strings.Contains(candidate.Reason, "quota checks disabled, readings rank but do not gate") {
+			t.Fatalf("disabled checks not reported per pool: %+v", candidate)
+		}
 	}
 }

@@ -890,6 +890,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		Transport:              cfg.BacklogV2.Transport.Kind,
 		MaxWorkerSnapshotAge:   cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
 		MaxQuotaObservationAge: cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
+		RankingQuotaStaleAfter: modelsStaleAfter(cfg),
 		CatalogIssues:          catalogIssues,
 	})
 	artifactStore := backlog.CoordinatorArtifactStore{Root: cfg.BacklogV2.Storage.Artifacts, SubmissionRoot: cfg.BacklogV2.Storage.Bundles, Catalog: store}

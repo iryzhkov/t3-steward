@@ -47,9 +47,9 @@ or rc.115 coordinator.
   (text and JSON) report each role selection with its route, effort, policy
   digest, candidate verdicts and diversity outcome; task and run JSON gain
   `role`, `roleEffort`, `roleSelection` and `routeSelections`; schedule
-  triggers gain `roleResolutionError`. Role selection uses policy order,
-  not the quota ranking of `task run`; the selected route still passes
-  quota admission at submission. A `role:` manifest is refused against a
+  triggers gain `roleResolutionError`. Role selection ranks candidates with
+  `route-ranking/v1` from the same quota view as `task run` (see Fixed);
+  the selected route still passes quota admission at submission. A `role:` manifest is refused against a
   coordinator older than this release with an upgrade remedy; workers still
   receive concrete routes. See docs/route-policy.md.
 - A3 standalone review of commits and retained failed commits: `review
@@ -71,6 +71,30 @@ or rc.115 coordinator.
   older bundle-only workers are never offered a task that carries one.
   `--use-commit` needs a coordinator of this release or newer
   (docs/architecture/adr-h5-recovery-provenance-and-evidence.md).
+
+### Fixed
+
+- Campaign and schedule role ranking reads fresh quota. `campaign check`,
+  campaign submission and schedule occurrences ranked every candidate
+  `unknown` and fell back to policy order whenever the coordinator's quota
+  checks were disabled or its admission records were older than
+  `freshness.quota_max_age`, while `task run --role` ranked the same pools
+  from the workers' fresh readings. One quota view now serves all four: the
+  workers' merged readings, read against
+  `coordinator_client.defaults.quota_stale_after` (one hour when unset) on
+  the client and on the coordinator. Window freshness alone decides
+  headroom; an old admission record no longer hides fresh readings, and
+  disabled quota checks gate nothing but no longer hide readings from
+  ranking, which never grants admission. `task run` now applies the surplus
+  class gate (a constrained or recovering pool is gated for surplus work)
+  as campaign roles do. Output changes: every candidate reason ends with its
+  pool's reading state and age, for example `claude-main quota stale,
+  observed 2h0m0s ago (maximum age 1h0m0s)`, or why no reading exists; when
+  every candidate is unknown each keeps its own reason before `quota unknown
+  for every candidate; policy order`. `route-selection.json` now retains
+  every candidate's eligibility, band, pool and reason (live percentages and
+  ages stay out of it, so a run key changes only when a band or the chosen
+  route does).
 
 ## [0.11.0-rc.117] - 2026-10-07
 

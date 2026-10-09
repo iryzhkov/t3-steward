@@ -564,7 +564,8 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 		if err != nil {
 			return err
 		}
-		a.rankView = c.task.routeRankingView(ctx, workers)
+		// Review rounds are submitted as required work.
+		a.rankView = c.task.routeRankingView(ctx, workers, domain.TaskClassRequired)
 	}
 	project, err := reviewProject(a.project, projects)
 	if err != nil {

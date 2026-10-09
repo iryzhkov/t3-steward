@@ -9,7 +9,7 @@ import (
 // preference ranking. Encode that gate in v1's existing closed band while keeping
 // its actual constrained/recovering reason; never modify the request snapshot.
 func campaignTaskRankView(task backlogadmin.ViabilityTask, snapshot backlogadmin.RoleQuotaSnapshot) routeRankView {
-	view := routeRankView{Now: snapshot.Now, Pools: snapshot.Pools}
+	view := routeRankView{Now: snapshot.Now, Pools: snapshot.Pools, Freshness: snapshot.Freshness}
 	if task.Class != domain.TaskClassSurplus {
 		return view
 	}

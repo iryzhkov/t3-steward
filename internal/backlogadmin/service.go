@@ -137,6 +137,11 @@ type RuntimeInfo struct {
 	Transport              string
 	MaxWorkerSnapshotAge   time.Duration
 	MaxQuotaObservationAge time.Duration
+	// RankingQuotaStaleAfter is the reading age role ranking reads quota
+	// windows against: backlog_v2.coordinator_client.defaults.quota_stale_after,
+	// the age "task run" ranks with, so that both build one view. Zero means
+	// domain.DefaultQuotaStaleAfter. Admission keeps MaxQuotaObservationAge.
+	RankingQuotaStaleAfter time.Duration
 	// CatalogIssues names the configuration this coordinator could not use, one
 	// line per problem. A misconfigured project is isolated so that it disables
 	// itself rather than the fleet, which means nothing else goes wrong to make
