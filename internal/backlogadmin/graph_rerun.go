@@ -126,6 +126,9 @@ func (s *Service) rerunGraph(
 	// idMap is the only place the source-to-rerun task identity is known, so it
 	// travels to the store, which needs it to move inherited gate definitions
 	// onto the rerun's tasks.
+	if err = validateDerivedGraphIDs("rerun", tasks, builder.inputs); err != nil {
+		return result, err
+	}
 	return writer.CommitGraphRerun(ctx, sqlite.GraphCommit{
 		Request: r, Actor: p.ID, Before: source, Tasks: tasks,
 		Inputs: builder.inputs, Rerun: &provenance, TaskIDRemap: idMap, Now: s.now().UTC(),

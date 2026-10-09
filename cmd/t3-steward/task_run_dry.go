@@ -50,6 +50,6 @@ func (c taskRunCLI) renderDryRun(parsed taskRunArgs, project, ref string, route 
 		notify = "none (--no-notify)"
 	}
 	_, err := fmt.Fprintf(c.stdout, "dry run\nproject %s\nref %s\nfresh %t\nroute %s/%s (worker %s, pool %s)\n%s\nkey %s\nnotify %s\ncomposed prompt %d characters (limit %d) (total across %d task(s), limit per task, including completion contract)\n",
-		project, ref, parsed.fresh, doc.Route.Instance, doc.Route.Model, doc.Route.Worker, doc.Route.QuotaPool, taskRunOutputsLine(outputs), key, notify, size, compat.MaxTurnInputLength, len(prompts))
+		project, ref, parsed.fresh, doc.Route.Instance, doc.Route.Model, doc.Route.Worker, doc.Route.QuotaPool, taskRunOutputsLine(outputs), displayValue(key), notify, size, compat.MaxTurnInputLength, len(prompts))
 	return err
 }

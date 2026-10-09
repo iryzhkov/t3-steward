@@ -53,6 +53,23 @@ worker paths. Pin owners (`rerun:<run>`, `clone:<run>`, `wait:<id>`,
 keys or lock names. Changing these would alter existing ownership or sink
 relationships.
 
+## Where the rules are enforced
+
+`domain.PathSafeID` is enforced, not only tested: a rerun or clone refuses to
+store a run, task, input or first-attempt ID that does not match it, before
+anything is written, and an authored campaign commit name must match it too.
+
+A cross-run reference `<run>/<task>` is parsed by `domain.ParseNodeRef`, which
+holds the run part to the storage-component rule
+(`domain.ValidateStorageComponent`): not empty, `.` or `..`, no `/`, `\` or
+control character, not starting with `-`, at most 255 bytes. The rule is
+looser than `PathSafeID` on purpose, so that old colon run IDs remain valid
+references. Output paths and `inputs_from` artifact names in a manifest or a
+`--output` flag must have no control character and no component longer than
+255 bytes. Submission idempotency keys must be 1 to 256 trimmed bytes with no
+control characters (`domain.ValidateIdempotencyKey`); the client and the
+coordinator refuse with the same message.
+
 New run and task IDs pass wake-summary identity checks. Old colon run IDs still
 report `unsafe-identity` in wake summaries; this change does not modify those
 validators. Workers and older clients consume the new IDs as ordinary strings.

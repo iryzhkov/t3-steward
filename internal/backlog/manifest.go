@@ -761,7 +761,7 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		}
 		if strings.Contains(dependency, "/") {
 			if _, err := domain.ParseNodeRef(dependency); err != nil {
-				return err
+				return fmt.Errorf("%s needs: %w", prefix, err)
 			}
 		} else if _, ok := tasks[dependency]; !ok {
 			return fmt.Errorf("%s needs missing task %q", prefix, dependency)
@@ -782,7 +782,7 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 		if external {
 			ref, err := domain.ParseNodeRef(producer)
 			if err != nil {
-				return err
+				return fmt.Errorf("%s inputs_from: %w", prefix, err)
 			}
 			if ref.TaskID == domain.SinkTaskName {
 				return fmt.Errorf("%s inputs_from cannot consume outputs from a run sink", prefix)
@@ -806,6 +806,9 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 			}
 		}
 		for _, artifact := range artifacts {
+			if err := validateAuthoredPath(artifact); err != nil {
+				return fmt.Errorf("%s inputs_from %s artifact %q: %w", prefix, producer, artifact, err)
+			}
 			if err := validateRelativePath(artifact, false); err != nil {
 				return fmt.Errorf("%s inputs_from %s artifact %q: %w", prefix, producer, artifact, err)
 			}
@@ -825,8 +828,8 @@ func validateManifestCommits(prefix string, task ManifestTask) error {
 		declared[output] = struct{}{}
 	}
 	for _, commit := range task.Commits {
-		if !safePathComponent(commit.Name) {
-			return fmt.Errorf("%s commit name %q must be one safe path component", prefix, commit.Name)
+		if !safePathComponent(commit.Name) || !domain.PathSafeID(commit.Name) {
+			return fmt.Errorf("%s commit name %q must be one safe path component: 1 to 128 letters, digits, '.', '_' or '-', starting with a letter or digit", prefix, commit.Name)
 		}
 		if err := validateGitRef(CampaignRef("run", "task", commit.Name)); err != nil {
 			return fmt.Errorf("%s commit name %q: %w", prefix, commit.Name, err)
@@ -987,6 +990,9 @@ func validateWorkflowPlacement(names []string, tasks map[string]ManifestTask) er
 func validateUniquePaths(label string, paths []string, allowGlob bool) error {
 	seen := make(map[string]struct{}, len(paths))
 	for _, path := range paths {
+		if err := validateAuthoredPath(path); err != nil {
+			return fmt.Errorf("%s path %q: %w", label, path, err)
+		}
 		if err := validateRelativePath(path, allowGlob); err != nil {
 			return fmt.Errorf("%s path %q: %w", label, path, err)
 		}
@@ -1014,6 +1020,23 @@ func validateRelativePath(path string, allowGlob bool) error {
 	}
 	if !allowGlob && strings.ContainsAny(path, "*?[") {
 		return errors.New("glob characters are not allowed")
+	}
+	return nil
+}
+
+// validateAuthoredPath is the rule a path is held to when it is written into
+// a manifest or a --output flag, on top of validateRelativePath: no control
+// characters and no component longer than domain.MaxPathComponentBytes. It is
+// not applied where an already accepted record is read back, so a run accepted
+// before the rule existed still executes.
+func validateAuthoredPath(path string) error {
+	if domain.ContainsControl(path) {
+		return errors.New("path contains a control character")
+	}
+	for _, component := range strings.Split(filepath.ToSlash(path), "/") {
+		if len(component) > domain.MaxPathComponentBytes {
+			return fmt.Errorf("path component is %d bytes, longer than %d", len(component), domain.MaxPathComponentBytes)
+		}
 	}
 	return nil
 }

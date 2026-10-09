@@ -18,7 +18,10 @@ func DerivedID(namespace, kind string, parts ...string) string {
 
 var pathSafeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
-// PathSafeID reports whether id is a bounded, portable path component.
+// PathSafeID reports whether id is a bounded, portable path component. It is
+// the rule for authored campaign commit names and for every derived identity
+// a rerun or clone stores (see ValidateDerivedIDs); legacy run IDs such as
+// "run:..." predate it and are held to ValidateStorageComponent instead.
 func PathSafeID(id string) bool { return pathSafeIDPattern.MatchString(id) }
 
 func RerunRunID(key string) string { return DerivedID("rerun", "run", key) }
