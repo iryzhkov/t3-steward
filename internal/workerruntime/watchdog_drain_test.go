@@ -9,6 +9,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -68,7 +69,7 @@ func TestWatchdogDrainDoesNotWaitAcrossAttempts(t *testing.T) {
 	if err := r.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(started); elapsed >= 2*time.Second || driver.notices != 3 || driver.checkpointCalls != 0 {
+	if elapsed := time.Since(started); elapsed >= testtiming.Bound(2*time.Second) || driver.notices != 3 || driver.checkpointCalls != 0 {
 		t.Fatalf("reconcile waited %s; notices=%d, want 3 without stop waits", elapsed, driver.notices)
 	}
 	if rec := journalRecord(t, r); rec.Phase != PhaseRunning || rec.LocalThrottle == nil || rec.LocalThrottle.StoppedAt != nil {

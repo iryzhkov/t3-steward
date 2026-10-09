@@ -6,12 +6,16 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestCommandCancellationReturnsDespiteADescendantHoldingOutput(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	command := CommandContext(ctx, time.Second, "/bin/sh", "-c", "sleep 5; true")
+	// The descendant sleeps far longer than the scaled bound below, so a Run
+	// that waited for it fails the bound.
+	command := CommandContext(ctx, time.Second, "/bin/sh", "-c", "sleep 60; true")
 	var out TailBuffer
 	out.Limit = 64
 	command.Stdout = &out
@@ -20,7 +24,7 @@ func TestCommandCancellationReturnsDespiteADescendantHoldingOutput(t *testing.T)
 	if err := command.Run(); err == nil {
 		t.Fatal("cancelled command reported success")
 	}
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(2*time.Second) {
 		t.Fatalf("cancelled command returned after %s", elapsed.Round(time.Millisecond))
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 type testProcessRunner struct{}
@@ -248,7 +249,9 @@ func TestWorkspacePreparerTimesOutAndCleansSetup(t *testing.T) {
 	runsRoot := t.TempDir()
 	task := workspaceTask("task-id", "task")
 	request := workspaceRequest(repository, "main", task, "attempt-1")
-	request.Environment.Setup.Commands = []string{"sleep 5"}
+	// The setup sleeps far longer than the scaled bound below, so a timeout
+	// that did not stop it fails the bound.
+	request.Environment.Setup.Commands = []string{"sleep 60"}
 	request.Environment.Setup.Timeout = 50 * time.Millisecond
 
 	// Git cache/clone time is outside the setup deadline. Measure only the
@@ -257,7 +260,7 @@ func TestWorkspacePreparerTimesOutAndCleansSetup(t *testing.T) {
 	preparer := workspacePreparer(runsRoot, "")
 	preparer.Processes = runner
 	_, err := preparer.Prepare(context.Background(), request)
-	if runner.calls != 1 || runner.elapsed > 2*time.Second {
+	if runner.calls != 1 || runner.elapsed > testtiming.Bound(2*time.Second) {
 		t.Fatalf("setup calls=%d duration=%s", runner.calls, runner.elapsed)
 	}
 	var preparationErr *PreparationError

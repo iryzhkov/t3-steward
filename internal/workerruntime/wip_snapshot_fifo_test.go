@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // snapshotOutcome runs SnapshotWorkInProgress in the background and waits at
@@ -155,14 +157,14 @@ func TestSnapshotStopsGitThatWaitsOnTheWorkTree(t *testing.T) {
 				t.Fatal(err)
 			}
 			started := time.Now()
-			_, err, blocked := snapshotOutcome(t, f, context.Background(), path, 3*time.Second)
+			_, err, blocked := snapshotOutcome(t, f, context.Background(), path, testtiming.Bound(3*time.Second))
 			if blocked {
 				t.Fatalf("snapshot waited on %s past its own time", name)
 			}
 			if err == nil || !strings.Contains(err.Error(), "did not finish within") {
 				t.Fatalf("err = %v, want the snapshot stopped at its time limit", err)
 			}
-			if elapsed := time.Since(started); elapsed > 2*time.Second {
+			if elapsed := time.Since(started); elapsed > testtiming.Bound(2*time.Second) {
 				t.Fatalf("snapshot took %s to stop", elapsed)
 			}
 		})

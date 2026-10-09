@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestLocalRepositoryCacheSerializesConcurrentPreparationAndCleansStaleStage(t *testing.T) {
@@ -84,7 +86,7 @@ func TestFileLockWaitHonorsContext(t *testing.T) {
 	if _, err := acquireFileLock(ctx, root, "same-resource"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("contended lock error = %v, want deadline", err)
 	}
-	if time.Since(started) > time.Second {
+	if time.Since(started) > testtiming.Bound(time.Second) {
 		t.Fatal("context cancellation did not promptly stop lock wait")
 	}
 }
