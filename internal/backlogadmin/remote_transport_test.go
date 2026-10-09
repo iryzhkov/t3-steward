@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -777,13 +778,13 @@ func TestLocalServerRefusesAnAssertionForAnotherCoordinator(t *testing.T) {
 		Listener: listener, Service: service, AllowedUID: uint32(os.Getuid()),
 		CoordinatorID:   testCoordinatorID,
 		MaxRequestBytes: 1 << 20, MaxArtifactBytes: 1 << 20, MaxSubmissionBytes: 1 << 20,
-		RequestTimeout: 5 * time.Second, MaxConcurrent: 4,
+		RequestTimeout: testtiming.Bound(5 * time.Second), MaxConcurrent: 4,
 	}
 	go func() { done <- server.Serve(ctx) }()
 	defer stopLocalTransport(t, cancel, done)
 	client := LocalClient{
 		Path: socketPath, MaxResponseBytes: 1 << 20, MaxArtifactBytes: 1 << 20,
-		MaxSubmissionBytes: 1 << 20, RequestTimeout: 5 * time.Second,
+		MaxSubmissionBytes: 1 << 20, RequestTimeout: testtiming.Bound(5 * time.Second),
 	}
 	for name, assertion := range map[string]*RemoteAdminAssertion{
 		"another coordinator": {Principal: "admin:omarchy-pc", Coordinator: "someone-else", RequestID: "req/1"},

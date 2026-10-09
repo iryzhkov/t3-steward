@@ -12,6 +12,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 const artifactLifecycleHelperEnv = "T3_ARTIFACT_LIFECYCLE_HELPER"
@@ -88,7 +89,7 @@ func TestArtifactLifecycleLockSerializesCrossProcessCanonicalRootAlias(t *testin
 		_ = lock.Close()
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(2 * time.Second))
 	for {
 		if _, err := os.Stat(readyPath); err == nil {
 			break

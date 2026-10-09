@@ -15,6 +15,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestWorkerCommandsReachLocalCoordinator(t *testing.T) {
@@ -34,7 +35,7 @@ func TestWorkerCommandsReachLocalCoordinator(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer listener.Close()
-			if err := listener.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			if err := listener.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second))); err != nil {
 				t.Fatal(err)
 			}
 			requests := make(chan map[string]any, 1)
@@ -45,7 +46,7 @@ func TestWorkerCommandsReachLocalCoordinator(t *testing.T) {
 					return
 				}
 				defer conn.Close()
-				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				_ = conn.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 				var size uint32
 				if binary.Read(conn, binary.BigEndian, &size) != nil || size > 1<<20 {
 					requests <- nil

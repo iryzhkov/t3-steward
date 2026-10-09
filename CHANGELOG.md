@@ -93,8 +93,16 @@ or rc.115 coordinator.
   a deliberately quadratic stand-in. The tests that bound a hang keep an
   absolute bound, scaled 5x under the race detector by the new
   `internal/testtiming` package, with the hang they detect lengthened where
-  it no longer exceeded the scaled bound. `make test-stress` runs these tests
-  repeatedly under the race detector while busy loops saturate their CPUs.
+  it no longer exceeded the scaled bound. Every other wait a test fails on
+  when it expires (select and channel timeouts, polling deadlines, context
+  and connection deadlines, and the short request, gate and cleanup budgets
+  tests configure) is scaled the same way; waits whose expiry is the expected
+  outcome, or that only check that nothing happened, are left as they were.
+  Two waits that guessed with a fixed pause now wait for the state they need:
+  the provider log tailer test waits for the bootstrap scan, and the
+  collection tests start a collection under a collection pass instead of
+  cutting a 50ms pass short. `make test-stress` runs these tests repeatedly
+  under the race detector while busy loops saturate their CPUs.
 
 ## [0.11.0-rc.117] - 2026-10-07
 

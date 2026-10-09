@@ -12,6 +12,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // An interrupted export (the CLI turns SIGINT and SIGTERM into cancellation)
@@ -37,7 +38,7 @@ func TestCampaignCommitExportCancellationLeavesNoFiles(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled export returned %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtiming.Bound(10 * time.Second)):
 		t.Fatal("cancelled export still blocked on a stalled stream")
 	}
 	entries, err := os.ReadDir(directory)

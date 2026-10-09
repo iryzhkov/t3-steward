@@ -8,6 +8,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"io"
 	"os"
 	"os/exec"
@@ -54,7 +55,7 @@ func TestCampaignFixKilledWriterRetry(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for {
 		observed := false
 		if _, e := os.Stat(target + ".fix-lock"); e == nil {

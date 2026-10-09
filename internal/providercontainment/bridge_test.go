@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestBridgeUsesUnixGatewayAndClosesOnCancellation(t *testing.T) {
@@ -40,7 +42,7 @@ func TestBridgeUsesUnixGatewayAndClosesOnCancellation(t *testing.T) {
 			return
 		}
 		defer c.Close()
-		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		_ = c.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 		data := make([]byte, 4)
 		if _, err := io.ReadFull(c, data); err != nil {
 			gatewayDone <- err
@@ -58,7 +60,7 @@ func TestBridgeUsesUnixGatewayAndClosesOnCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = client.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 	if _, err := client.Write([]byte("ping")); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +74,7 @@ func TestBridgeUsesUnixGatewayAndClosesOnCancellation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("bridge accept did not stop")
 	}
 	select {
@@ -80,7 +82,7 @@ func TestBridgeUsesUnixGatewayAndClosesOnCancellation(t *testing.T) {
 		if err != io.EOF {
 			t.Fatalf("gateway not closed cleanly: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("active gateway connection did not close")
 	}
 }

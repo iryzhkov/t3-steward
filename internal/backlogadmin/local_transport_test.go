@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 type localTransportService struct {
@@ -174,7 +175,7 @@ func stopLocalTransport(t *testing.T, cancel context.CancelFunc, done <-chan err
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("local transport did not stop")
 	}
 }
@@ -373,7 +374,7 @@ func TestLocalTransportShutdownClosesIdleConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testtiming.Bound(5 * time.Second)):
 		t.Fatal("server shutdown blocked on idle connection")
 	}
 }
@@ -389,7 +390,7 @@ func TestLocalTransportBoundsIdleClientsAndBackpressure(t *testing.T) {
 	server := &LocalServer{
 		Listener: listener, Service: &localTransportService{}, AllowedUID: uint32(os.Getuid()),
 		MaxRequestBytes: 1024, MaxArtifactBytes: 1024, MaxSubmissionBytes: 1024,
-		RequestTimeout: 150 * time.Millisecond, MaxConcurrent: 1,
+		RequestTimeout: testtiming.Bound(150 * time.Millisecond), MaxConcurrent: 1,
 	}
 	go func() { done <- server.Serve(ctx) }()
 	defer stopLocalTransport(t, cancel, done)
@@ -409,7 +410,7 @@ func TestLocalTransportBoundsIdleClientsAndBackpressure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rejected.Close()
-	if err := rejected.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+	if err := rejected.SetReadDeadline(time.Now().Add(testtiming.Bound(time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	var response localResponse
@@ -419,7 +420,7 @@ func TestLocalTransportBoundsIdleClientsAndBackpressure(t *testing.T) {
 	if !strings.Contains(response.Error, "backpressure") {
 		t.Fatalf("backpressure response = %+v", response)
 	}
-	if err := idle.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+	if err := idle.SetReadDeadline(time.Now().Add(testtiming.Bound(time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	var one [1]byte

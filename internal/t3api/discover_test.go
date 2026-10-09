@@ -34,8 +34,10 @@ func TestAwaitURLWaitsForTheServerToWriteItsRuntimeState(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 		writeRuntimeState(t, dataDir, "http://127.0.0.1:3773/")
 	}()
+	retry := quickRetry
+	retry.Timeout = testtiming.Bound(retry.Timeout)
 	var retries int
-	url, err := AwaitURL(context.Background(), "", dataDir, quickRetry, func(err error, delay time.Duration) {
+	url, err := AwaitURL(context.Background(), "", dataDir, retry, func(err error, delay time.Duration) {
 		retries++
 		if !strings.Contains(err.Error(), "is the T3 server running?") || delay <= 0 || delay > quickRetry.MaxDelay {
 			t.Errorf("retry reported err=%v delay=%s", err, delay)

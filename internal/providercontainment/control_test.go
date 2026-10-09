@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestScopedControlUsesOnlyItsSocketAndRefusesReplacement(t *testing.T) {
@@ -82,7 +83,7 @@ func TestScopedControlUsesOnlyItsSocketAndRefusesReplacement(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testtiming.Bound(time.Second)):
 		t.Fatal("bridge did not stop")
 	}
 	if _, err = client.Descriptor(context.Background()); err == nil {

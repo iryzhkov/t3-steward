@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestIndependentFix3LoserCancelPreservesHeldWinner(t *testing.T) {
@@ -16,7 +18,7 @@ func TestIndependentFix3LoserCancelPreservesHeldWinner(t *testing.T) {
 	if e := os.Mkdir(ns, 0700); e != nil {
 		t.Fatal(e)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
 	defer cancel()
 	var winner *fileLock
 	var winning os.FileInfo

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // blockingValidator records concurrency: it reports the highest number of
@@ -66,7 +67,7 @@ func TestPermanentValidationDoesNotHoldThePublicationLock(t *testing.T) {
 	}
 	// Both validations have to be able to run at once. Under the lock the
 	// second could not begin until the first had finished ingesting.
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(testtiming.Bound(10 * time.Second))
 	for validator.peakConcurrency() < 2 {
 		select {
 		case <-deadline:

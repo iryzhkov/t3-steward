@@ -12,6 +12,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // rc117ExtendedService answers with fields an rc.117 client does not know: a
@@ -74,7 +75,7 @@ func TestRC117ExtendedReadsKeepTheRC117Shape(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			_ = conn.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 			sent := query
 			sent.Version = "backlog.admin/v1-extended-read-rc117"
 			if err := writeLocalJSON(conn, localRequest{Version: LocalTransportVersion, Operation: localOperationQuery, Query: &sent}); err != nil {

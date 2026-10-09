@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestReviewChildStagingFix2EntryMatrix(t *testing.T) {
@@ -73,7 +74,7 @@ func TestReviewChildStagingFix2EntryMatrix(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(time.Second))
 				defer cancel()
 				_, err = fresh.StageDeclared(ctx, req)
 				if err == nil || errors.Is(err, context.DeadlineExceeded) {

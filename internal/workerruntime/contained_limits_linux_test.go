@@ -17,6 +17,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -142,7 +143,7 @@ func TestTimeoutAfterTheMemoryLimitKeepsTheReservationFailure(t *testing.T) {
 // deferring the collection on every pass.
 func TestCollectionOfAContainedRunTheMemoryLimitKilledFails(t *testing.T) {
 	runtime, driver, _, _ := containedRunRuntime(t, PhaseCollecting)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for {
 		if err := runtime.Reconcile(context.Background()); err != nil {
 			t.Fatal(err)

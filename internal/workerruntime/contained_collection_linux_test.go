@@ -16,6 +16,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // Invoked only by the disposable systemd test unit, never a production helper.
@@ -41,7 +42,7 @@ func TestContainedCollectionRecoversSnapshotAndVerifiesInNamespace(t *testing.T)
 	if os.Getenv("T3_STEWARD_REQUIRE_CONTAINMENT_TESTS") != "1" || os.Getenv("T3_STEWARD_REQUIRE_SUPERVISOR_TESTS") != "1" {
 		t.Skip("requires containment and systemd")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(30*time.Second))
 	defer cancel()
 	root := t.TempDir()
 	t.Cleanup(func() {
@@ -88,7 +89,7 @@ func TestContainedCollectionRecoversSnapshotAndVerifiesInNamespace(t *testing.T)
 		t.Fatal(err)
 	}
 	pkg.Environment.DirectoryBindings = []directoryresource.Binding{binding}
-	manager := ContainedT3{Supervisor: providercontainment.Supervisor{Root: filepath.Join(root, "journal"), Executable: wrapper}, Timeout: time.Second}
+	manager := ContainedT3{Supervisor: providercontainment.Supervisor{Root: filepath.Join(root, "journal"), Executable: wrapper}, Timeout: testtiming.Bound(time.Second)}
 	if err = os.Mkdir(manager.Supervisor.Root, 0700); err != nil {
 		t.Fatal(err)
 	}

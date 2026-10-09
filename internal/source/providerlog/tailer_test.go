@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 type memPositions struct {
@@ -58,10 +59,12 @@ func appendFile(t *testing.T, path, content string) {
 	}
 }
 
+// collect waits for n snapshots and fails the test if they have not all
+// arrived within testtiming.Bound(timeout).
 func collect(t *testing.T, out <-chan domain.QuotaSnapshot, n int, timeout time.Duration) []domain.QuotaSnapshot {
 	t.Helper()
 	var got []domain.QuotaSnapshot
-	deadline := time.After(timeout)
+	deadline := time.After(testtiming.Bound(timeout))
 	for len(got) < n {
 		select {
 		case s := <-out:
@@ -120,12 +123,23 @@ func TestTailerAndScanFilePreserveSanitizedUsageDiagnostics(t *testing.T) {
 	path := filepath.Join(dir, "events.usage.log")
 	appendFile(t, path, "")
 	usageOut := make(chan domain.UsageSample, 4)
-	tailer := NewTailer(Options{Dir: dir, ScanInterval: 20 * time.Millisecond, Usage: usageOut}, newMemPositions())
+	positions := newMemPositions()
+	tailer := NewTailer(Options{Dir: dir, ScanInterval: 20 * time.Millisecond, Usage: usageOut}, positions)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	quotaOut := make(chan domain.QuotaSnapshot, 4)
 	go func() { _ = tailer.Run(ctx, quotaOut) }()
-	time.Sleep(50 * time.Millisecond)
+	// Usage is delivered only for live records, so the line has to be appended
+	// after the bootstrap scan has positioned the file, which it records. A
+	// fixed pause here let a loaded host bootstrap after the append.
+	for deadline := time.Now().Add(testtiming.Bound(2 * time.Second)); ; time.Sleep(5 * time.Millisecond) {
+		if _, found, _ := positions.LoadLogPosition(ctx, path); found {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the tailer did not finish its bootstrap scan")
+		}
+	}
 
 	line := "[2026-09-22T18:00:00Z] CANON: {\"type\":\"thread.token-usage.updated\",\"eventId\":\"bad\",\"provider\":\"future\",\"threadId\":\"thread\",\"createdAt\":\"2026-09-22T18:00:00Z\",\"raw\":{\"method\":\"future/usage\",\"payload\":{\"credential\":\"must-not-survive\"}}}\n"
 	appendFile(t, path, line)
@@ -136,7 +150,7 @@ func TestTailerAndScanFilePreserveSanitizedUsageDiagnostics(t *testing.T) {
 			strings.Contains(diagnostic.SourceEventID, "must-not-survive") {
 			t.Fatalf("live diagnostic = %#v", diagnostic)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtiming.Bound(2 * time.Second)):
 		t.Fatal("timed out waiting for live usage diagnostic")
 	}
 

@@ -13,6 +13,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/providercontainment"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -40,7 +41,7 @@ exit 0
 	if err := os.WriteFile(filepath.Join(commands, "systemctl"), []byte(control), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	manager := ContainedT3{Supervisor: providercontainment.Supervisor{Root: root, Executable: "/bin/true"}, Timeout: time.Second}
+	manager := ContainedT3{Supervisor: providercontainment.Supervisor{Root: root, Executable: "/bin/true"}, Timeout: testtiming.Bound(time.Second)}
 	provider := providercontainment.Launch{ExecutionID: pkg.Identity.ThreadID, Spec: providercontainment.Spec{WorkerID: pkg.WorkerID}}
 	verification := providercontainment.Launch{ExecutionID: pkg.Identity.ThreadID + ":verify-1", Spec: providercontainment.Spec{WorkerID: pkg.WorkerID}}
 	if _, err := manager.Supervisor.Start(ctx, provider); err != nil {

@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestSystemdScopeRunnerBuildsContainedUserScope(t *testing.T) {
@@ -134,7 +136,7 @@ func writeExecutable(t *testing.T, root, name, content string) string {
 // not parse yet is still being written.
 func waitForPID(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for {
 		if raw, err := os.ReadFile(path); err == nil {
 			if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && pid > 0 {
@@ -157,7 +159,7 @@ func waitForProcessExit(t *testing.T, pid int) {
 	_, procErr := os.Stat("/proc/self/stat")
 	hasProc := procErr == nil
 	path := filepath.Join("/proc", strconv.Itoa(pid), "stat")
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for {
 		if hasProc {
 			raw, err := os.ReadFile(path)

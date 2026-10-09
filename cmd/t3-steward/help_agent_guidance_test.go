@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/campaign"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestAgentGuidanceProjections(t *testing.T) {
@@ -315,7 +316,7 @@ func TestAgentGuidanceActualBinary(t *testing.T) {
 	}
 	env = append(env, "HOME="+filepath.Join(fixture, "home"), "XDG_CONFIG_HOME="+filepath.Join(fixture, "config"), "XDG_STATE_HOME="+filepath.Join(fixture, "state"), "TOOLFEEDBACK_DIR="+filepath.Join(fixture, "feedback"), "T3_STEWARD_FRICTION=1", "T3_STEWARD_DRY_RUN=invalid", "T3_STEWARD_COORDINATOR_URL=http://127.0.0.1:1")
 	call := func(args []string) ([]byte, []byte, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(10*time.Second))
 		defer cancel()
 		cmd := exec.CommandContext(ctx, binary, args...)
 		cmd.Dir = filepath.Join(fixture, "work")
@@ -396,7 +397,7 @@ func TestAgentGuidanceActualBinary(t *testing.T) {
 			t.Fatal(err)
 		}
 		rd.Close()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(10*time.Second))
 		cmd := exec.CommandContext(ctx, binary, "--help", format)
 		cmd.Env = env
 		cmd.Dir = filepath.Join(fixture, "work")

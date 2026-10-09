@@ -99,7 +99,7 @@ func coordinatorFileDigests(t *testing.T, statePath string) [2][32]byte {
 
 func waitForQuotaTelemetry(t *testing.T, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for !condition() {
 		if time.Now().After(deadline) {
 			t.Fatal("the recorder did not tick")

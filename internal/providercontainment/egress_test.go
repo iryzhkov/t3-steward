@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestEgressRejectsBrokerDestinationsBeforeDial(t *testing.T) {
@@ -78,7 +80,7 @@ func TestEgressPinsResolvedAddressAndPreservesBufferedTunnelBytes(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = c.SetDeadline(time.Now().Add(testtiming.Bound(5 * time.Second)))
 	// Send tunnel bytes with the headers, so they may already be buffered at Hijack.
 	_, err = io.WriteString(c, "CONNECT provider.example:443 HTTP/1.1\r\nHost: provider.example:443\r\n\r\nping")
 	if err != nil {

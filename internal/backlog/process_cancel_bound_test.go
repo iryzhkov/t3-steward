@@ -72,7 +72,7 @@ func TestCancelledRunKillsTheScopeBeforeItsLauncherExits(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := (SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: 5 * time.Second}).Run(
+		_, err := (SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: testtiming.Bound(5 * time.Second)}).Run(
 			ctx, ProcessRequest{ID: "cancel-empty", Dir: root, Program: "true"})
 		done <- err
 	}()
@@ -81,7 +81,7 @@ func TestCancelledRunKillsTheScopeBeforeItsLauncherExits(t *testing.T) {
 	var err error
 	select {
 	case err = <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtiming.Bound(10 * time.Second)):
 		t.Fatal("cancelled run did not return")
 	}
 	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "kill process scope") {
@@ -149,13 +149,13 @@ func TestCancelledRunReleasesLauncherOutputBeforeReturning(t *testing.T) {
 	var err error
 	select {
 	case err = <-done:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testtiming.Bound(10 * time.Second)):
 		t.Fatal("cancelled run waited for a descendant holding its output")
 	}
 	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "kill process scope") {
 		t.Fatalf("cancelled run error = %v, want cancellation joined with a containment failure", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(5 * time.Second))
 	for {
 		status, readErr := os.ReadFile(statusPath)
 		if readErr == nil {
@@ -179,7 +179,7 @@ func TestKillRemainingCleanupAcceptsAnAnswerWhoseChildHoldsOutput(t *testing.T) 
 	root := t.TempDir()
 	run := writeExecutable(t, root, "run", "#!/bin/sh\nexit 0\n")
 	ctl := writeExecutable(t, root, "ctl", "#!/bin/sh\nif [ \"$2\" = show ]; then echo inactive; fi\nsleep 0.3 &\nexit 0\n")
-	result, err := (SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: 5 * time.Second}).Run(
+	result, err := (SystemdScopeRunner{SystemdRunBinary: run, SystemctlBinary: ctl, ScopeCleanupTimeout: testtiming.Bound(5 * time.Second)}).Run(
 		context.Background(), ProcessRequest{ID: "kill-remaining-linger", Dir: root, Program: "true", KillRemaining: true})
 	if err != nil {
 		t.Fatalf("run error = %v (output %q), want the scope cleared", err, result.Output)
@@ -253,7 +253,7 @@ func TestKillRemainingCleanupReturnsWithinBoundWhenSystemctlChildHoldsOutput(t *
 			if err := os.WriteFile(releasePath, nil, 0600); err != nil {
 				t.Fatal(err)
 			}
-			deadline := time.Now().Add(5 * time.Second)
+			deadline := time.Now().Add(testtiming.Bound(5 * time.Second))
 			for {
 				status, err := os.ReadFile(statusPath)
 				if err == nil {

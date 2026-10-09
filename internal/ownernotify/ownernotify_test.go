@@ -473,7 +473,7 @@ func TestCommandSinkTimeoutKillsTheProcessGroup(t *testing.T) {
 	if _, err := fmt.Sscan(strings.TrimSpace(string(raw)), &pid); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(2 * time.Second))
 	for processAlive(pid) {
 		if time.Now().After(deadline) {
 			t.Fatalf("background child %d survived the timeout", pid)

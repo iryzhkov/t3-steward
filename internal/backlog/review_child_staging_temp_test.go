@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // stageOwnedTempDir resolves only a directory allocated and cleaned up by this
@@ -33,7 +35,7 @@ type stageLockTestWorker struct {
 
 func startStageLockTestWorker(t *testing.T, namespace, key, phase string) *stageLockTestWorker {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(5*time.Second))
 	w := &stageLockTestWorker{ctx: ctx, ready: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{})}
 	go func() {
 		defer close(w.done)

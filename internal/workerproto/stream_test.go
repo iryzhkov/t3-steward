@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestFrameRejectsOversizedPrefixWithoutBody(t *testing.T) {
@@ -64,7 +66,7 @@ func TestStreamReusesConnectionAndRetriesExactIdentity(t *testing.T) {
 		}()
 		return client, nil
 	}
-	transport, err := NewStreamTransport(SSHConfig{Address: "worker", RemoteCommand: "bridge", RequestTimeout: time.Second, ConnectTimeout: time.Second, MaxMessageBytes: 64 << 10, MaxStderrBytes: 1024, ResponsePrincipal: "worker:normandy", ResponseKeyID: "worker-key", ResponseSecret: testSecret}, dial)
+	transport, err := NewStreamTransport(SSHConfig{Address: "worker", RemoteCommand: "bridge", RequestTimeout: testtiming.Bound(time.Second), ConnectTimeout: time.Second, MaxMessageBytes: 64 << 10, MaxStderrBytes: 1024, ResponsePrincipal: "worker:normandy", ResponseKeyID: "worker-key", ResponseSecret: testSecret}, dial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +83,7 @@ func TestStreamReusesConnectionAndRetriesExactIdentity(t *testing.T) {
 }
 func TestStreamCancellationClosesUnresponsivePeer(t *testing.T) {
 	var peer net.Conn
-	transport, err := NewStreamTransport(SSHConfig{Address: "worker", RemoteCommand: "bridge", RequestTimeout: time.Second, ConnectTimeout: time.Second, MaxMessageBytes: 64 << 10, MaxStderrBytes: 1024, ResponsePrincipal: "worker:normandy", ResponseKeyID: "worker-key", ResponseSecret: testSecret}, func(context.Context) (net.Conn, error) {
+	transport, err := NewStreamTransport(SSHConfig{Address: "worker", RemoteCommand: "bridge", RequestTimeout: testtiming.Bound(time.Second), ConnectTimeout: time.Second, MaxMessageBytes: 64 << 10, MaxStderrBytes: 1024, ResponsePrincipal: "worker:normandy", ResponseKeyID: "worker-key", ResponseSecret: testSecret}, func(context.Context) (net.Conn, error) {
 		c, s := net.Pipe()
 		peer = s
 		go func() { _, _ = io.Copy(io.Discard, s) }()

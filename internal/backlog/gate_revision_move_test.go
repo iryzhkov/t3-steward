@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // A gate command moved the declared revision to a failing commit after the
@@ -28,7 +29,7 @@ func TestGateDeclaredRevisionMovedDuringGateIsNotPublished(t *testing.T) {
 			gateBindingGit(t, dir, "checkout", "-q", "--detach", base)
 			gateBindingGit(t, dir, "branch", "work", base)
 			req := h2GateRequest(dir, "moving-revision")
-			req.Task.Gate = &domain.TaskGate{Commands: []string{fmt.Sprintf("grep -qx source source.txt && git update-ref refs/heads/work %s", bad)}, Timeout: 5 * time.Second}
+			req.Task.Gate = &domain.TaskGate{Commands: []string{fmt.Sprintf("grep -qx source source.txt && git update-ref refs/heads/work %s", bad)}, Timeout: testtiming.Bound(5 * time.Second)}
 			req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "handoff", Commit: &domain.CommitOutput{Revision: revision}}}
 			req.Repository, req.BaseCommit = dir, base
 			storage := t.TempDir()
@@ -68,7 +69,7 @@ func TestGateHeadRewriteWithSameTreeFailsOnlyWithDeclaredCommit(t *testing.T) {
 			dir := h2GateRepository(t)
 			base := gateBindingGit(t, dir, "rev-parse", "HEAD")
 			req := h2GateRequest(dir, "amend")
-			req.Task.Gate = &domain.TaskGate{Commands: []string{"git -c user.name=t -c user.email=t@t commit -q --amend --no-edit --allow-empty --date=2020-01-01T00:00:00"}, Timeout: 5 * time.Second}
+			req.Task.Gate = &domain.TaskGate{Commands: []string{"git -c user.name=t -c user.email=t@t commit -q --amend --no-edit --allow-empty --date=2020-01-01T00:00:00"}, Timeout: testtiming.Bound(5 * time.Second)}
 			if declared {
 				req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "handoff", Commit: &domain.CommitOutput{}}}
 			}
@@ -159,7 +160,7 @@ func releaseGateChild(t *testing.T, done string) func() {
 
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(10 * time.Second))
 	for {
 		if _, err := os.Stat(path); err == nil {
 			return
@@ -180,7 +181,7 @@ func TestGateBackgroundChildCannotRewriteTrackedOutput(t *testing.T) {
 	done := filepath.Join(t.TempDir(), "done")
 	req := h2GateRequest(dir, "background-output")
 	rewrite := `i=0; while [ $i -lt 400 ]; do echo bad > .s.tmp && mv .s.tmp source.txt; i=$((i+1)); done`
-	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild(rewrite, done)}, Timeout: 5 * time.Second}
+	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild(rewrite, done)}, Timeout: testtiming.Bound(5 * time.Second)}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "source.txt"}}
 	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}, afterGate: releaseGateChild(t, done)}).Finalize(context.Background(), req)
 	if err != nil {
@@ -217,7 +218,7 @@ func TestGateBackgroundChildCannotMoveDeclaredRevision(t *testing.T) {
 	storage := t.TempDir()
 	done := filepath.Join(t.TempDir(), "done")
 	req := h2GateRequest(dir, "background-ref")
-	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild("git update-ref refs/heads/work "+bad, done)}, Timeout: 5 * time.Second}
+	req.Task.Gate = &domain.TaskGate{Commands: []string{gateBackgroundChild("git update-ref refs/heads/work "+bad, done)}, Timeout: testtiming.Bound(5 * time.Second)}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "handoff", Commit: &domain.CommitOutput{Revision: "work"}}}
 	req.Repository, req.BaseCommit = dir, base
 	refs := CampaignRefStore{Root: filepath.Join(t.TempDir(), "refs")}

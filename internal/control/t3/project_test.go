@@ -310,7 +310,7 @@ func TestEnsureProjectDelayedVisibilityFailsClosed(t *testing.T) {
 			defer server.Close()
 			control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
 				slog.New(slog.NewTextHandler(io.Discard, nil)), false)
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(250*time.Millisecond))
 			if scenario == "cancelled" {
 				cancel()
 			} else {
@@ -443,7 +443,7 @@ func TestEnsureProjectFailsClosed(t *testing.T) {
 			defer server.Close()
 			control := New(t3api.New(server.URL, t3api.StaticToken("test"), time.Second),
 				slog.New(slog.NewTextHandler(io.Discard, nil)), scenario == "dry run")
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(250*time.Millisecond))
 			defer cancel()
 			_, err := control.EnsureProject(ctx, input)
 			if (err == nil) != (scenario == "dry run") {
@@ -732,7 +732,7 @@ func TestEnsureProjectUnknownRefusalIsNotRetried(t *testing.T) {
 	f.seedLegacyHistory(input, 9)
 	_, fencedCommand := fencedProjectIdentity(input.Key, f.sequence)
 	f.refuse[fencedCommand] = "invariant nobody has seen before"
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(300*time.Millisecond))
 	defer cancel()
 	_, err := newProjectControl(server).EnsureProject(ctx, input)
 	if err == nil || !strings.Contains(err.Error(), "invariant nobody has seen before") {

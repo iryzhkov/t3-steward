@@ -16,7 +16,7 @@ import (
 )
 
 // snapshotOutcome runs SnapshotWorkInProgress in the background and waits at
-// most wait for it. A snapshot still blocked on the FIFO at path by then is
+// most testtiming.Bound(wait) for it. A snapshot still blocked on the FIFO at path by then is
 // released by opening and closing a writer, awaited, and reported as blocked,
 // so no test leaves a goroutine waiting on a pipe.
 func snapshotOutcome(t *testing.T, f wipFixture, ctx context.Context, path string, wait time.Duration) (summary string, err error, blocked bool) {
@@ -33,9 +33,9 @@ func snapshotOutcome(t *testing.T, f wipFixture, ctx context.Context, path strin
 	select {
 	case got := <-done:
 		return got.summary, got.err, false
-	case <-time.After(wait):
+	case <-time.After(testtiming.Bound(wait)):
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testtiming.Bound(5 * time.Second))
 	for {
 		select {
 		case got := <-done:
@@ -157,7 +157,7 @@ func TestSnapshotStopsGitThatWaitsOnTheWorkTree(t *testing.T) {
 				t.Fatal(err)
 			}
 			started := time.Now()
-			_, err, blocked := snapshotOutcome(t, f, context.Background(), path, testtiming.Bound(3*time.Second))
+			_, err, blocked := snapshotOutcome(t, f, context.Background(), path, 3*time.Second)
 			if blocked {
 				t.Fatalf("snapshot waited on %s past its own time", name)
 			}
@@ -196,7 +196,7 @@ func TestOpenRootFileRefusesAFIFOFromTheDescriptor(t *testing.T) {
 		if !errors.Is(err, errFileType) {
 			t.Fatalf("err = %v, want errFileType", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtiming.Bound(2 * time.Second)):
 		if writer, err := os.OpenFile(filepath.Join(dir, "pipe"), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			writer.Close()
 		}

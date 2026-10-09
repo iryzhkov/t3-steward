@@ -57,16 +57,20 @@ if [ "$phase" = all ] || [ "$phase" = growth ]; then
 	run -count=5 -run 'TestCommitOutput(ValidationIsLinear|GrowthBoundRejectsAScanPerMark)' ./internal/workerproto
 fi
 
-# The tests whose absolute bound is scaled by testtiming.Bound.
+# The tests whose absolute bound is scaled by testtiming.Bound: the hang
+# checks that assert a duration, and the waits a loaded host has been seen to
+# exceed. Every other wait scaled by Bound is covered by `make test`.
 if [ "$phase" = all ] || [ "$phase" = bounds ]; then
-	run -count=3 -run 'TestRepositoryProbeIsBoundedForAWorkerThatNeverAnswers|TestRepositoryRefResolutionTimeout|TestCoordinatorLedgerNeverBlocksTheBoundary|TestQuotaTelemetryRecorderNeverBlocksCoordinator|TestDaemonsWaitForT3DiscoveryAtStart' ./cmd/t3-steward
-	run -count=3 -run 'TestFileLockWaitHonorsContext|TestSystemdScopeRunnerKillRemainingDirectClearScope20ms|TestResolveExactRefTimesOut|TestCancelledRunReturns|TestKillRemainingCleanupReturnsWithinBound|TestWorkspacePreparerTimesOutAndCleansSetup' ./internal/backlog
-	run -count=3 -run 'TestSSHArtifactPartialReadCloseAborts' ./internal/backlogadmin
+	run -count=3 -run 'TestRepositoryProbeIsBoundedForAWorkerThatNeverAnswers|TestRepositoryRefResolutionTimeout|TestCoordinatorLedgerNeverBlocksTheBoundary|TestQuotaTelemetryRecorderNeverBlocksCoordinator|TestDaemonsWaitForT3DiscoveryAtStart|TestCampaignCompileRefusesAFIFOPlanWithoutBlocking' ./cmd/t3-steward
+	run -count=3 -run 'TestFileLockWaitHonorsContext|TestSystemdScopeRunnerKillRemainingDirectClearScope20ms|TestResolveExactRefTimesOut|TestCancelledRun|TestKillRemainingCleanup|TestWorkspacePreparerTimesOutAndCleansSetup|TestGateScope|TestScopeCleanupDeadlineDuringQueryKeepsObservedState' ./internal/backlog
+	run -count=3 -run 'TestSSHArtifactPartialReadCloseAborts|TestLocalTransportShutdownClosesIdleConnection|TestLocalTransportBoundsIdleClientsAndBackpressure' ./internal/backlogadmin
 	run -count=3 -run 'TestEnsureProjectCreationBudgetIsBounded' ./internal/control/t3
 	run -count=3 -run 'TestCommandSinkTimeoutKillsTheProcessGroup' ./internal/ownernotify
 	run -count=3 ./internal/procgroup
+	run -count=3 -run 'TestScopedControlUsesOnlyItsSocketAndRefusesReplacement' ./internal/providercontainment
+	run -count=3 -run 'TestTailer' ./internal/source/providerlog
 	run -count=3 -run 'TestQuotaTelemetrySourceIsQueryOnly' ./internal/store/sqlite
 	run -count=3 -run 'TestAwaitURL|TestContainedTokenFIFOIsRejectedWithoutBlocking' ./internal/t3api
 	run -count=3 -run 'TestCommandWait|TestNodeSummaryStuckReadSpoilsOnlyItsCell|TestNodeWakeSummaryDegradesWithoutBlockingDelivery' ./internal/wait
-	run -count=3 -run 'TestWorkerProbeTimesOutRatherThanHanging|TestWorkerRefResolutionStructuredOutcomes|TestHungObservationsAreBoundedAndEveryAttemptIsProbed|TestRefusedFirstTurnStartFailsTheAttemptWithT3sReason|TestWatchdogDrainDoesNotWaitAcrossAttempts|TestSnapshotStopsGitThatWaitsOnTheWorkTree|TestWorkerSocketPersistsAcrossReconnectAndStopsIdlePeers' ./internal/workerruntime
+	run -count=3 -run 'TestWorkerProbeTimesOutRatherThanHanging|TestWorkerRefResolutionStructuredOutcomes|TestHungObservationsAreBoundedAndEveryAttemptIsProbed|TestRefusedFirstTurnStartFailsTheAttemptWithT3sReason|TestWatchdogDrainDoesNotWaitAcrossAttempts|TestSnapshotStopsGitThatWaitsOnTheWorkTree|TestWorkerSocketPersistsAcrossReconnectAndStopsIdlePeers|TestOpenRootFileRefusesAFIFOFromTheDescriptor|TestStoppedCollectionOutlivesReconcileDeadline|TestRunningCollectionEndsWithWorkerLifetime|TestSupersedingOfferWaitsForCollection|TestStopYieldsToCollection|TestDeferredStopSurvivesFailedCollection' ./internal/workerruntime
 fi
