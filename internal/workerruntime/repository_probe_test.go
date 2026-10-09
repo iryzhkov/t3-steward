@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -201,7 +202,7 @@ func TestWorkerProbeTimesOutRatherThanHanging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if elapsed := time.Since(started); elapsed > 30*time.Second {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(30*time.Second) {
 		t.Fatalf("the probe ran for %s, which is not bounded by its request", elapsed)
 	}
 	if observation.Class != string(backlog.RepositoryProbeTimeout) {

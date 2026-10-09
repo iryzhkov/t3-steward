@@ -120,6 +120,26 @@ or rc.115 coordinator.
 - `domain.PathSafeID` is now enforced where derived identities are stored:
   a rerun or clone whose run, task, input or first-attempt ID is not path-safe
   is refused before anything is written.
+- The worker's own Git commands (workspace preparation, commit bundle and
+  campaign ref imports) keep Git's automatic maintenance in the foreground
+  (`gc.autoDetach=false`, `maintenance.autoDetach=false`, appended to any
+  inherited `GIT_CONFIG_COUNT` entries). A fetch used to leave a detached
+  `git maintenance run --auto` repacking a workspace's `.git/objects` after
+  the command returned, so removing an immutable attempt tree could fail with
+  `unlinkat .../workspace/.git/objects: directory not empty`; the
+  `internal/backlog` tests failed intermittently on that, and their own
+  fixture Git commands now use a test-only global configuration with the same
+  settings.
+- Tests no longer fail on a loaded host for want of wall-clock time. The two
+  complexity tests (`TestSecretScanRedactionLinearInMatches`,
+  `TestCommitOutputValidationIsLinear`) bound how running time grows with a
+  16x larger input, measured back to back in the same process, instead of an
+  absolute duration, and each has a companion test proving the bound rejects
+  a deliberately quadratic stand-in. The tests that bound a hang keep an
+  absolute bound, scaled 5x under the race detector by the new
+  `internal/testtiming` package, with the hang they detect lengthened where
+  it no longer exceeded the scaled bound. `make test-stress` runs these tests
+  repeatedly under the race detector while busy loops saturate their CPUs.
 
 ## [0.11.0-rc.117] - 2026-10-07
 
