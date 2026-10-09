@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -765,12 +766,35 @@ func runLoggedCheckoutCommand(ctx context.Context, log io.Writer, program string
 	return runLoggedCommand(ctx, log, "", "/bin/sh", wrapped...)
 }
 
+// gitForegroundMaintenance is the environment that keeps the automatic
+// maintenance a Git command starts (git gc --auto after a fetch or a commit,
+// git maintenance run --auto) inside that command instead of in a detached
+// background process. A detached run outlives the command and goes on writing
+// into the repository's objects directory while the worker seals or removes
+// the workspace, and removal then fails with "directory not empty". In the
+// foreground the maintenance still runs, and has finished when the command
+// returns. The settings are appended after any configuration count the worker
+// inherited.
+func gitForegroundMaintenance(inheritedCount string) []string {
+	base, err := strconv.Atoi(inheritedCount)
+	if err != nil || base < 0 {
+		base = 0
+	}
+	var env []string
+	for index, key := range []string{"gc.autoDetach", "maintenance.autoDetach"} {
+		env = append(env,
+			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", base+index, key),
+			fmt.Sprintf("GIT_CONFIG_VALUE_%d=false", base+index))
+	}
+	return append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+2))
+}
+
 func runLoggedCommandOutput(ctx context.Context, log io.Writer, dir, program string, args ...string) ([]byte, error) {
 	return runLoggedCommandOutputEnv(ctx, log, dir, nil, program, args...)
 }
 
 // runLoggedCommandOutputEnv is runLoggedCommandOutput with env added to the
-// worker's environment.
+// worker's environment. Every command also gets gitForegroundMaintenance.
 func runLoggedCommandOutputEnv(ctx context.Context, log io.Writer, dir string, env []string, program string, args ...string) ([]byte, error) {
 	if log == nil {
 		log = io.Discard
@@ -778,9 +802,7 @@ func runLoggedCommandOutputEnv(ctx context.Context, log io.Writer, dir string, e
 	fmt.Fprintf(log, "$ %s %s\n", program, strings.Join(args, " "))
 	command := exec.CommandContext(ctx, program, args...)
 	command.Dir = dir
-	if len(env) != 0 {
-		command.Env = append(os.Environ(), env...)
-	}
+	command.Env = append(append(os.Environ(), gitForegroundMaintenance(os.Getenv("GIT_CONFIG_COUNT"))...), env...)
 	// A cancelled command may leave children holding the output pipe (dash does
 	// not exec the last command of -c). Stop waiting for them shortly after the
 	// context ends instead of blocking until they exit on their own.
