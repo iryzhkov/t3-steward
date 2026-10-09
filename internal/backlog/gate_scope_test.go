@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 // A request with KillRemaining clears its scope before it starts and after it
@@ -125,7 +126,7 @@ func TestSystemdScopeRunnerKillRemainingDirectClearScope20ms(t *testing.T) {
 	}
 	started := time.Now()
 	err := runner.clearScope("t3-steward-direct-20ms.scope")
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(time.Second) {
 		t.Fatalf("direct clearScope took %s despite a 20ms cleanup bound", elapsed)
 	}
 	var cleanup *ScopeCleanupError

@@ -11,6 +11,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -323,9 +324,9 @@ func TestHungObservationsAreBoundedAndEveryAttemptIsProbed(t *testing.T) {
 		done := make(chan error, 1)
 		started := time.Now()
 		go func() { done <- host.Reconcile(context.Background()) }()
-		exchangeAnswersWithin(t, host, 2*time.Second, func() {})
+		exchangeAnswersWithin(t, host, testtiming.Bound(2*time.Second), func() {})
 		reconcileFinishes(t, done)
-		if elapsed := time.Since(started); elapsed > 1200*time.Millisecond {
+		if elapsed := time.Since(started); elapsed > testtiming.Bound(1200*time.Millisecond) {
 			t.Fatalf("tick %d took %s; want the probe budget to bound it", tick, elapsed)
 		}
 	}

@@ -67,6 +67,8 @@ func failedOfferSupersessionFixture(t *testing.T) (*Store, FailedActivationOffer
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Each literal is its own statement: gofmt 1.25 and 1.27 indent a
+	// composite literal continuing a multi-value return differently.
 	supersession := FailedActivationOfferSupersession{
 		CoordinatorEpoch: 1, RunID: failure.RunID,
 		ActivationID: failure.ActivationID, ActivationEpoch: failure.ActivationEpoch,

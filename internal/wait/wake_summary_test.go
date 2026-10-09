@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 const fixtureRun = "run-8c2bcc2de8960f8b92f0a68567b9b46e"
@@ -325,7 +326,7 @@ func TestNodeWakeSummaryDegradesWithoutBlockingDelivery(t *testing.T) {
 		defer close(source.block)
 		started := time.Now()
 		text, _, _ := deliverNodeWake(t, w, source)
-		if elapsed := time.Since(started); elapsed > 5*time.Second {
+		if elapsed := time.Since(started); elapsed > testtiming.Bound(5*time.Second) {
 			t.Fatalf("delivery waited %s for a source that never answered", elapsed)
 		}
 		unavailable(t, text, "timeout")

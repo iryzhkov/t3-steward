@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -208,20 +209,47 @@ func TestSecretScanTimeoutStopPreparationRedacted(t *testing.T) {
 
 // Redaction runs inline on log and failure text an agent controls. Text with
 // many credential echoes must cost time in proportion to its length, not to
-// its length times its matches.
+// its length times its matches. The bound is on growth, not on wall-clock
+// time, so a loaded host does not fail it.
 func TestSecretScanRedactionLinearInMatches(t *testing.T) {
 	secret := "synthetic-many-matches-credential"
 	scanner := newResultScanner(SecretScanConfig{StaticCanaries: []string{secret}}, nil, nil)
-	const lines = 10000
-	text := strings.Repeat("token="+secret+" 100% done\n", lines)
-	start := time.Now()
-	redacted := scanner.safeName(text)
-	if elapsed := time.Since(start); elapsed > 8*time.Second {
-		t.Fatalf("redacting %d bytes with %d matches took %s", len(text), lines, elapsed)
-	}
+	const lines = 1000
+	redacted := scanner.safeName(manyMatchesText(secret, lines))
 	if strings.Contains(redacted, secret) || strings.Count(redacted, "[redacted]") != lines {
 		t.Fatalf("not every match redacted: %d of %d", strings.Count(redacted, "[redacted]"), lines)
 	}
+	if err := testtiming.CheckLinear(250, func(n int) func() {
+		text := manyMatchesText(secret, n)
+		return func() { scanner.safeName(text) }
+	}); err != nil {
+		t.Fatalf("redaction is not linear in its matches: %v", err)
+	}
+}
+
+// The growth bound above detects the regression it was written for: a
+// redaction that rebuilds the whole text for every match fails it.
+func TestSecretScanRedactionGrowthBoundRejectsQuadraticRedaction(t *testing.T) {
+	secret := "synthetic-many-matches-credential"
+	quadratic := func(text string) string {
+		for {
+			at := strings.Index(text, secret)
+			if at < 0 {
+				return text
+			}
+			text = text[:at] + "[redacted]" + text[at+len(secret):]
+		}
+	}
+	if err := testtiming.CheckLinear(250, func(n int) func() {
+		text := manyMatchesText(secret, n)
+		return func() { _ = quadratic(text) }
+	}); err == nil {
+		t.Fatal("a redaction quadratic in its matches passed the growth bound")
+	}
+}
+
+func manyMatchesText(secret string, lines int) string {
+	return strings.Repeat("token="+secret+" 100% done\n", lines)
 }
 
 // Redaction searches bounded windows; a credential, raw or percent-encoded,
