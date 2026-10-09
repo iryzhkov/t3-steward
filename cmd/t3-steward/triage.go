@@ -53,6 +53,11 @@ What it lists, items needing action first:
                         unknown send outcome
   quota-held            a quota pool whose admission is closed, draining or
                         recovering
+  provider-error        an attempt Steward still holds as running whose
+                        provider session ended its turn with a provider-side
+                        error (capacity, overload, rate limit, server error,
+                        session not ready); the worker resumes the same
+                        session after a backoff, and the item says where it is
   intake-quarantined    a submission the coordinator refused permanently
   run-stalled           a run that is not finished and whose record has not
                         changed for --stale-days days
@@ -295,6 +300,7 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 			report.GeneratedAt = workers.GeneratedAt
 		}
 		triageWorkers(&report, workers, notBefore, options.workerDownAfter)
+		triageProviderErrors(&report, workers.Workers)
 	}
 	if report.GeneratedAt.IsZero() {
 		report.GeneratedAt = time.Now().UTC()
@@ -795,7 +801,7 @@ func triageAsk(report *triageReport, w domain.TaskWait, task string, showRun tri
 // worker that is down explains much of what follows it.
 var triageKindOrder = []string{
 	"worker-down", "review-round-limit", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
-	"ask-unanswered", "wake-overdue", "wake-undeliverable", "supervision-hold", "supervision-dispatch", "quota-held",
+	"ask-unanswered", "wake-overdue", "wake-undeliverable", "supervision-hold", "supervision-dispatch", "quota-held", "provider-error",
 	"intake-quarantined", "run-stalled", "worker-disconnected", "worker-maintenance", "legacy-intake-disabled",
 }
 

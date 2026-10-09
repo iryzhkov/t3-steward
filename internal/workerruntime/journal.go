@@ -101,7 +101,11 @@ type AttemptRecord struct {
 	ObservedTurnID string `json:"observedTurnId,omitempty"`
 	// TurnEnd is the background-command check of the attempt's turn ends:
 	// the nudges spent and the state explain reports.
-	TurnEnd          *TurnEndCheck                             `json:"turnEnd,omitempty"`
+	TurnEnd *TurnEndCheck `json:"turnEnd,omitempty"`
+	// ProviderResume is the in-session resume of the attempt's turns that
+	// ended on a provider-side error: the errors seen, the resumes spent and
+	// the one scheduled.
+	ProviderResume   *ProviderResumeRecord                     `json:"providerResume,omitempty"`
 	Assignment       domain.Assignment                         `json:"assignment"`
 	Package          workerproto.ExecutionPackageManifest      `json:"package"`
 	Phase            Phase                                     `json:"phase"`

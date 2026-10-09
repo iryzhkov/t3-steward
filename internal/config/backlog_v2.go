@@ -29,6 +29,9 @@ func (c *Config) validateBacklogV2() error {
 	default:
 		return errors.New("backlog_v2.result_secret_scan.pattern_policy must be default, block, or warn")
 	}
+	if err := v.ProviderResume.validate(); err != nil {
+		return err
+	}
 	for route, metadata := range v.ReviewRoutes {
 		if !review.ValidRoute(route) {
 			return fmt.Errorf("backlog_v2.review_routes.%s: route must be nonempty INSTANCE/MODEL, with no whitespace and at most 256 bytes; MODEL may contain slashes and colons", route)

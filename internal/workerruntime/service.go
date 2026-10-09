@@ -47,6 +47,9 @@ type WorkerServiceOptions struct {
 	// PauseEscalation is the daemon's stop_verify_timeout, the window a drain
 	// notice gets before a local quota stop escalates; see Config.
 	PauseEscalation time.Duration
+	// ProviderResumeBackoff is this host's in-session resume schedule after
+	// provider-side errors (backlog_v2.provider_resume.backoff); see Config.
+	ProviderResumeBackoff []time.Duration
 	// Lifetime is the worker process's lifetime: work the runtime lets outlive
 	// a request, such as a long verification, is cancelled when it ends. See
 	// Config.Lifetime.
@@ -184,20 +187,21 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	}
 	binding.Inventory.Runtime = options.RuntimeIdentity
 	runtime, err := New(Config{
-		WorkerID:         options.WorkerID,
-		WorkerEpoch:      options.WorkerEpoch,
-		CoordinatorID:    options.Settings.Coordinator.ID,
-		CoordinatorEpoch: options.CoordinatorEpoch,
-		SnapshotTTL:      options.Settings.Freshness.WorkerMaxAge.D(),
-		LeaseDuration:    options.Settings.Leases.Duration.D(),
-		MaxPackageBytes:  options.Settings.MessageLimits.MaxBytes,
-		WorkspaceRoot:    options.Settings.Storage.Workspaces,
-		Inventory:        binding.Inventory,
-		ObserveInventory: observerForSettings(options),
-		LiveTaskWait:     options.LiveTaskWait,
-		Quota:            options.Quota,
-		PauseEscalation:  options.PauseEscalation,
-		Lifetime:         options.Lifetime,
+		WorkerID:              options.WorkerID,
+		WorkerEpoch:           options.WorkerEpoch,
+		CoordinatorID:         options.Settings.Coordinator.ID,
+		CoordinatorEpoch:      options.CoordinatorEpoch,
+		SnapshotTTL:           options.Settings.Freshness.WorkerMaxAge.D(),
+		LeaseDuration:         options.Settings.Leases.Duration.D(),
+		MaxPackageBytes:       options.Settings.MessageLimits.MaxBytes,
+		WorkspaceRoot:         options.Settings.Storage.Workspaces,
+		Inventory:             binding.Inventory,
+		ObserveInventory:      observerForSettings(options),
+		LiveTaskWait:          options.LiveTaskWait,
+		Quota:                 options.Quota,
+		PauseEscalation:       options.PauseEscalation,
+		ProviderResumeBackoff: options.ProviderResumeBackoff,
+		Lifetime:              options.Lifetime,
 		// The same store the finalizer publishes into. The coordinator
 		// states which campaigns are still alive on every snapshot
 		// exchange, and this is what acts on that statement.

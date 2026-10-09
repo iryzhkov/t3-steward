@@ -480,6 +480,21 @@ func sessionFailedCurrentRequest(thread domain.Thread) bool {
 		!thread.SessionUpdatedAt.Before(*thread.LatestUserMessageAt)
 }
 
+// sessionFailedUnderRunningTurn reports a latest turn T3 still calls running
+// whose provider session T3 moved to error at or after the turn's request,
+// with no newer request, input, approval or background work pending: the
+// provider failed under the turn, and T3 records no end for it.
+func sessionFailedUnderRunningTurn(thread domain.Thread) bool {
+	if thread.TurnID == "" || thread.TurnState != "running" || thread.SessionStatus != t3SessionError {
+		return false
+	}
+	if thread.BackgroundWork == "working" || thread.HasPendingUserInput || thread.HasPendingApprovals || turnRequestUnadopted(thread) {
+		return false
+	}
+	return thread.SessionUpdatedAt != nil &&
+		(thread.LatestTurnRequestedAt == nil || !thread.SessionUpdatedAt.Before(*thread.LatestTurnRequestedAt))
+}
+
 const turnRequestIdentityPrefix = "turn-request:"
 
 // turnRequestIdentity is the one collection identity of the current start
@@ -520,6 +535,12 @@ func threadTerminal(ctx context.Context, export func(context.Context, string) ([
 	// A native T3 question may leave the latest turn completed while the
 	// provider waits for the user's answer. Keep this owned task thread live:
 	// collecting now would reject pending input and release its dependencies.
+	// A turn T3 left running under a provider session it moved to error
+	// has ended: nothing will end it on its own, and the worker answers it
+	// with a resume (see holdForProviderError) instead of waiting forever.
+	if sessionFailedUnderRunningTurn(thread) {
+		return true, thread.TurnID, nil
+	}
 	if thread.Running || thread.BackgroundWork == "working" || thread.HasPendingUserInput || thread.HasPendingApprovals {
 		return false, thread.TurnID, nil
 	}

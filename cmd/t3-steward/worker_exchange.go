@@ -85,15 +85,16 @@ func cmdWorkerExchange(g globalFlags, pinned string) error {
 	defer cancel()
 	local := cfg.BacklogV2.LocalWorker
 	options := workerruntime.WorkerServiceOptions{
-		Settings:            cfg.BacklogV2,
-		WorkerID:            local.ID,
-		WorkerEpoch:         local.Epoch,
-		CoordinatorEpoch:    local.CoordinatorEpoch,
-		ProtocolCredentials: workerruntime.ProtocolResolver{},
-		ProjectCredentials:  workerruntime.EnvironmentCredentialChecker{},
-		Usage:               usageStore,
-		DryRun:              cfg.Policy.DryRun,
-		Logger:              logger,
+		Settings:              cfg.BacklogV2,
+		WorkerID:              local.ID,
+		WorkerEpoch:           local.Epoch,
+		CoordinatorEpoch:      local.CoordinatorEpoch,
+		ProtocolCredentials:   workerruntime.ProtocolResolver{},
+		ProjectCredentials:    workerruntime.EnvironmentCredentialChecker{},
+		Usage:                 usageStore,
+		ProviderResumeBackoff: cfg.BacklogV2.ProviderResume.Schedule(),
+		DryRun:                cfg.Policy.DryRun,
+		Logger:                logger,
 	}
 	// The request is read before the service exists so the worker can adopt
 	// the coordinator epoch of an authenticated envelope. Only the envelope

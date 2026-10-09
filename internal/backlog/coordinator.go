@@ -37,6 +37,9 @@ type WorkerCommandTransport interface {
 type FleetCoordinator struct {
 	Store FleetCoordinatorStore
 	Now   func() time.Time
+	// ProviderResume caps the in-session resumes a worker may make after
+	// provider-side errors; the zero value is the default maximum.
+	ProviderResume ProviderResumeLimits
 }
 
 type AssignmentPlanningReport struct {

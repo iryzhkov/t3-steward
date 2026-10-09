@@ -91,6 +91,10 @@ type taskResultTask struct {
 	Progress      string                `json:"progress"`
 	// Failure is why the attempt failed, as the coordinator recorded it.
 	Failure string `json:"failure,omitempty"`
+	// ProviderError is the provider-side error the worker last reported for
+	// the attempt, with the in-session resume answering it: an
+	// infrastructure failure event, whether or not the attempt recovered.
+	ProviderError *domain.WorkerProviderError `json:"providerError,omitempty"`
 	// ReviewGate is the review completion gate's decision for a
 	// review-declared task, with the reviewed and the workspace heads.
 	ReviewGate *domain.ReviewCompletionGate `json:"reviewGate,omitempty"`
@@ -371,6 +375,10 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		collected.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
 		collected.ReviewGate = task.Attempt.ReviewGate
 	}
+	if task.Evidence != nil && task.Evidence.ProviderError != nil {
+		providerError := *task.Evidence.ProviderError
+		collected.ProviderError = &providerError
+	}
 	if err := resultDirectoryName(task.Task.Name); err != nil {
 		return taskResultTask{}, err
 	}
@@ -545,6 +553,9 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 		}
 		if task.Failure != "" {
 			fmt.Fprintf(out, "  failure: %s\n", task.Failure)
+		}
+		if task.ProviderError != nil {
+			fmt.Fprintf(out, "  provider error: %s\n", task.ProviderError.Summary())
 		}
 		if task.ReviewGate != nil {
 			fmt.Fprintf(out, "  review gate: %s\n", task.ReviewGate.Summary())

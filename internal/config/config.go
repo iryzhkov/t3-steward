@@ -504,6 +504,7 @@ type V2ResultSecretScan struct {
 
 type BacklogV2 struct {
 	ResultSecretScan V2ResultSecretScan `yaml:"result_secret_scan"`
+	ProviderResume   V2ProviderResume   `yaml:"provider_resume"`
 	// ReviewRoutes classifies explicit routes without choosing routes or applying role policy.
 	ReviewRoutes      map[string]ReviewRouteMetadata `yaml:"review_routes"`
 	Mode              string                         `yaml:"mode"`
