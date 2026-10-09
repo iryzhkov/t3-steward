@@ -89,7 +89,7 @@ Healthy authorized candidates rank ahead of exhausted, gated or unknown pools.
 A pool at its concurrency limit, counting active and planned assignments, ranks
 in the saturated band: below every pool with room, above gated pools.
 Equal bands retain policy order, with review diversity soft within a usable band.
-Receipts retain ranking version, candidate bands, pools, reasons and each candidate's effort; each reason
+Receipts retain ranking version, candidate bands, pools and reasons, and each candidate's effort; each reason
 ends with its pool's reading state and age. Missing or stale quota cannot supply
 headroom. Disabled quota checks gate nothing, but readings still rank.
 Ranking never grants admission: submission and occurrence admission still check
@@ -752,7 +752,7 @@ Healthy authorized candidates rank ahead of exhausted, gated or unknown pools.
 A pool at its concurrency limit, counting active and planned assignments, ranks
 in the saturated band: below every pool with room, above gated pools.
 Equal bands retain policy order, with review diversity soft within a usable band.
-Receipts retain ranking version, candidate bands, pools, reasons and each candidate's effort; each reason
+Receipts retain ranking version, candidate bands, pools and reasons, and each candidate's effort; each reason
 ends with its pool's reading state and age. Missing or stale quota cannot supply
 headroom. Disabled quota checks gate nothing, but readings still rank.
 Ranking never grants admission: submission and occurrence admission still check

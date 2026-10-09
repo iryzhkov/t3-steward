@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.11.0-rc120] - 2026-10-09
+
+This integration keeps the rc119 database schema and side-store compatibility
+versions unchanged; it adds no schema migration.
+
+### Fixed
+
+- Make timing tests reliable under load and keep Git maintenance in the foreground.
+- Decode irregular thread-archive activities and bound permanent collection failures.
+- Resolve symlinked temporary directories for verification and gate commands.
+- Derive built-in provider families for standalone review selection.
+- Resume the same provider session after bounded transient infrastructure errors.
+- Validate identifiers, artifact paths and idempotency keys before submission.
+- Release parked executor capacity, explain deferred wakes and capacity deadlocks,
+  and account for concurrency saturation when selecting roles.
+- Use one fresh quota view for task, campaign and schedule role ranking.
+
+The accepted units' detailed entries follow.
+
 No database migration: the schema stays at 42 (V2..V34, V37, V39, V42).
 Admin reads gain a new version, `backlog.admin/v1-extended-read-rc118`,
 which this release's clients ask for first; an rc.117 client's
