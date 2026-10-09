@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/t3api"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestEnsureProjectReconcilesCreation(t *testing.T) {
@@ -758,7 +759,7 @@ func TestEnsureProjectCreationBudgetIsBounded(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "exhausted 4 creation dispatches") {
 			t.Fatalf("budget not enforced: %v", err)
 		}
-		if elapsed := time.Since(started); elapsed > 5*time.Second {
+		if elapsed := time.Since(started); elapsed > testtiming.Bound(5*time.Second) {
 			t.Fatalf("exhausting the budget took %s", elapsed)
 		}
 		f.mu.Lock()

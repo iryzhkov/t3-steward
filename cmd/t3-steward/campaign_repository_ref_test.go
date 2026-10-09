@@ -13,6 +13,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
@@ -300,7 +301,7 @@ func TestRepositoryRefResolutionTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(started) > 30*time.Second {
+	if time.Since(started) > testtiming.Bound(30*time.Second) {
 		t.Fatal("the resolution was not bounded by the transport timeout")
 	}
 	if answer.Status != workerproto.RefResolutionUnreachable || answer.Class != backlog.RepositoryProbeTimeout {

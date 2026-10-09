@@ -7,12 +7,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestSSHArtifactPartialReadCloseAborts(t *testing.T) {
 	harness := newRemoteHarness(t, false)
 	harness.service.artifact = []byte(strings.Repeat("a", 1<<20))
-	harness.client.config.RequestTimeout = 3 * time.Second
+	// The request timeout stays well above the scaled bound below, so a Close
+	// that waited for it fails the bound.
+	harness.client.config.RequestTimeout = 30 * time.Second
 	factory := harness.client.config.Factory
 	var command *exec.Cmd
 	harness.client.config.Factory = func(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -29,8 +33,8 @@ func TestSSHArtifactPartialReadCloseAborts(t *testing.T) {
 	start := time.Now()
 	closeErr := content.Content.Close()
 	elapsed := time.Since(start)
-	if elapsed >= time.Second {
-		t.Errorf("partial Close took %s; want less than 1 second", elapsed)
+	if elapsed >= testtiming.Bound(time.Second) {
+		t.Errorf("partial Close took %s; want less than %s", elapsed, testtiming.Bound(time.Second))
 	}
 	if closeErr != nil {
 		t.Errorf("partial Close = %v; want nil", closeErr)
