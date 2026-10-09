@@ -95,6 +95,13 @@ check-fast check-review check-fast-no-sqlite-checkptr check-review-no-sqlite-che
 		echo "no Go packages changed against $(FAST_BASE); skipping the race pass"; \
 	fi
 
+# `make test-stress` runs the tests that once failed only on a loaded host
+# (the growth-bounded complexity tests and the immutable-tree cleanup tests)
+# repeatedly under the race detector while busy loops saturate their CPUs
+# (scripts/stress-timing-tests.sh). It is not part of `make test`.
+test-stress:
+	sh scripts/stress-timing-tests.sh
+
 # The edit-test loop: `make test-affected BASE=<commit>` runs, under the race
 # detector with checkptr kept and at full size, the tests of every package
 # changed against BASE and of every package whose tests import one of them,

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"io"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestNodeSummaryStuckReadSpoilsOnlyItsCell(t *testing.T) {
 	start := time.Now()
 	s := BuildNodeSummary(context.Background(), source, fixtureSinkWait())
 	elapsed := time.Since(start)
-	if elapsed < 2*time.Second || elapsed > 5*time.Second || s.Tasks[0].HeadStatus != "unreadable" || s.Tasks[1].Verdict != "ACCEPT" {
+	if elapsed < 2*time.Second || elapsed > testtiming.Bound(5*time.Second) || s.Tasks[0].HeadStatus != "unreadable" || s.Tasks[1].Verdict != "ACCEPT" {
 		t.Fatalf("one stuck read must not spoil the later verdict: elapsed=%s summary=%+v", elapsed, s)
 	}
 }
