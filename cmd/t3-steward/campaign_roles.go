@@ -114,7 +114,7 @@ func resolveCampaignPolicy(p *routePolicy, tasks []backlogadmin.ViabilityTask, p
 		ranked, err := selectPolicyRouteRanked(p, task.Role, "", "", "", project, accept, campaignTaskRankView(task, *snapshot))
 		verdicts := make([]domain.RoleCandidateVerdict, 0, len(ranked.Candidates))
 		for _, candidate := range ranked.Candidates {
-			verdicts = append(verdicts, domain.RoleCandidateVerdict{Route: candidate.Route, Ordinal: candidate.Ordinal, Eligible: candidate.Eligible, Band: candidate.Band, Pool: candidate.Pool, Reason: candidate.Reason})
+			verdicts = append(verdicts, domain.RoleCandidateVerdict{Route: candidate.Route, Ordinal: candidate.Ordinal, Eligible: candidate.Eligible, Band: candidate.Band, Pool: candidate.Pool, Reason: candidate.Reason, Effort: candidate.Effort})
 		}
 		return ranked, verdicts, err
 	}

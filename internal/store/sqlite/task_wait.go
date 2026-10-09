@@ -1110,6 +1110,10 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 			}
 			if !authorized || authorization.WorkerEpoch != assignment.WorkerEpoch ||
 				authorization.ValidUntil.Before(now) || !authorizedTaskWakeProject(authorization.Projects, project) {
+				if err := deferTaskWakeTx(ctx, tx, cutoffs, ready, domain.WakeDeferredWorkerUnavailable,
+					workerUnavailableWakeDetail(assignment.WorkerID), assignment.WorkerID, "", now); err != nil {
+					return nil, err
+				}
 				continue
 			}
 			snapshot, exists, err := loadWorkerSnapshotTx(ctx, tx, assignment.WorkerID)
@@ -1122,6 +1126,10 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 				!snapshot.ValidUntil.Before(now) && authorizedTaskWakeRoute(snapshot.Inventory.Providers, assignment.Route) &&
 				authorizedTaskWakeProject(snapshot.Inventory.Projects, project)
 			if !current || !authorizedTaskWakeRoute(authorization.Providers, assignment.Route) {
+				if err := deferTaskWakeTx(ctx, tx, cutoffs, ready, domain.WakeDeferredWorkerUnavailable,
+					workerUnavailableWakeDetail(assignment.WorkerID), assignment.WorkerID, "", now); err != nil {
+					return nil, err
+				}
 				continue
 			}
 		}
@@ -1129,6 +1137,11 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 			return candidate.settled.After(cutoff.ReadyAt) || candidate.settled.Equal(cutoff.ReadyAt) && attemptID >= cutoff.AttemptID
 		}
 		if cutoff, ok := cutoffs.Worker[assignment.WorkerID]; ok && newerThan(cutoff) {
+			if err := deferTaskWakeTx(ctx, tx, cutoffs, ready, domain.WakeDeferredOlderWork,
+				fmt.Sprintf("attempt %q, ready before this wait settled, is served first on worker %q", cutoff.AttemptID, assignment.WorkerID),
+				assignment.WorkerID, "", now); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		poolID := assignment.Route.QuotaPoolID
@@ -1137,6 +1150,11 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 			continue
 		}
 		if cutoff, ok := cutoffs.Pool[poolID]; ok && newerThan(cutoff) {
+			if err := deferTaskWakeTx(ctx, tx, cutoffs, ready, domain.WakeDeferredOlderWork,
+				fmt.Sprintf("attempt %q, ready before this wait settled, is served first in quota pool %q", cutoff.AttemptID, poolID),
+				assignment.WorkerID, poolID, now); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if poolID != "" {
@@ -1168,6 +1186,11 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 				}
 			}
 			if !foundPool || !open {
+				if err := deferTaskWakeTx(ctx, tx, cutoffs, ready, domain.WakeDeferredQuotaAdmission,
+					fmt.Sprintf("quota pool %q has no current open admission", poolID),
+					assignment.WorkerID, poolID, now); err != nil {
+					return nil, err
+				}
 				continue
 			}
 			active := 0
@@ -1188,6 +1211,11 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 				}
 			}
 			if pool.MaxConcurrent > 0 && active >= pool.MaxConcurrent {
+				if err := deferTaskWakeTx(ctx, tx, cutoffs, ready, domain.WakeDeferredPoolConcurrency,
+					fmt.Sprintf("quota pool %q has %d assignments holding slots at its concurrency limit of %d", poolID, active, pool.MaxConcurrent),
+					assignment.WorkerID, poolID, now); err != nil {
+					return nil, err
+				}
 				continue
 			}
 		}
@@ -1195,7 +1223,12 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 		if err := requireExecutorCapacityTx(ctx, tx, assignment.WorkerID, now, assignment.WorkerEpoch, demand, demandKnown); err != nil {
 			if errors.Is(err, ErrExecutorCapacity) || errors.Is(err, ErrExecutorCapacityEvidence) {
 				// Settlement remains durable but undelivered. A later pass
-				// retries this same wake after capacity is released.
+				// retries this same wake after capacity is released, and the
+				// wait says why it has not resumed in the meantime.
+				if deferErr := deferTaskWakeTx(ctx, tx, cutoffs, ready, domain.WakeDeferredExecutorCapacity,
+					err.Error(), assignment.WorkerID, assignment.Route.QuotaPoolID, now); deferErr != nil {
+					return nil, deferErr
+				}
 				continue
 			}
 			return nil, err
@@ -1213,6 +1246,9 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 		if err := saveAttemptFencedTx(ctx, tx, attempt, expected); err != nil {
 			return nil, err
 		}
+		for index := range ready {
+			ready[index].WakeDeferral = nil
+		}
 		if err := markTaskWaitsWokenTx(ctx, tx, ready, attempt, "pending", true, now); err != nil {
 			return nil, err
 		}
@@ -1222,6 +1258,42 @@ func (s *Store) WakeTaskWaitsBefore(ctx context.Context, now time.Time, cutoffs 
 		})
 	}
 	return wakes, tx.Commit()
+}
+
+// deferTaskWakeTx records on every wait of a ready wake set why the coordinator
+// did not resume its attempt in this pass. The wake itself is untouched: it
+// stays settled and unwoken and is retried on the next boundary. A record is
+// written only when the cause changes, and only by a coordinator pass that
+// supplied current worker evidence; the bare legacy pass, which fails closed
+// on every governed wake, says nothing about why.
+func deferTaskWakeTx(ctx context.Context, tx *sql.Tx, cutoffs TaskWakeCutoffs, ready []domain.TaskWait, code, detail, workerID, poolID string, now time.Time) error {
+	if cutoffs.AuthorizedWorkers == nil {
+		return nil
+	}
+	for index, wait := range ready {
+		previous := wait.WakeDeferral
+		if previous != nil && previous.Code == code && previous.Detail == detail &&
+			previous.WorkerID == workerID && previous.PoolID == poolID {
+			continue
+		}
+		observed := now.UTC()
+		if previous != nil && previous.Code == code {
+			observed = previous.ObservedAt
+		}
+		wait.WakeDeferral = &domain.TaskWaitWakeDeferral{
+			Code: code, Detail: detail, WorkerID: workerID, PoolID: poolID, ObservedAt: observed,
+		}
+		ready[index] = wait
+		if err := saveTaskWaitTx(ctx, tx, wait); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func workerUnavailableWakeDetail(workerID string) string {
+	return fmt.Sprintf("worker %q, which holds the parked workspace, has no current authorized snapshot offering this route and project; "+
+		"the wake waits for it, and is abandoned only if the worker returns without the execution", workerID)
 }
 
 func authorizedTaskWakeRoute(providers []domain.WorkerProviderInventory, route domain.ProviderRoute) bool {

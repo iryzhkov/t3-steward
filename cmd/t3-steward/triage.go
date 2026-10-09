@@ -311,6 +311,7 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 	} else {
 		report.Sources = append(report.Sources, "runs")
 		triageStalledRuns(&report, workflows.Workflows, now, options.staleAfter)
+		triageCapacityDeadlocks(&report, workflows.Workflows)
 		triageSupervision(ctx, &report, sources, workflows.Workflows)
 		triageReviewRoundLimits(ctx, &report, sources, workflows.Workflows)
 	}
@@ -420,6 +421,30 @@ func triageQuotas(report *triageReport, quotas []backlogadmin.Quota) {
 				{Run: "t3-steward backlog list --progress paused,ready"},
 			},
 		})
+	}
+}
+
+// triageCapacityDeadlocks lists every ready task the last planning pass found
+// blocked only by capacity held by attempts waiting on its own run. Steward
+// takes no action on it, so it needs an operator: the commands explain the
+// task and show the holder, and cancelling is left to the reader's judgement.
+func triageCapacityDeadlocks(report *triageReport, runs []backlogadmin.WorkflowSummary) {
+	for _, summary := range runs {
+		for _, deadlock := range summary.CapacityDeadlocks {
+			name := deadlock.TaskName
+			if name == "" {
+				name = deadlock.TaskID
+			}
+			commands := []triageCommand{
+				{Run: "t3-steward campaign explain " + summary.Run.ID + "/" + name},
+				{Run: "t3-steward wait list", When: "to find the waits of the holding attempts named above before cancelling one"},
+			}
+			report.add(triageItem{
+				Kind: "capacity-deadlock", Severity: "action", Subject: summary.Run.ID + "/" + name, Run: summary.Run.ID,
+				Summary:  fmt.Sprintf("task %q cannot start: %s", name, deadlock.Detail),
+				Commands: commands,
+			})
+		}
 	}
 }
 
@@ -794,7 +819,7 @@ func triageAsk(report *triageReport, w domain.TaskWait, task string, showRun tri
 // triageKindOrder orders items of one severity: workers first, because a
 // worker that is down explains much of what follows it.
 var triageKindOrder = []string{
-	"worker-down", "review-round-limit", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
+	"worker-down", "capacity-deadlock", "review-round-limit", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
 	"ask-unanswered", "wake-overdue", "wake-undeliverable", "supervision-hold", "supervision-dispatch", "quota-held",
 	"intake-quarantined", "run-stalled", "worker-disconnected", "worker-maintenance", "legacy-intake-disabled",
 }

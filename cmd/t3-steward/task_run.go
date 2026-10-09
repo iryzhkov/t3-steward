@@ -604,9 +604,10 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	response, err := client.SubmitArchive(ctx, backlogadmin.LocalSubmissionRequest{
+	response, err := submitArchiveClaimingParent(ctx, client, backlogadmin.LocalSubmissionRequest{
 		IdempotencyKey: key, Principal: c.campaign.submissionPrincipal(),
-	}, bytes.NewReader(bundle.Archive), int64(len(bundle.Archive)))
+		Parent: submissionParentLookup(),
+	}, bundle.Archive)
 	if err != nil {
 		return explainSubmissionConflict(err)
 	}

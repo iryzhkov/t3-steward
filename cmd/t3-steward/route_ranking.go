@@ -18,6 +18,7 @@ type policyRankCandidate struct {
 	Band     string `json:"band,omitempty"`
 	Pool     string `json:"pool,omitempty"`
 	Reason   string `json:"reason"`
+	Effort   string `json:"effort,omitempty"`
 }
 type routeRankView struct {
 	Now   time.Time
@@ -40,7 +41,8 @@ func buildRouteRankView(workers []backlogadmin.Worker, quotas []backlogadmin.Quo
 		if q.Admission != nil {
 			admission = q.Admission.Admission
 		}
-		view.Pools[q.Pool.ID] = domain.RouteRankPool{ID: q.Pool.ID, Admission: admission, Windows: domain.ReadQuotaWindows(q.Pool, states, view.Now, staleAfter)}
+		view.Pools[q.Pool.ID] = domain.RouteRankPool{ID: q.Pool.ID, Admission: admission, Windows: domain.ReadQuotaWindows(q.Pool, states, view.Now, staleAfter),
+			Active: q.Pool.ActiveAssignments, MaxConcurrent: q.Pool.MaxConcurrent}
 	}
 	return view
 }
@@ -85,6 +87,7 @@ func selectPolicyRouteRanked(p *routePolicy, role, model, effort, worker string,
 		if !v.Eligible {
 			continue
 		}
+		receipt[len(receipt)-1].Effort = v.Effort
 		candidate := domain.RouteRankCandidate{Route: v.Route, Ordinal: v.Ordinal}
 		for _, id := range v.Pools {
 			if pool, ok := view.Pools[id]; ok && id != "" {

@@ -30,6 +30,8 @@ func TestFirstTurnTaskContract(t *testing.T) {
 				"If this is a review task, do not edit source; write the declared verdict outputs",
 				"no task-bound wait registered", "not a request for extra turns",
 				"t3-steward wait add --task current",
+				"longer than a few minutes must be a task-bound wait",
+				"releases this\ntask's executor and quota slots", "never a blocking `--wait` command",
 			} {
 				if !strings.Contains(got, want) {
 					t.Errorf("missing %q", want)

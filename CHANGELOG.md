@@ -16,6 +16,41 @@ or rc.115 coordinator.
 
 ### Added
 
+- Nested work lineage (F1): a run submitted from inside a Steward task by
+  `task run`, `campaign submit` or `review` records that task's attempt as
+  its parent. The client sends the task identity it runs under; the
+  coordinator checks it against its own attempt records, refuses a claim
+  naming an unknown or mismatched attempt, and records nothing for an attempt
+  whose turn has ended. While the parent is live, the child is planned as if
+  ready when the parent started, so root work that arrived later cannot take
+  the capacity a parked parent's child needs. `campaign show` prints
+  `parent: run … task … attempt …`; the run JSON carries `lineage`; the
+  planning order names `nestedUnder`.
+- Typed wake deferral (F1): a settled task-bound wait that has not resumed its
+  parked attempt records why on the wait as `wakeDeferral` (code, detail,
+  worker, pool, since): `wake-executor-capacity`, `wake-pool-concurrency`,
+  `wake-quota-admission`, `wake-worker-unavailable` or
+  `wake-yields-to-older-work`. The wake is never failed; it is retried every
+  boundary on the same worker, ahead of work that became ready after it
+  settled. A worker that is away keeps the wake waiting; a worker that returns
+  without the execution abandons it through the existing abandoned-execution
+  path. `campaign show` prints `wake deferred …` under the wait and `campaign
+  explain` reports the code as a blocker of the parked task.
+- `capacity-deadlock` planning blocker (F1): a ready task blocked only by
+  executor or pool capacity held entirely by attempts waiting, directly or
+  through other runs, on it or on work blocked the same way is reported in
+  `campaign explain`, on the run summary as `capacityDeadlocks` and as a
+  `triage` action. It is a backstop, since parked attempts release capacity,
+  and Steward takes no automatic action on it.
+- Planning-time role re-resolution (F1, feedback 140): a coordinator-resolved
+  role task whose first attempt never started, and whose selected pool is at
+  its concurrency limit counting active and planned assignments, is planned on
+  the best other eligible, ungated candidate of its receipt whose pool has
+  room. The assignment's placement records `routeReresolution` (role, from and
+  to route and pool, effort, ranking, reason), which `campaign explain` prints.
+  Explicit pins, retries, started attempts and tasks with review-independence
+  constraints are never moved. Role receipts now record each candidate's
+  `effort`; older receipts are moved only when the task overrides the effort.
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first
@@ -71,6 +106,22 @@ or rc.115 coordinator.
   older bundle-only workers are never offered a task that carries one.
   `--use-commit` needs a coordinator of this release or newer
   (docs/architecture/adr-h5-recovery-provenance-and-evidence.md).
+
+### Changed
+
+- `route-ranking/v1` ranks a pool at its concurrency limit in a new
+  `saturated` band, below every pool with room and above `gated`. Saturation
+  only ever makes a band worse, and callers that supply no concurrency
+  evidence rank exactly as before, so stored receipts keep their meaning.
+- The shared task contract now says that a wait longer than a few minutes must
+  be a task-bound wait, which releases the task's executor and quota slots
+  while parked, never a blocking `--wait` command in the shell.
+- Run, task-wait and summary documents gain `lineage`, `wakeDeferral` and
+  `capacityDeadlocks` in the current read version only; older read versions
+  keep their frozen shapes. A client inside a task sends `parent` with a
+  submission; a coordinator from before this release refuses that unknown
+  field before recording anything, and the client then submits again without
+  it, so the work is accepted as root work.
 
 ## [0.11.0-rc.117] - 2026-10-07
 

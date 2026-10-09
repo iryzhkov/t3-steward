@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -670,15 +669,16 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	response, err := client.SubmitArchive(ctx,
+	response, err := submitArchiveClaimingParent(ctx, client,
 		backlogadmin.LocalSubmissionRequest{
 			IdempotencyKey:   parsed.key,
 			RegisterOnly:     parsed.registerOnly,
 			Unverified:       parsed.unverified,
 			UnverifiedReason: parsed.reason,
 			Principal:        c.submissionPrincipal(),
+			Parent:           submissionParentLookup(),
 		},
-		bytes.NewReader(bundle.Archive), int64(len(bundle.Archive)))
+		bundle.Archive)
 	if err != nil {
 		if parsed.registerOnly && strings.Contains(err.Error(), `invalid operation envelope: json: unknown field "registerOnly"`) {
 			return errors.New("coordinator too old for --register-only (needs 0.11.0-rc.103 or later)")

@@ -156,6 +156,7 @@ func (s coordinatorLocalService) SubmitArchive(
 		Principal:        principal.ID,
 		Unverified:       request.Unverified,
 		UnverifiedReason: request.UnverifiedReason,
+		Parent:           request.Parent,
 	})
 	if err != nil {
 		return backlogadmin.LocalSubmissionResponse{}, err
@@ -1025,6 +1026,15 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		// longer gate is refused here instead of being withheld forever.
 		MaxGateTimeout: cfg.BacklogV2.Verification.CommandTimeout.D(),
 		Roles:          coordinatorManifestRoleResolver{admin: service},
+		// A run submitted from inside a task records its checked parent, which
+		// orders it ahead of root work that arrived after the parent started.
+		ResolveLineage: func(ctx context.Context, parent domain.SubmissionParent) (*domain.RunLineage, error) {
+			records, err := store.LoadCoordinatorRecords(ctx)
+			if err != nil {
+				return nil, err
+			}
+			return backlog.ResolveRunLineage(records, parent, time.Now().UTC())
+		},
 		Audit: func(_ context.Context, audit backlog.SubmissionAudit) {
 			if !audit.Unverified {
 				return

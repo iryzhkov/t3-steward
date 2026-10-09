@@ -40,6 +40,10 @@ type DirectorySubmission struct {
 	Principal        string
 	Unverified       bool
 	UnverifiedReason string
+	// Parent is the submitting task's claim about itself. ResolveLineage
+	// checks it and the run records the result; a register-only definition
+	// records none.
+	Parent *domain.SubmissionParent
 }
 
 // SubmissionAudit is one recorded submission decision. It exists so that a use
@@ -81,6 +85,10 @@ type SubmissionService struct {
 	MaxGateTimeout time.Duration
 	// Audit records every submission decision, including a skipped client check.
 	Audit func(context.Context, SubmissionAudit)
+	// ResolveLineage checks a submitting task's claim about itself against the
+	// coordinator's records and returns the lineage the new run records, or nil
+	// for root work. Without it no lineage is recorded.
+	ResolveLineage func(context.Context, domain.SubmissionParent) (*domain.RunLineage, error)
 
 	mu sync.Mutex
 }
@@ -215,7 +223,14 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 			return SubmissionResult{}, err
 		}
 	}
+	var lineage *domain.RunLineage
+	if request.Parent != nil && !request.RegisterOnly && s.ResolveLineage != nil {
+		if lineage, err = s.ResolveLineage(ctx, *request.Parent); err != nil {
+			return SubmissionResult{}, fmt.Errorf("submission lineage: %w", err)
+		}
+	}
 	ingester := BundleIngester{
+		Lineage:           lineage,
 		RegisterOnly:      request.RegisterOnly,
 		DirectoryCatalogs: s.DirectoryCatalogs,
 		StorageRoot:       s.StorageRoot,

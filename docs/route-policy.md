@@ -97,7 +97,12 @@ The quota view merges snapshots from all coordinator-reported workers, then read
 each serving pool with the configured `quota_stale_after`. The best pool among
 the candidate's ready, advertising project workers determines its band.
 
-Bands, in order, are reset-soon, healthy, unknown, gated. A fresh pool is gated
+Bands, in order, are reset-soon, healthy, unknown, saturated, gated. A pool at
+its concurrency limit, counting active and planned assignments, is saturated
+unless its quota already makes it gated: saturation only ever makes a band
+worse. A caller that supplies no concurrency evidence leaves the band to quota
+alone, so receipts written before saturation existed mean what they meant.
+A fresh pool is gated
 when any window is exhausted, the short window (Claude five_hour or Codex
 primary) is at least 90% used, or admission is draining/closed. A fresh,
 ungated long window (Claude seven_day or Codex secondary) resetting within
@@ -231,3 +236,17 @@ the ranked receipt explains the preference and admission can refuse or suppress
 the occurrence; diversity cannot promote an unusable pool. Explicit pins stay
 literal, including quota refusal when their pool is closed. New schedule
 occurrences read new quota; persisted selections and templates remain immutable.
+
+A selection is frozen at submission, but the pool it chose can fill up before
+the task starts (feedback 140: every role task resolved to an idle-quota pool
+and queued at its concurrency cap while another pool sat empty). So at planning
+time, a role task whose first attempt has never been assigned or started, and
+whose selected route's pool is saturated, is moved to the best other candidate
+of its own receipt that is eligible, not gated, has a recorded effort (or a task
+effort override) and whose pool has room and is not closed or draining. The
+receipt itself is not rewritten: the assignment's placement records the move as
+`routeReresolution` with role, from and to route and pool, effort, ranking and
+reason, and `campaign explain` prints it. Retries, started attempts, tasks with
+a review-independence constraint (producer families or a cross-provider
+result) and explicit pins are never moved. A `task run --role` route is resolved
+by the client and submitted as a pin, so it is not moved either.

@@ -153,7 +153,7 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 			}
 			continue
 		}
-		if !attempt.Control.HoldsProviderSlot() && !pausedControl(attempt.Control) {
+		if !attemptHoldsProviderSlot(attempt.Control) && !pausedControl(attempt.Control) {
 			continue
 		}
 		if attempt.IsSupervisionActivation() {
@@ -178,7 +178,7 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 				skip(attempt, fmt.Sprintf("activation assignment names unknown pool %q", assignment.Route.QuotaPoolID))
 				continue
 			}
-			if attempt.Control.HoldsProviderSlot() {
+			if attemptHoldsProviderSlot(attempt.Control) {
 				pools[poolIndex].ActiveAssignments++
 			}
 			continue
@@ -207,7 +207,7 @@ func DeriveQuotaPlanningState(input QuotaPlanningStateInput) (QuotaPlanningState
 			skip(attempt, fmt.Sprintf("assignment names unknown pool %q", assignment.Route.QuotaPoolID))
 			continue
 		}
-		if attempt.Control.HoldsProviderSlot() {
+		if attemptHoldsProviderSlot(attempt.Control) {
 			pools[poolIndex].ActiveAssignments++
 		}
 		if !pausedControl(attempt.Control) && attempt.Control != domain.ControlResuming {

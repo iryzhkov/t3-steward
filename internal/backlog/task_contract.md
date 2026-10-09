@@ -22,4 +22,6 @@ an authorized resume; incomplete work stays paused until permitted.
 For an external wait (CI, another run or a time), register a task-bound wait and
 then end the turn; Steward resumes this session with the outcome. For example:
 `t3-steward wait add --task current --for 30m --or-timeout`.
-`t3-steward wait --help` lists every kind.
+A wait longer than a few minutes must be a task-bound wait, which releases this
+task's executor and quota slots while parked, never a blocking `--wait` command
+in the shell, which keeps them. `t3-steward wait --help` lists every kind.

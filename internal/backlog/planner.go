@@ -68,6 +68,9 @@ type PlanningOrderingInput struct {
 type PlanningAttemptOrdering struct {
 	ReadySince     time.Time
 	PriorDeferrals int
+	// NestedUnder names the live parent attempt whose start the ready time was
+	// inherited from, for an attempt of a run submitted from inside a task.
+	NestedUnder string
 }
 
 type PlanningOrder struct {
@@ -77,7 +80,10 @@ type PlanningOrder struct {
 	ReadySince           time.Time `json:"readySince"`
 	PriorDeferrals       int       `json:"priorDeferrals"`
 	WorkflowRound        int       `json:"workflowRound"`
-	Reason               string    `json:"reason"`
+	// NestedUnder names the live parent attempt this task's run was submitted
+	// from. Its ready time is no later than that parent's start.
+	NestedUnder string `json:"nestedUnder,omitempty"`
+	Reason      string `json:"reason"`
 }
 
 type PlanningCandidate struct {
@@ -152,6 +158,9 @@ type TaskPlanningDecision struct {
 	Candidates    []CandidateEvaluation `json:"candidates,omitempty"`
 	Blockers      []PlanningBlocker     `json:"blockers,omitempty"`
 	Proposed      bool                  `json:"proposed"`
+	// RouteReresolution is set when this decision moved a role task off a
+	// saturated quota pool onto another candidate of its role.
+	RouteReresolution *domain.RouteReresolution `json:"routeReresolution,omitempty"`
 }
 
 type ProposedTask struct {
@@ -204,9 +213,8 @@ func BuildUnreservedProposals(input PlanInput) ([]ProposedTask, error) {
 			}
 			constraints = append(constraints, session)
 		}
-		_, proposal, err := planTask(input, router, constraints, entry.workflow, entry.state,
-			entry.task, entry.attempt, entry.order, cloneStringMap(input.ResourceOwners),
-			cloneStringMap(input.WorkflowCheckoutOwners))
+		_, proposal, _, err := planEntry(input, router, constraints, entry,
+			cloneStringMap(input.ResourceOwners), cloneStringMap(input.WorkflowCheckoutOwners))
 		if err != nil {
 			return nil, err
 		}
@@ -249,13 +257,13 @@ func BuildPlan(input PlanInput) (Plan, error) {
 		if entry.attempt.Progress.Terminal() {
 			continue
 		}
-		decision, proposal, err := planTask(input, router, constraints, entry.workflow, entry.state, entry.task, entry.attempt, entry.order, resourceOwners, checkoutOwners)
+		decision, proposal, planned, err := planEntry(input, router, constraints, entry, resourceOwners, checkoutOwners)
 		if err != nil {
 			return Plan{}, err
 		}
 		if proposal != nil {
 			input.Workers = reservePlacementResources(input.Workers, proposal.WorkerID,
-				expectedResourceNeeds(entry.task, input.ResourcePolicy.WithDefaults()))
+				expectedResourceNeeds(planned, input.ResourcePolicy.WithDefaults()))
 			decision.Proposed = true
 			result.Proposals = append(result.Proposals, *proposal)
 			for _, resource := range proposal.ResourceLocks {
@@ -266,7 +274,7 @@ func BuildPlan(input PlanInput) (Plan, error) {
 			}
 			candidate := PlanningCandidate{
 				WorkflowRunID: entry.state.Run.ID,
-				Task:          clonePlanningTask(entry.task),
+				Task:          clonePlanningTask(planned),
 				Attempt:       clonePlanningAttempt(entry.attempt),
 				WorkerID:      proposal.WorkerID,
 				Route:         cloneProviderRoutePointer(proposal.Route),
@@ -369,6 +377,7 @@ func planningOrder(input PlanInput, task domain.Task, history PlanningAttemptOrd
 		Importance:     task.Importance,
 		ReadySince:     history.ReadySince,
 		PriorDeferrals: history.PriorDeferrals,
+		NestedUnder:    history.NestedUnder,
 	}
 	if task.Deadline != nil {
 		slack := int64(task.Deadline.Sub(input.Now) / time.Second)
@@ -430,8 +439,12 @@ func planningOrderReason(order PlanningOrder) string {
 	if order.DeadlineRisk {
 		prefix = fmt.Sprintf("deadline risk with %s slack", (time.Duration(*order.DeadlineSlackSeconds) * time.Second).String())
 	}
-	return fmt.Sprintf("%s; importance %d; prior deferrals %d; ready since %s; workflow round %d",
+	reason := fmt.Sprintf("%s; importance %d; prior deferrals %d; ready since %s; workflow round %d",
 		prefix, order.Importance, order.PriorDeferrals, order.ReadySince.UTC().Format(time.RFC3339Nano), order.WorkflowRound)
+	if order.NestedUnder != "" {
+		reason += fmt.Sprintf("; nested under live attempt %s", order.NestedUnder)
+	}
+	return reason
 }
 
 func planTask(input PlanInput, router *providerRouter, constraints []PlanningConstraintSession, workflow domain.Workflow, state DAGState, task domain.Task, attempt domain.Attempt, order PlanningOrder, resourceOwners, checkoutOwners map[string]string) (TaskPlanningDecision, *ProposedTask, error) {

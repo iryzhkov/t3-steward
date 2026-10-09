@@ -234,6 +234,10 @@ type TaskWait struct {
 	// Resumption records whether this wake resumed a parked attempt or merely
 	// carries evidence to one that was already running.
 	Resumption bool `json:"resumption,omitempty"`
+	// WakeDeferral says why a settled wait has not resumed its attempt yet:
+	// the worker is full, the pool is at its limit, the worker is away, or
+	// older work is served first. It is cleared when the wake is applied.
+	WakeDeferral *TaskWaitWakeDeferral `json:"wakeDeferral,omitempty"`
 }
 
 // Live reports whether this wait still parks its attempt. A settled wait whose

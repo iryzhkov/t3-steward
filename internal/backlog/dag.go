@@ -488,6 +488,7 @@ func cloneDAGState(state DAGState) DAGState {
 		cloned.External[key] = value
 	}
 	cloned.Run.Sink = domain.CloneSink(state.Run.Sink)
+	cloned.Run.Lineage = domain.CloneRunLineage(state.Run.Lineage)
 	cloned.Run.InputArtifactIDs = append([]string(nil), state.Run.InputArtifactIDs...)
 	cloned.Tasks = append([]domain.Task(nil), state.Tasks...)
 	cloned.Attempts = append([]domain.Attempt(nil), state.Attempts...)

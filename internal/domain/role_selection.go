@@ -25,6 +25,11 @@ type RoleCandidateVerdict struct {
 	Route    string `json:"route"`
 	Eligible bool   `json:"eligible"`
 	Reason   string `json:"reason,omitempty"`
+	// Effort is the effort the policy gives this candidate. It is what lets
+	// the planner re-resolve a never-started role task onto this candidate
+	// when the selected route's pool is saturated; a receipt without it is
+	// never re-resolved unless the task overrides the effort.
+	Effort string `json:"effort,omitempty"`
 }
 
 type RoleDiversity struct {
