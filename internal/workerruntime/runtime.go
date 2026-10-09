@@ -124,11 +124,9 @@ type Runtime struct {
 	// reportTurnEnd records that the coordinator asked for turn-end notes on
 	// its last snapshot request, like reportQuota.
 	reportTurnEnd bool
-	// providerResume is the coordinator's resume policy from its last
-	// snapshot request, nil when it sent none; it also asks for the
-	// provider-error report. It is not durable: the coordinator sends it on
-	// every exchange, and until the first one the worker's own schedule
-	// applies under the fixed ceilings.
+	// providerResume caches the journalled coordinator policy. Restarts retain
+	// its limits and closed pools until another authenticated exchange replaces
+	// it. A nil policy preserves compatibility with older coordinators.
 	providerResume atomic.Pointer[workerproto.ProviderResumePolicy]
 	// failuresRedacted records that this process has redacted the failure
 	// reasons an earlier release left raw in the journal.
@@ -173,7 +171,9 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runtime{config: config, desiredInventory: config.Inventory, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}, nil
+	runtime := &Runtime{config: config, desiredInventory: config.Inventory, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}
+	runtime.providerResume.Store(state.ProviderResumePolicy)
+	return runtime, nil
 }
 
 // AdvertisedCapabilities merges the capabilities an operator configured for

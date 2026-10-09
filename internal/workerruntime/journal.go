@@ -168,6 +168,10 @@ type journalState struct {
 	// restarted worker converges its titles on its first pass.
 	SessionStates         map[string]workerproto.AssignmentSessionState `json:"sessionStates,omitempty"`
 	SessionStatesReported bool                                          `json:"sessionStatesReported,omitempty"`
+
+	// ProviderResumePolicy retains the last coordinator limits and closed pools
+	// across restarts, so a restart cannot admit a previously blocked resume.
+	ProviderResumePolicy *workerproto.ProviderResumePolicy `json:"providerResumePolicy,omitempty"`
 }
 
 type Journal struct {

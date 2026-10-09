@@ -28,7 +28,9 @@ or rc.115 coordinator.
   (default 1m, 5m, 15m), capped by the coordinator's `max_resumes` (default
   3, 0 disables) and `max_delay`; a resume due while the route's pool is
   closed or draining, or the host bucket is draining or stopped, waits with a
-  `quota-closed:` reason. Once the budget is spent the attempt fails as
+  `quota-closed:` reason. Coordinator limits and closed pools survive worker
+  restarts, and a lowered maximum also gates already scheduled resumes.
+  Once the budget is spent the attempt fails as
   `infrastructure: provider error (KIND) after N of M in-session resumes:
   ...`, keeping its workspace, continuation checkpoint and `wip.bundle`.
   Agent-ended turns, failed commands or tests, stops, policy refusals and

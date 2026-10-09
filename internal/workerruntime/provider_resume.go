@@ -186,6 +186,26 @@ func (r *Runtime) holdForProviderError(ctx context.Context, id string, record At
 // route's quota admits a turn. A resume that cannot be sent yet is retried on
 // a later pass under the same identity.
 func (r *Runtime) resumeWhenDue(ctx context.Context, id string, resumer providerResumer, pkg workerproto.ExecutionPackage, current ProviderResumeRecord) error {
+	// Resumes includes the pending claim, so it is admissible only when its
+	// ordinal still fits the current budget. Recheck even during backoff:
+	// max_resumes=0 disables a pending send at the next reconcile.
+	budget := len(r.providerResumeSchedule())
+	if current.Budget != budget || current.Resumes > budget {
+		current.Budget = budget
+		if current.Resumes > budget {
+			current.State, current.ResumeAt, current.WaitReason = domain.ProviderResumeExhausted, nil, ""
+		}
+		if err := r.updateProviderResume(id, func(state *ProviderResumeRecord) { *state = current }); err != nil {
+			return err
+		}
+	}
+	if current.State == domain.ProviderResumeExhausted {
+		record, exists, err := r.currentRecord(id)
+		if err != nil || !exists {
+			return err
+		}
+		return r.failProviderError(ctx, id, record, current)
+	}
 	if current.ResumeAt != nil && r.now().Before(*current.ResumeAt) {
 		return nil
 	}
@@ -314,4 +334,15 @@ func providerResumeText(state ProviderResumeRecord) string {
 		"This is the same session and the same workspace. Read continuation.md, check the state of the workspace, "+
 		"and continue the task from where it stopped. Keep continuation.md current as you work. "+
 		"This is automatic resume %d of %d.", state.Kind, state.Resumes, state.Budget)
+}
+
+// cloneProviderResumePolicy owns the statement and its closed-pool slice;
+// request storage may be reused after the exchange returns.
+func cloneProviderResumePolicy(policy *workerproto.ProviderResumePolicy) *workerproto.ProviderResumePolicy {
+	if policy == nil {
+		return nil
+	}
+	copy := *policy
+	copy.ClosedPools = append([]workerproto.ClosedQuotaPool(nil), policy.ClosedPools...)
+	return &copy
 }

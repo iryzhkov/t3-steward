@@ -263,8 +263,12 @@ The backoff is the worker host's own `backlog_v2.provider_resume.backoff`
 (default `[1m, 5m, 15m]`); its length is the resume budget per attempt. The
 coordinator caps it on every exchange with its `max_resumes` (default 3; 0
 disables resuming) and `max_delay` (default and ceiling 6h); neither side may
-exceed 10 resumes. A worker that has not exchanged with the coordinator since
-it started uses its own schedule under those ceilings.
+exceed 10 resumes. The worker journals the last coordinator policy, including
+closed pools, and restores it after a restart until a new exchange replaces it.
+A worker with no recorded policy uses its own schedule under those ceilings.
+Pending resumes also recheck the current maximum before sending: disabling
+resumes or lowering the maximum below a pending claim exhausts that attempt's
+resume budget without sending the pending turn.
 
 ```yaml
 backlog_v2:
