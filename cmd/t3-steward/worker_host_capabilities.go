@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
@@ -23,9 +23,8 @@ import (
 
 // hostCapabilityProbe observes the host capabilities a persistent worker
 // advertises in its snapshot (workerproto.HostObservedCapability). It runs on
-// every snapshot, so each check is local: nothing here dials the coordinator
-// or a repository, because the coordinator's SSH rate limit already counts
-// this host's connections and a snapshot must not wait on a network.
+// every snapshot. Coordinator authentication is bounded and cached; repository
+// probes remain local and do not contact the remote repository.
 //
 // A capability is advertised only when its check passes. Silence is the
 // answer for anything not observed, never a guess that it is probably fine.
@@ -33,7 +32,7 @@ type hostCapabilityProbe struct {
 	cfg config.Config
 	// coordinatorReach and taskWorker answer the coordinator-client and
 	// ask-relay questions; tests replace them.
-	coordinatorReach func(config.Config) error
+	coordinatorReach func(context.Context, config.Config) error
 	taskWorker       func(config.Config) (string, error)
 	// configHome is the XDG configuration directory Huyang reads.
 	configHome func() (string, error)
@@ -42,8 +41,9 @@ type hostCapabilityProbe struct {
 	pushCredentials func(context.Context, string) bool
 	now             func() time.Time
 
-	mu   sync.Mutex
-	push map[string]cachedHostObservation
+	mu          sync.Mutex
+	push        map[string]cachedHostObservation
+	coordinator *cachedHostObservation
 }
 
 // cachedHostObservation keeps a push-credential answer for hostCapabilityTTL,
@@ -63,7 +63,7 @@ const (
 func newHostCapabilityProbe(cfg config.Config) *hostCapabilityProbe {
 	return &hostCapabilityProbe{
 		cfg:              cfg,
-		coordinatorReach: hostCoordinatorReach,
+		coordinatorReach: authenticatedHostCoordinatorReach,
 		taskWorker:       resolveTaskWaitWorker,
 		configHome:       xdgConfigHome,
 		pushCredentials:  gitPushCredentialsPresent,
@@ -76,7 +76,7 @@ func newHostCapabilityProbe(cfg config.Config) *hostCapabilityProbe {
 // which name each project's repository and the task workspace root.
 func (p *hostCapabilityProbe) Observe(ctx context.Context, settings config.BacklogV2, projects []domain.WorkerProjectInventory) []string {
 	var observed []string
-	if p.coordinatorReach(p.cfg) == nil {
+	if p.coordinatorPresent(ctx) {
 		observed = append(observed, workerproto.CapabilityCoordinatorClient)
 		// The relay thread and the wake are delivered by this host's steward
 		// as the worker the task runs on, so the ask relay needs both.
@@ -129,27 +129,55 @@ func (p *hostCapabilityProbe) pushPresent(ctx context.Context, repository string
 	return present
 }
 
-// hostCoordinatorReach is the coordinator-client question: can a command on
-// this host reach the coordinator's administrator API? A configured
-// coordinator client must have a credential that resolves here, because the
-// coordinator authenticates every request with it; the coordinator host
-// reaches its own owner-only socket. Anything else has no route at all.
-func hostCoordinatorReach(cfg config.Config) error {
-	if client := cfg.BacklogV2.CoordinatorClient; client.Configured() {
-		if _, err := adminCredentials.ResolveAdmin(client.Credential); err != nil {
-			return fmt.Errorf("the coordinator client credential does not resolve on this host: %w", err)
-		}
-		return nil
+// coordinatorPresent caches both authenticated success and failure. Cancellation
+// before an observation never creates evidence for a later snapshot.
+func (p *hostCapabilityProbe) coordinatorPresent(ctx context.Context) bool {
+	now := p.now()
+	p.mu.Lock()
+	cached := p.coordinator
+	p.mu.Unlock()
+	if ctx.Err() != nil {
+		return false
 	}
-	socketPath, err := resolveBacklogV2AdminSocketPath(cfg)
+	if cached != nil && now.Sub(cached.at) < hostCapabilityTTL {
+		return cached.present
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, hostPushProbeTimeout)
+	present := p.coordinatorReach(probeCtx, p.cfg) == nil
+	cancel()
+	if ctx.Err() != nil {
+		return false
+	}
+	p.mu.Lock()
+	p.coordinator = &cachedHostObservation{present: present, at: now}
+	p.mu.Unlock()
+	return present
+}
+
+// hostCoordinatorReach also gates one-shot asks, without snapshot caching.
+func hostCoordinatorReach(cfg config.Config) error {
+	ctx, cancel := context.WithTimeout(context.Background(), hostPushProbeTimeout)
+	defer cancel()
+	return authenticatedHostCoordinatorReach(ctx, cfg)
+}
+
+var hostCoordinatorTransport = newCoordinatorTransport
+
+// The transport verifies signed remote responses (or owner-only local socket
+// peers). A status query adds no authority and never changes coordinator state.
+func authenticatedHostCoordinatorReach(ctx context.Context, cfg config.Config) error {
+	transport, err := hostCoordinatorTransport(cfg)
 	if err != nil {
 		return err
 	}
-	if cfg.BacklogV2.Mode == "coordinator" {
-		return nil
+	response, err := transport.client.Query(ctx, backlogadmin.Query{
+		Version: backlogadmin.Version, Kind: backlogadmin.QueryStatus, Principal: transport.principal,
+	})
+	if err != nil {
+		return err
 	}
-	if _, err := os.Stat(socketPath); err != nil {
-		return missingCoordinatorClient(socketPath)
+	if response.Status == nil {
+		return errors.New("coordinator returned no authenticated status")
 	}
 	return nil
 }
@@ -324,12 +352,12 @@ func tomlStrings(array string) []string {
 // for a local one. The credential value is read only to see that it is
 // non-empty and is never kept, logged or reported.
 func gitPushCredentialsPresent(ctx context.Context, repository string) bool {
-	scheme, host, path := repositoryLocation(repository)
+	scheme, _, path := repositoryLocation(repository)
 	switch scheme {
 	case "ssh":
-		return sshIdentityPresent(ctx)
+		return sshIdentityPresent(ctx, repository)
 	case "https", "http":
-		return gitCredentialPresent(ctx, scheme, host)
+		return gitCredentialPresent(ctx, repository)
 	case "file":
 		info, err := os.Stat(path)
 		return err == nil && info.IsDir() && info.Mode().Perm()&0o200 != 0
@@ -371,33 +399,107 @@ func repositoryLocation(repository string) (scheme, host, path string) {
 	return "", "", ""
 }
 
-func sshIdentityPresent(ctx context.Context) bool {
-	if os.Getenv("SSH_AUTH_SOCK") != "" && exec.CommandContext(ctx, "ssh-add", "-l").Run() == nil {
-		return true
+func sshIdentityPresent(ctx context.Context, repository string) bool {
+	// Ask OpenSSH which identities it would select for this destination, including
+	// aliases, user, port and IdentitiesOnly. -G expands config without connecting.
+	destination := repository
+	args := []string{"-G"}
+	if parsed, err := url.Parse(repository); err == nil && parsed.Host != "" {
+		destination = parsed.Hostname()
+		if parsed.User != nil {
+			destination = parsed.User.Username() + "@" + destination
+		}
+		if parsed.Port() != "" {
+			args = append(args, "-p", parsed.Port())
+		}
+	} else if colon := strings.Index(repository, ":"); colon > 0 {
+		destination = repository[:colon]
+	}
+	if destination == "" || strings.HasPrefix(destination, "-") {
+		return false
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return false
 	}
-	for _, name := range []string{"id_ed25519", "id_ecdsa", "id_rsa", "id_ed25519_sk", "id_ecdsa_sk"} {
-		if info, err := os.Stat(filepath.Join(home, ".ssh", name)); err == nil && info.Mode().IsRegular() {
+	if config := filepath.Join(home, ".ssh", "config"); fileExists(config) {
+		args = append(args, "-F", config)
+	}
+	command := exec.CommandContext(ctx, "ssh", append(args, destination)...)
+	var output boundedBuffer
+	output.limit = gitCredentialMaxOutput
+	command.Stdout = &output
+	if command.Run() != nil {
+		return false
+	}
+	var identities []string
+	only := false
+	agent := os.Getenv("SSH_AUTH_SOCK")
+	for _, line := range strings.Split(output.String(), "\n") {
+		key, value, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "identitiesonly":
+			only = value == "yes"
+		case "identityagent":
+			if value != "SSH_AUTH_SOCK" {
+				agent = value
+			}
+		case "identityfile":
+			if strings.HasPrefix(value, "~/") {
+				value = filepath.Join(home, value[2:])
+			}
+			identities = append(identities, value)
+		}
+	}
+	var agentKeys string
+	if agent != "" && agent != "none" {
+		add := exec.CommandContext(ctx, "ssh-add", "-L")
+		add.Env = append(os.Environ(), "SSH_AUTH_SOCK="+agent)
+		var keys boundedBuffer
+		keys.limit = gitCredentialMaxOutput
+		add.Stdout = &keys
+		if add.Run() == nil {
+			agentKeys = keys.String()
+		}
+		if !only && agentKeys != "" {
 			return true
+		}
+	}
+	for _, identity := range identities {
+		// An unencrypted private key is usable without prompting.
+		if exec.CommandContext(ctx, "ssh-keygen", "-y", "-P", "", "-f", identity).Run() == nil {
+			return true
+		}
+		// With IdentitiesOnly, the agent must hold a selected identity.
+		if public, err := os.ReadFile(identity + ".pub"); err == nil {
+			fields := strings.Fields(string(public))
+			if len(fields) >= 2 && strings.Contains(agentKeys, fields[0]+" "+fields[1]+" ") {
+				return true
+			}
 		}
 	}
 	return false
 }
 
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
+}
+
 // gitCredentialPresent asks the configured credential helpers, never a person:
 // terminal prompts and askpass programs are disabled.
-func gitCredentialPresent(ctx context.Context, scheme, host string) bool {
-	if host == "" {
+func gitCredentialPresent(ctx context.Context, repository string) bool {
+	if strings.ContainsAny(repository, "\r\n") {
 		return false
 	}
 	command := exec.CommandContext(ctx, "git", "credential", "fill")
 	command.Env = append(slices.DeleteFunc(os.Environ(), func(entry string) bool {
 		return strings.HasPrefix(entry, "GIT_ASKPASS=") || strings.HasPrefix(entry, "SSH_ASKPASS=")
 	}), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never")
-	command.Stdin = strings.NewReader("protocol=" + scheme + "\nhost=" + host + "\n\n")
+	command.Stdin = strings.NewReader("url=" + repository + "\n\n")
 	var output boundedBuffer
 	output.limit = gitCredentialMaxOutput
 	command.Stdout = &output

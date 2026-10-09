@@ -249,18 +249,19 @@ hold, without any configuration:
 
 | Capability | Advertised when |
 | --- | --- |
-| `coordinator-client-v1` | a `backlog_v2.coordinator_client` is configured and its credential resolves on this host, or the host is the coordinator |
+| `coordinator-client-v1` | a read-only status request succeeds through the configured coordinator client with a verified signed response, or through the coordinator's owner-only local socket |
 | `ask-relay-v1` | `coordinator-client-v1` holds and the host's steward has a worker identity (bootstrap or `backlog_v2.local_worker.id`), so it delivers ask relay threads and wakes |
-| `git-push-<project>` | push credentials for the project's repository are present: an SSH identity in the agent or `~/.ssh` for an SSH remote, a credential helper answer for an HTTPS remote, a writable directory for a local one |
+| `git-push-<project>` | push credentials for the project's repository are present: an identity selected by the repository destination's SSH configuration is usable locally or in its selected agent, a credential helper answer for the full HTTPS URL (including path and username), a writable directory for a local one |
 | `huyang-trusted-v1` | a `[trust] roots` entry in `$XDG_CONFIG_HOME/huyang/config.toml` is the task workspace root or one of its ancestors |
 
-Every check is local. None of them dials the coordinator or a repository: the
-coordinator's SSH rate limit already counts this host's connections, and a
-snapshot must not wait on the network. So `coordinator-client-v1` proves that
-the credential the coordinator authenticates is present, not that a request
-succeeded, and `git-push-<project>` proves that credentials are present, not
-that the remote grants write access. A push-credential answer is kept for five
-minutes.
+Coordinator authentication uses a read-only status request with a three-second
+bound and the existing SSH connection reuse. Both positive and negative answers
+are cached for five minutes; expiry requires a new authenticated observation.
+A revoked credential may therefore remain advertised until that cache expires.
+Repository probes remain local: `git-push-<project>` proves that credentials are
+present, not that the remote grants write access. HTTPS probes disable prompts;
+SSH probes evaluate aliases, ports, IdentityFile, IdentityAgent and IdentitiesOnly.
+A push-credential answer is also kept for five minutes.
 
 A task asks for one with `placement.requires`. Placement then chooses a worker
 that reports it. When none does, `campaign check` reports a temporary

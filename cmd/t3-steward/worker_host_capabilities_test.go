@@ -26,7 +26,7 @@ import (
 func fakeHostProbe(reach, worker error, configHome string, push map[string]bool) (*hostCapabilityProbe, *int) {
 	calls := 0
 	return &hostCapabilityProbe{
-		coordinatorReach: func(config.Config) error { return reach },
+		coordinatorReach: func(context.Context, config.Config) error { return reach },
 		taskWorker:       func(config.Config) (string, error) { return "worker", worker },
 		configHome:       func() (string, error) { return configHome, nil },
 		pushCredentials: func(_ context.Context, repository string) bool {
@@ -131,8 +131,8 @@ func TestHostCapabilityProbeDoesNotCacheAnUnaskedQuestion(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	projects := []domain.WorkerProjectInventory{{Name: "pushable"}}
-	if got := probe.Observe(ctx, hostProbeSettings(t.TempDir()), projects); len(got) != 2 {
-		t.Fatalf("observed = %v, want only the client capabilities", got)
+	if got := probe.Observe(ctx, hostProbeSettings(t.TempDir()), projects); len(got) != 0 {
+		t.Fatalf("observed = %v, want no unobserved capabilities", got)
 	}
 	if *calls != 0 {
 		t.Fatalf("credential checks = %d on a cancelled snapshot", *calls)
@@ -234,8 +234,7 @@ func TestHostCoordinatorReach(t *testing.T) {
 	if err := hostCoordinatorReach(cfg); err == nil {
 		t.Fatal("a host with no socket and no client reached the coordinator")
 	}
-	coordinator := cfg
-	coordinator.BacklogV2.Mode = "coordinator"
+	coordinator, _ := taskWaitCLIFixture(t)
 	if err := hostCoordinatorReach(coordinator); err != nil {
 		t.Fatalf("the coordinator host: %v", err)
 	}
@@ -248,8 +247,8 @@ func TestHostCoordinatorReach(t *testing.T) {
 		t.Fatal("a client whose credential does not resolve reached the coordinator")
 	}
 	withAdminCredentials(t, fixedAdminCredentials{credentials: completeAdminCredentials()})
-	if err := hostCoordinatorReach(client); err != nil {
-		t.Fatalf("a client with a resolving credential: %v", err)
+	if err := hostCoordinatorReach(client); err == nil {
+		t.Fatal("local credentials without an authenticated response advertised coordinator access")
 	}
 }
 
@@ -268,9 +267,7 @@ func TestObserveHostInventoryAdvertisesHostCapabilities(t *testing.T) {
 	t.Cleanup(func() { taskWaitWorkerHome = previous })
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	coordinatorHost := config.Default()
-	coordinatorHost.StatePath = filepath.Join(t.TempDir(), "state.db")
-	coordinatorHost.BacklogV2.Mode = "coordinator"
+	coordinatorHost, _ := taskWaitCLIFixture(t)
 	coordinatorHost.BacklogV2.LocalWorker.ID = "worker"
 	clientless := config.Default()
 	clientless.StatePath = filepath.Join(t.TempDir(), "state.db")

@@ -16,6 +16,10 @@ or rc.115 coordinator.
 
 ### Added
 
+- Dispatch host probes require bounded, cached authenticated coordinator status,
+  preserve HTTPS credential path and username, and inspect SSH identities selected
+  for the project destination rather than unrelated default keys.
+
 - Capability check before dispatch (W1). Workers advertise host
   capabilities observed on every snapshot: `coordinator-client-v1`,
   `ask-relay-v1`, `git-push-<project>` and `huyang-trusted-v1`. A task
