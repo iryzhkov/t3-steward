@@ -29,6 +29,9 @@ What it lists, items needing action first:
                         notifications.worker_down_after (default 10m)
   worker-disconnected   one inside that grace period (a note)
   worker-maintenance    one drained with accept_backlog: false (a note)
+  collection-deferred   an attempt whose turn ended and whose collection the
+                        worker has deferred for more than 10 minutes, with
+                        the reason it last gave
   review-round-limit    a task whose latest attempt failed after spending
                         every review round, with a campaign rerun command
   supervision-reassess  an overseer ended its activation without deciding,
@@ -94,6 +97,13 @@ const triageVersion = "t3-steward.triage/v1"
 // before triage lists it. The delivery loop runs every 15 seconds and backs
 // off to a minute, so ten minutes is a wake nothing is delivering.
 const triageWakeOverdueAfter = 10 * time.Minute
+
+// triageCollectionDeferredAfter is how long a worker may defer the collection
+// of an attempt whose turn ended before triage lists it. A collection waits a
+// few seconds for T3 to project the final message, and a long verification
+// runs as a collection in flight, which is not a deferral; ten minutes of
+// deferring is a collection that is not going to happen on its own.
+const triageCollectionDeferredAfter = 10 * time.Minute
 
 // triageSupervisionLimit bounds the settled supervised runs read, most
 // recently changed first: one supervision read per run, and a coordinator that
@@ -287,6 +297,7 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 			})
 		}
 	}
+	var workerList []backlogadmin.Worker
 	if workers, err := sources.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryWorkers}); err != nil {
 		report.unavailable("workers", err)
 	} else {
@@ -295,11 +306,13 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 			report.GeneratedAt = workers.GeneratedAt
 		}
 		triageWorkers(&report, workers, notBefore, options.workerDownAfter)
+		workerList = workers.Workers
 	}
 	if report.GeneratedAt.IsZero() {
 		report.GeneratedAt = time.Now().UTC()
 	}
 	now := report.GeneratedAt
+	triageDeferredCollections(&report, workerList, now)
 	if quotas, err := sources.query(ctx, backlogadmin.Query{Kind: backlogadmin.QueryQuota}); err != nil {
 		report.unavailable("quota pools", err)
 	} else {
@@ -392,6 +405,36 @@ func triageWorkers(report *triageReport, workers backlogadmin.Response, notBefor
 				Kind: "worker-disconnected", Severity: "info", Subject: outage.WorkerID, Since: &since,
 				Summary:  fmt.Sprintf("not connected for %s (%s); it counts as down after %s", humanDuration(outage.DownFor), seen, humanDuration(after)),
 				Commands: []triageCommand{list},
+			})
+		}
+	}
+}
+
+// triageDeferredCollections lists every attempt a worker reports collecting
+// whose collection it has deferred for longer than
+// triageCollectionDeferredAfter. Such an attempt reads as running everywhere
+// else, because its assignment is still claimed; the worker's turn-end note is
+// the only place that says its turn ended and why nothing was collected.
+func triageDeferredCollections(report *triageReport, workers []backlogadmin.Worker, now time.Time) {
+	for _, worker := range workers {
+		for _, assignment := range worker.Snapshot.Assignments {
+			journal := assignment.Journal
+			if journal == nil || journal.Phase != "collecting" {
+				continue
+			}
+			since, reason, ok := domain.ParseCollectionDeferredNote(journal.TurnEnd)
+			if !ok || now.Sub(since) <= triageCollectionDeferredAfter {
+				continue
+			}
+			workerID := worker.Snapshot.WorkerID
+			report.add(triageItem{
+				Kind: "collection-deferred", Severity: "action", Subject: assignment.AssignmentID, Since: &since,
+				Summary: fmt.Sprintf("the turn ended, but worker %s has deferred collecting it for %s (since %s); the attempt still reads as running. Last reason: %s",
+					workerID, humanDuration(now.Sub(since)), since.UTC().Format(time.RFC3339), reason),
+				Commands: []triageCommand{
+					{Host: workerID, Run: "journalctl --user -u t3-steward-worker -n 50"},
+					{Run: "t3-steward worker list"},
+				},
 			})
 		}
 	}
@@ -794,7 +837,7 @@ func triageAsk(report *triageReport, w domain.TaskWait, task string, showRun tri
 // triageKindOrder orders items of one severity: workers first, because a
 // worker that is down explains much of what follows it.
 var triageKindOrder = []string{
-	"worker-down", "review-round-limit", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
+	"worker-down", "collection-deferred", "review-round-limit", "supervision-reassess", "supervision-incident", "supervision-gate", "needs-input",
 	"ask-unanswered", "wake-overdue", "wake-undeliverable", "supervision-hold", "supervision-dispatch", "quota-held",
 	"intake-quarantined", "run-stalled", "worker-disconnected", "worker-maintenance", "legacy-intake-disabled",
 }

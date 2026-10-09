@@ -258,6 +258,9 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 			if r.reportTurnEnd && record.TurnEnd != nil && observed.Journal != nil {
 				observed.Journal.TurnEnd = truncateText(record.TurnEnd.Note, maxTurnEndNote)
 			}
+			if note := collectionDeferredNote(record); r.reportTurnEnd && note != "" && observed.Journal != nil {
+				observed.Journal.TurnEnd = note
+			}
 			assignments = append(assignments, observed)
 		}
 		inventory := r.config.Inventory
@@ -1406,7 +1409,15 @@ func (r *Runtime) collect(ctx context.Context, id string) error {
 		// took its result first, or it was superseded. Nothing is left here.
 		return nil
 	}
-	return r.finishCollection(id, record, flight)
+	err = r.finishCollection(id, record, flight)
+	if err != nil && !isJournalError(err) {
+		// A collection that ran and deferred is recorded, so that a deferral
+		// that repeats for long is reported rather than read as running.
+		if recordErr := r.recordCollectionDeferral(id, record, r.loggedError(ctx, id, err)); recordErr != nil {
+			return errors.Join(err, recordErr)
+		}
+	}
+	return err
 }
 
 func (r *Runtime) validateOffer(offer workerproto.AssignmentOffer, now time.Time) error {
@@ -1671,6 +1682,9 @@ func (r *Runtime) writePhase(id string, phase Phase, failure, workspace, thread 
 		}
 		if phase == PhaseRunning {
 			record.StopObservedSequence = 0
+		}
+		if phase != PhaseCollecting {
+			record.CollectionDeferred = nil
 		}
 		record.Phase = phase
 		record.Failure = failure

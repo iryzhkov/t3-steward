@@ -676,6 +676,15 @@ func evaluateResultEvidence(task domain.Task, threadID string, artifacts []domai
 	}
 	failures := make([]string, 0, 2)
 	reason, err := ResultCompletionFailure(archive, threadID, string(payloads[summaryIndex(artifacts)]))
+	var invalidArchive *ThreadArchiveInvalidError
+	if errors.As(err, &invalidArchive) {
+		// The archive is the turn's transcript, an artifact like any other,
+		// and not a precondition for the task's results. A transcript that
+		// cannot be read fails the attempt as infrastructure, and the outputs,
+		// commits and verification evidence are still imported so that they
+		// can be inspected and recovered.
+		reason, err = ThreadArchiveInvalidFailure(invalidArchive), nil
+	}
 	if err != nil {
 		return false, "", summary, err
 	}

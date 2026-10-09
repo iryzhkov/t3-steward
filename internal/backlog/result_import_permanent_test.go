@@ -113,9 +113,6 @@ func TestAPermanentlyInvalidResultSettlesTheAttemptInsteadOfRetrying(t *testing.
 		{name: "repeated output declaration", want: `declarations repeat output "answer.txt"`, edit: func(task *domain.Task, _ *[]workerproto.ArtifactObject, _ resultUploadOpener) {
 			task.Outputs = append(task.Outputs, domain.ArtifactDeclaration{Name: "./answer.txt", MediaType: "text/plain"})
 		}},
-		{name: "malformed thread archive", want: "thread archive is invalid", edit: func(_ *domain.Task, objects *[]workerproto.ArtifactObject, data resultUploadOpener) {
-			replaceResultObject(*objects, data, "thread-archive-attempt-1", []byte("not json"))
-		}},
 		{name: "malformed verification evidence", want: `verification "verification/001.json"`, edit: func(_ *domain.Task, objects *[]workerproto.ArtifactObject, data resultUploadOpener) {
 			replaceResultObject(*objects, data, "verification-1", []byte(`{"command":`))
 		}},
@@ -163,6 +160,40 @@ func TestAPermanentlyInvalidResultSettlesTheAttemptInsteadOfRetrying(t *testing.
 				t.Fatalf("replay transitioned the attempt again: %#v", replay.Transition)
 			}
 		})
+	}
+}
+
+// A thread archive that cannot be decoded used to reject the whole result, so
+// the declared outputs never reached the coordinator. The archive is the
+// turn's transcript, an artifact like the others: the attempt fails as an
+// infrastructure failure, thread-archive-invalid, and its outputs, evidence
+// and the archive itself are imported for recovery.
+func TestAnUndecodableThreadArchiveFailsTheAttemptAndKeepsItsResults(t *testing.T) {
+	ctx := context.Background()
+	result := newPermanentResultCase(t, false, func(_ *domain.Task, objects *[]workerproto.ArtifactObject, data resultUploadOpener) {
+		replaceResultObject(*objects, data, "thread-archive-attempt-1", []byte("not json"))
+	})
+	report, err := result.importer.Import(ctx, result.response, result.data)
+	if err != nil {
+		t.Fatalf("an undecodable archive refused the result: %v", err)
+	}
+	if len(report.Transition) != 1 || report.Transition[0].Attempt.Progress != domain.ProgressFailed ||
+		!IsThreadArchiveInvalidFailure(report.Transition[0].Attempt.Failure) {
+		t.Fatalf("the attempt was not failed as thread-archive-invalid: %#v", report.Transition)
+	}
+	names := map[string]bool{}
+	for _, artifact := range report.Artifacts {
+		names[artifact.Name] = true
+	}
+	if !names["answer.txt"] || !names["thread.json"] || !names["verification/001.json"] {
+		t.Fatalf("imported artifacts %v, want the output, the archive and the verification evidence", names)
+	}
+	records, err := result.store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records.Artifacts) != len(report.Artifacts) || records.Attempts[0].Progress != domain.ProgressFailed {
+		t.Fatalf("durable state: artifacts=%d progress=%q", len(records.Artifacts), records.Attempts[0].Progress)
 	}
 }
 

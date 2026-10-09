@@ -569,6 +569,31 @@ func threadTerminal(ctx context.Context, export func(context.Context, string) ([
 	return false, thread.TurnID, nil
 }
 
+// undecodableRequestTerminal decides a collection whose thread archive could
+// not be decoded (err) while threadTerminal read the current start request,
+// which no turn has adopted yet. The archive is read again on a few passes,
+// under the same bound as the completion judgement, in case the export was
+// caught mid-write. After that, whether T3 refused the request cannot be read
+// from the archive, so only the shell's own evidence ends it: a session that
+// failed at or after the request. The request is then collected under its own
+// identity and the completion judgement fails the attempt as
+// thread-archive-invalid. Without that evidence the request may still start a
+// turn, and collecting it would take the workspace from a live provider turn,
+// so the collection keeps deferring with a reason that names the archive, and
+// triage lists the deferral once it is old.
+func (d *LocalDriver) undecodableRequestTerminal(pkg workerproto.ExecutionPackage, thread domain.Thread, err error) (bool, string, error) {
+	exhausted, passes := archiveDecodeExhausted(pkg, err)
+	if !exhausted {
+		return false, "", fmt.Errorf("thread archive could not be decoded (pass %d of %d): %w", passes, maxArchiveDecodePasses, err)
+	}
+	if !sessionFailedCurrentRequest(thread) {
+		return false, "", fmt.Errorf("the current turn start request is unresolved and its thread archive could not be decoded on %d passes; collection waits for T3 to start or fail the request: %w", passes, err)
+	}
+	d.logger().Warn("the thread archive cannot be decoded and the session failed after the current turn start request; collecting the request without the archive's judgement",
+		"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "passes", passes, "error", err)
+	return true, turnRequestIdentity(thread), nil
+}
+
 // writeTaskIdentity records the attempt's identity inside the prepared
 // workspace, before any thread is dispatched, so an agent can name itself when
 // it registers a task-bound wait.
@@ -983,7 +1008,10 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	message, archive := "", []byte("{}")
 	terminal, identity := true, ""
 	if thread != nil {
-		if terminal, identity, err = d.threadTerminal(ctx, *thread); err != nil {
+		if terminal, identity, err = d.threadTerminal(ctx, *thread); isThreadArchiveInvalid(err) {
+			terminal, identity, err = d.undecodableRequestTerminal(pkg, *thread, err)
+		}
+		if err != nil {
 			return fmt.Errorf("collect thread state: %w", err)
 		}
 	}
@@ -1035,9 +1063,31 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 		}
 	}
 	failure, err := backlog.ResultCompletionFailureWithPause(archive, pkg.Identity.ThreadID, message, pauseReason)
+	if isThreadArchiveInvalid(err) {
+		// The archive judges the provider turn; it is not the task's result.
+		// One that cannot be decoded is read again on a few later passes, in
+		// case the export was caught mid-write, and then the results are
+		// collected without its judgement. The coordinator fails the attempt as
+		// thread-archive-invalid from the same uploaded archive, with the
+		// outputs and commits beside it, instead of the collection deferring
+		// on every pass for as long as the worker runs.
+		exhausted, passes := archiveDecodeExhausted(pkg, err)
+		if !exhausted {
+			return fmt.Errorf("thread archive could not be decoded (pass %d of %d): %w", passes, maxArchiveDecodePasses, err)
+		}
+		d.logger().Warn("the thread archive cannot be decoded; collecting the declared outputs and commits without it, and the attempt fails as "+backlog.ThreadArchiveInvalidReason,
+			"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "passes", passes, "error", err)
+		failure, err = backlog.ThreadArchiveInvalidFailure(err), nil
+	} else if err == nil {
+		if warnings, _ := backlog.ThreadArchiveWarnings(archive); len(warnings) != 0 {
+			d.logger().Warn("the thread archive has activity fields of an unexpected shape; they were read as JSON text",
+				"attempt", pkg.Identity.AttemptID, "thread", pkg.Identity.ThreadID, "warnings", warnings)
+		}
+	}
 	if err != nil {
 		return err
 	}
+	forgetArchiveDecode(pkg)
 	if thread != nil {
 		// The recorded read is keyed by the collection identity, so a refused
 		// later request never reuses the earlier turn's clean read.
@@ -1067,8 +1117,12 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	finalizer := d.Finalizer
 	finalizer.GateTimeoutMax = pkg.Limits.VerificationTimeout
 	finalized, err := finalizer.Finalize(ctx, backlog.AttemptFinalization{
-		Task: task, Attempt: attempt, WorkspaceDir: workspace, ExplicitSuccess: failure == "", WorkerID: pkg.WorkerID,
-		Extra: extras, Repository: pkg.Environment.Repository, BaseCommit: baseCommit,
+		// An archive that cannot be decoded judged nothing, so verification
+		// runs and the outputs and commits are captured as for a finished
+		// turn; the coordinator fails the attempt from the archive itself.
+		Task: task, Attempt: attempt, WorkspaceDir: workspace, WorkerID: pkg.WorkerID,
+		ExplicitSuccess: failure == "" || backlog.IsThreadArchiveInvalidFailure(failure),
+		Extra:           extras, Repository: pkg.Environment.Repository, BaseCommit: baseCommit,
 		// The coordinator declares the capability on a producer's package only
 		// when it accepts the bundle artifact, and the bundle is uploaded as one
 		// artifact, so it is bounded by the same limit.

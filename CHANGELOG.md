@@ -74,6 +74,36 @@ or rc.115 coordinator.
 
 ### Fixed
 
+- Collection survives T3 activity payloads of an unexpected shape. With T3
+  0.0.45 a provider error or context-window activity can carry an object as
+  `payload.detail`, and the thread-archive decoder, which took every
+  activity's detail for a string, rejected the whole archive: the worker
+  logged `attempt reconciliation deferred ... thread archive is invalid`
+  about once a second for hours, the attempts read as active running, and
+  triage said nothing. The decoder now keeps every activity payload as raw
+  JSON and reads only the two fields Steward interprets, a refused turn
+  start's `detail` and a runtime error's `message`; one of those in another
+  shape is read as its JSON text and logged as a warning on the attempt, as
+  is an activity of either kind whose payload is not an object, and an
+  activity entry that is not an object is skipped. An archive that still
+  cannot be decoded is read again on at most three consecutive collection
+  passes with the same error, whether the completion judgement or the check
+  of a resumed request that no turn has adopted yet meets it. For such a
+  request the worker then goes ahead only if the session failed after the
+  request, since otherwise T3 may still start its turn, and keeps deferring
+  with the reason meanwhile. Once it goes ahead, the worker collects the
+  declared outputs and commits and publishes the archive beside them, and the
+  coordinator
+  fails the attempt as `infrastructure failure thread-archive-invalid: ...`
+  while importing its outputs, verification evidence and the archive,
+  instead of rejecting the whole result. `triage` lists a new
+  `collection-deferred` item, severity action, for an attempt whose
+  collection a worker has deferred for more than 10 minutes, with the reason
+  the worker last gave. The worker reports the deferral in the journal
+  excerpt's existing turn-end note (`collection deferred since TIME:
+  REASON`), which `backlog explain` also prints, so neither the worker
+  protocol nor the admin read shape changes; a coordinator sees it from
+  workers of this release.
 - The worker's own Git commands (workspace preparation, commit bundle and
   campaign ref imports) keep Git's automatic maintenance in the foreground
   (`gc.autoDetach=false`, `maintenance.autoDetach=false`, appended to any

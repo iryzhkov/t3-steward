@@ -85,12 +85,9 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 			response.Manifest.Objects[1] = object
 			response.Custody = resultCustody(t, response.Manifest, "coordinator")
 		}, terminalFailure: true},
-		{name: "malformed thread archive", mutate: func(response *workerproto.ArtifactUploadResponse) {
-			object := resultObject("thread-archive-attempt-1", "results/thread.json", "log", "application/json", []byte("not json"))
-			response.Manifest.TotalBytes += object.Size - response.Manifest.Objects[2].Size
-			response.Manifest.Objects[2] = object
-			response.Custody = resultCustody(t, response.Manifest, "coordinator")
-		}, rejected: true},
+		// An undecodable thread archive is no longer invalid evidence: it
+		// fails the attempt and its results are imported, as
+		// TestAnUndecodableThreadArchiveFailsTheAttemptAndKeepsItsResults shows.
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store, err := sqlitetest.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
@@ -112,9 +109,6 @@ func TestCoordinatorResultImporterRejectsInvalidEvidenceBeforePublication(t *tes
 			test.mutate(&response)
 			if test.name == "unfinished marker" {
 				data["final-message-attempt-1"] = []byte("BACKLOG STATUS: continue\n")
-			}
-			if test.name == "malformed thread archive" {
-				data["thread-archive-attempt-1"] = []byte("not json")
 			}
 			importer := CoordinatorResultImporter{CoordinatorID: "coordinator", CoordinatorEpoch: 1, Store: store, Artifacts: CoordinatorArtifactStore{Root: filepath.Join(t.TempDir(), "artifacts"), Catalog: store}, MaxArtifactBytes: 1024, MaxTotalBytes: 4096, Now: func() time.Time { return now.Add(time.Minute) }}
 			report, importErr := importer.Import(ctx, response, data)
