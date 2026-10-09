@@ -3,11 +3,13 @@ package workerruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -69,6 +71,86 @@ func TestCollectionRetryFailsWhenPreservedDigestMismatches(t *testing.T) {
 	// The changed workspace was never captured as the turn's result.
 	if f.process.calls != 1 {
 		t.Fatalf("verification ran on the changed workspace: %d", f.process.calls)
+	}
+}
+
+// appendingVerification is a verification command that is allowed to write a
+// declared output, as a test runner appending its report would.
+type appendingVerification struct{ calls int }
+
+func (p *appendingVerification) Run(ctx context.Context, request backlog.ProcessRequest) (backlog.ProcessResult, error) {
+	p.calls++
+	file, err := os.OpenFile(filepath.Join(request.Dir, "answer.txt"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return backlog.ProcessResult{}, err
+	}
+	_, err = fmt.Fprintf(file, "verification report %d\n", p.calls)
+	if err = errors.Join(err, file.Close()); err != nil {
+		return backlog.ProcessResult{}, err
+	}
+	return successfulProcessRunner{}.Run(ctx, request)
+}
+
+func (*appendingVerification) Kill(string) error { return nil }
+
+func TestRepeatedPublicationFailuresKeepTheVerifiedResult(t *testing.T) {
+	f := newCollectionFixture(t, 8192, 16384, 100, 100)
+	process := &appendingVerification{}
+	f.driver.Finalizer.Processes = process
+	f.driver.Publisher = &collectionTransientPublisher{CustodyStore: f.custody, failures: 2}
+	path := filepath.Join(f.driver.workspacePath(f.pkg), preservedResultName)
+	var digests []string
+	for i := 0; i < 2; i++ {
+		if err := f.runtime.collect(context.Background(), "assignment-1"); err == nil {
+			t.Fatalf("publication %d did not fail", i+1)
+		}
+		if record := f.record(t); record.Phase != PhaseCollecting || record.Failure != "" {
+			t.Fatalf("collection %d = %+v", i+1, record)
+		}
+		recorded, found, err := readPreservedResult(path)
+		if err != nil || !found {
+			t.Fatalf("collection %d recorded nothing: %v", i+1, err)
+		}
+		digests = append(digests, recorded.Result.Digest)
+	}
+	// Verification wrote the declared output again, so the second collection
+	// sealed a different result and recorded that one.
+	if digests[0] == digests[1] {
+		t.Fatalf("the record was not refreshed after the second capture: %s", digests[0])
+	}
+	if err := f.runtime.collect(context.Background(), "assignment-1"); err != nil {
+		t.Fatal(err)
+	}
+	if record := f.record(t); record.Phase != PhaseCompleted || record.Failure != "" {
+		t.Fatalf("completed work lost after only authorized verification writes: %+v", record)
+	}
+	if process.calls != 3 {
+		t.Fatalf("verification runs = %d, want 3", process.calls)
+	}
+}
+
+func TestRefreshedPreservedResultStillRefusesLaterWrites(t *testing.T) {
+	f := newCollectionFixture(t, 8192, 16384, 100, 100)
+	process := &appendingVerification{}
+	f.driver.Finalizer.Processes = process
+	f.driver.Publisher = &collectionTransientPublisher{CustodyStore: f.custody, failures: 2}
+	for i := 0; i < 2; i++ {
+		if err := f.runtime.collect(context.Background(), "assignment-1"); err == nil {
+			t.Fatalf("publication %d did not fail", i+1)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(f.workspace, "answer.txt"), []byte("written after the turn ended"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.runtime.collect(context.Background(), "assignment-1"); err != nil {
+		t.Fatal(err)
+	}
+	record := f.record(t)
+	if record.Phase != PhaseFailed || !strings.HasPrefix(record.Failure, "preserved result digest mismatch: ") {
+		t.Fatalf("a write outside verification was collected: %+v", record)
+	}
+	if process.calls != 2 {
+		t.Fatalf("verification ran on the changed workspace: %d", process.calls)
 	}
 }
 

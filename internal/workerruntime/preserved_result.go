@@ -93,18 +93,24 @@ func (d *LocalDriver) verifyPreservedResult(ctx context.Context, pkg workerproto
 
 // recordPreservedResult runs once a collection has captured the result and
 // before it is published, and records what was captured. A record that
-// already exists was verified by verifyPreservedResult and is kept. Failing
-// to record is logged, not fatal: the collection goes on as it did before
-// preserved results existed, and a retry then simply has nothing to verify.
+// already exists was verified by verifyPreservedResult at the start of this
+// collection, but the verification commands that ran since are allowed to
+// write declared outputs, so it is replaced with the digest of this capture:
+// the next retry must find what this collection sealed, not what an earlier
+// one did. Failing to record is logged, not fatal, and leaves no record
+// behind: the collection goes on as it did before preserved results existed,
+// and a retry then simply has nothing to verify.
 func (d *LocalDriver) recordPreservedResult(ctx context.Context, pkg workerproto.ExecutionPackage, workspace, turn string) {
 	if d.Config.RunsRoot == "" {
 		return
 	}
 	path := filepath.Join(d.workspacePath(pkg), preservedResultName)
-	if _, found, err := readPreservedResult(path); err == nil && found {
-		return
-	}
 	current, err := backlog.CapturePreservedResult(ctx, "", workspace, pkg.Outputs)
+	// The record is written once and never rewritten in place, so a stale
+	// one is removed first, whether or not the new capture succeeded.
+	if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		err = errors.Join(err, fmt.Errorf("remove the earlier preserved result: %w", removeErr))
+	}
 	if err == nil {
 		err = privateJSON(path, preservedResultRecord{Identity: pkg.Identity, Turn: turn, Result: current})
 	}

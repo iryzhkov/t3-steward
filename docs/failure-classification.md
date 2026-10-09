@@ -169,6 +169,14 @@ the digest:
 - **missing workspace**: the attempt fails with `workspace is missing;
   outputs cannot be collected: ...`, also infrastructure.
 
+A retry whose digest matches runs verification again, and a verification
+command may write a declared output (a report with a timestamp, an appended
+log). The retry therefore records the digest of what it captured after
+verification, replacing the earlier one, so a further retry after another
+publication failure is compared with the result the latest collection
+sealed. Only verification run by a digest-verified collection can move the
+record; any other change is still a mismatch.
+
 Both failures are then eligible for an automatic retry, which runs the agent
 afresh. A record of an earlier turn of the same attempt is replaced rather
 than compared, because a later turn was entitled to change the work. A
