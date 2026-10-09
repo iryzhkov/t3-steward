@@ -275,7 +275,7 @@ func (s *Store) Close() error {
 		checkpointErr = s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logPages, &checkpointed)
 		cancel()
 		if checkpointErr == nil && busy != 0 {
-			checkpointErr = fmt.Errorf("coordinator WAL checkpoint blocked by another database reader (busy=%d)", busy)
+			checkpointErr = fmt.Errorf("coordinator WAL checkpoint blocked by another database reader (busy=%d); close other database readers, then run PRAGMA wal_checkpoint(TRUNCATE) before a stopped backup", busy)
 		}
 	}
 	closeErr := s.db.Close()

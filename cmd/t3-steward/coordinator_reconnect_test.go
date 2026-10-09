@@ -50,8 +50,11 @@ func TestCoordinatorReconnectBackoffIsBoundedAndResetsOnSuccess(t *testing.T) {
 		t.Fatal("failed exchange did not retain retry")
 	}
 	retry.Tick(context.Background(), backlog.QuotaBridgeReport{})
-	if retry.pending {
-		t.Fatal("successful exchange did not clear retry")
+	if retry.pending || retry.delay != 0 {
+		t.Fatal("successful exchange did not clear retry and reset backoff")
+	}
+	if got := retry.nextDelay(); got != time.Second {
+		t.Fatalf("fresh sequence starts at %s", got)
 	}
 }
 

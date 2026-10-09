@@ -38,6 +38,12 @@ func TestCoordinatorWorkerNeverOpensCoordinatorDatabase(t *testing.T) {
 		if guard := hostQuotaGuard(cfg, logger, nil); guard != nil {
 			t.Fatalf("%s worker opened coordinator quota store: %T", mode, guard)
 		}
+		if usage, err := workerExchangeUsageStore(path); err != nil || usage != nil {
+			if usage != nil {
+				usage.Close()
+			}
+			t.Fatalf("one-shot worker opened coordinator usage store: %v", err)
+		}
 		if usage := hostUsageStore(cfg, logger); usage != nil {
 			usage.Close()
 			t.Fatalf("%s worker opened coordinator usage store", mode)

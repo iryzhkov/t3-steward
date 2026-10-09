@@ -26,6 +26,9 @@ func (r *coordinatorReconnect) Tick(ctx context.Context, quota backlog.QuotaBrid
 			r.pending = true
 		}
 	}
+	if !r.pending {
+		r.delay = 0
+	}
 	return report
 }
 

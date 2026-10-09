@@ -67,20 +67,26 @@ contains the last observation with `ready: false`, or unavailable if no status
 was obtained. Re-run after correcting the reported fault.
 
 Coordinator startup serves local administration first, then contacts workers
-after one second. Failed worker exchanges retry with exponential backoff capped
-at five seconds, independently of the ordinary scheduling interval. Each retry
-still passes the existing coordinator boundary gates. A slow exchange or boundary
-can add its own execution time; the cap is on retry delay.
+after one second. Failed worker exchanges retry at delays of one, two, four and
+five seconds, then stop until the next ordinary scheduling boundary. Retries
+exchange workers only, using the last boundary's quota report and the existing
+transport authority checks. Scheduling, planning and quota reconciliation keep
+the configured interval even with an offline worker. Each ordinary boundary may
+start a fresh bounded retry sequence. A slow exchange can add its own execution
+time; the cap is on retry delay.
 
 On clean stop, the coordinator truncates its WAL and closes the database before
 releasing its ownership fence. With no other readers, SQLite removes the WAL and
 shared-memory sidecars. An unrelated process holding the database open can retain
 empty sidecars or block checkpointing; shutdown returns a checkpoint error in
-that case. A persistent worker on the coordinator host skips both local watchdog
+that case; close those readers, then run `PRAGMA wal_checkpoint(TRUNCATE)`
+before using a stopped backup. A persistent worker on the coordinator host skips both local watchdog
 quota and usage database reads whenever its configuration is in coordinator mode,
 even while drained. A worker-mode configuration pointing at the same database
 also skips these reads when the persistent `.coordinator.lock` ownership marker
-exists, including while the coordinator is stopped. Coordinator quota admission
+exists, including while the coordinator is stopped. The one-shot `worker-exchange`
+command applies the same marker guard and forwards no local usage for that path.
+Coordinator quota admission
 still applies to its work.
 
 The older stopped `backlog backup create|verify|restore` workflow remains

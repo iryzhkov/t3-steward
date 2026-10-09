@@ -24,7 +24,10 @@ or rc.115 coordinator.
   --json` waits through reconnect windows for healthy status and expected workers.
   Coordinator shutdown checkpoints before releasing ownership, workers sharing
   coordinator configuration leave its database unopened, and worker exchanges
-  after startup or failure retry with backoff capped at five seconds. See
+  after startup or failure retry exchanges only at one/two/four/five-second delays,
+  then return to the configured scheduling interval. One-shot worker exchanges
+  also leave coordinator-marked databases unopened. Blocked shutdown checkpoints
+  name the reader-close and checkpoint remedy. See
   docs/coordinator-maintenance.md for authority, artifact custody and restore limits.
 
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
