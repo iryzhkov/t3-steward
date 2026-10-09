@@ -26,12 +26,23 @@ import (
 
 // shortTempDir is t.TempDir without the test name in the path. The coordinator
 // binds a Unix socket next to its state file, and macOS limits socket paths to
-// 104 bytes, which a long test name under /var/folders exceeds.
+// 104 bytes, which a long test name or TMPDIR under /var/folders exceeds.
 func shortTempDir(t *testing.T) string {
 	t.Helper()
 	root, err := os.MkdirTemp("", "t3-")
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Leave space for the socket basename and its terminating NUL on macOS
+	// as well as Linux. A short prefix alone cannot bound a long TMPDIR.
+	if len(filepath.Join(root, "admin.sock")) >= 104 {
+		if err := os.RemoveAll(root); err != nil {
+			t.Fatal(err)
+		}
+		root, err = os.MkdirTemp("/tmp", "t3-")
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	return root

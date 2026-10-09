@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,34 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
+
+// This test changes TMPDIR before parallel tests start; its cleanup restores it.
+func TestShortTempDirBoundsSocketPathWithLongTMPDIR(t *testing.T) {
+	longRoot := filepath.Join(t.TempDir(), strings.Repeat("long-temp-root-", 10))
+	if err := os.MkdirAll(longRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", longRoot)
+	root := shortTempDir(t)
+	socket := filepath.Join(root, "admin.sock")
+	if len(socket) >= 104 {
+		t.Fatalf("socket path is %d bytes: %s", len(socket), socket)
+	}
+	if filepath.Dir(root) != "/tmp" {
+		t.Fatalf("long TMPDIR did not fall back to /tmp: %s", root)
+	}
+	entries, err := os.ReadDir(longRoot)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("discarded long directory was not removed: %v, %v", entries, err)
+	}
+	listener, err := backlogadmin.ListenLocal(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 type alwaysOfflineWorker struct {
 	calls   int
@@ -49,7 +78,7 @@ func TestReproOfflineWorkerRunsFullCycleEvery5s(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			dir := t.TempDir()
+			dir := shortTempDir(t)
 			store, err := sqlitetest.OpenMigrated(filepath.Join(dir, "state.db"))
 			if err != nil {
 				t.Fatal(err)
