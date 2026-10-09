@@ -66,7 +66,7 @@ if [ "$phase" = all ] || [ "$phase" = bounds ]; then
 	run -count=3 -run 'TestCommandSinkTimeoutKillsTheProcessGroup' ./internal/ownernotify
 	run -count=3 ./internal/procgroup
 	run -count=3 -run 'TestQuotaTelemetrySourceIsQueryOnly' ./internal/store/sqlite
-	run -count=3 -run 'TestAwaitURL' ./internal/t3api
+	run -count=3 -run 'TestAwaitURL|TestContainedTokenFIFOIsRejectedWithoutBlocking' ./internal/t3api
 	run -count=3 -run 'TestCommandWait|TestNodeSummaryStuckReadSpoilsOnlyItsCell|TestNodeWakeSummaryDegradesWithoutBlockingDelivery' ./internal/wait
-	run -count=3 -run 'TestWorkerProbeTimesOutRatherThanHanging|TestWorkerRefResolutionStructuredOutcomes|TestHungObservationsAreBoundedAndEveryAttemptIsProbed|TestRefusedFirstTurnStartFailsTheAttemptWithT3sReason|TestWatchdogDrainDoesNotWaitAcrossAttempts|TestSnapshotStopsGitThatWaitsOnTheWorkTree' ./internal/workerruntime
+	run -count=3 -run 'TestWorkerProbeTimesOutRatherThanHanging|TestWorkerRefResolutionStructuredOutcomes|TestHungObservationsAreBoundedAndEveryAttemptIsProbed|TestRefusedFirstTurnStartFailsTheAttemptWithT3sReason|TestWatchdogDrainDoesNotWaitAcrossAttempts|TestSnapshotStopsGitThatWaitsOnTheWorkTree|TestWorkerSocketPersistsAcrossReconnectAndStopsIdlePeers' ./internal/workerruntime
 fi

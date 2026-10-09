@@ -4,8 +4,9 @@
 //
 // A test that guards against a complexity regression measures growth with
 // CheckLinear: it times the operation at two input sizes back to back in the
-// same process and bounds the ratio, which a loaded host slows on both sides
-// alike. A test that guards against a hang keeps an absolute bound, written
+// same process and bounds the ratio. The time is the CPU time the test
+// process consumed, not wall-clock time, so other processes competing for
+// the CPU do not lengthen one sample more than the other. A test that guards against a hang keeps an absolute bound, written
 // as Bound(d) so that it is scaled by RaceFactor under the race detector;
 // such a bound must stay well below the time the hang it detects would take.
 package testtiming
@@ -14,6 +15,8 @@ import (
 	"fmt"
 	"runtime"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Bound scales an absolute wall-clock bound by RaceFactor.
@@ -35,13 +38,13 @@ const GrowthFactor = 16
 const LinearLimit = 64.0
 
 // growthRounds is how many times each size is timed; the fastest sample of
-// each size is the one compared, since load only ever adds time.
+// each size is the one compared, since interference only ever adds time.
 const growthRounds = 5
 
 // minimumSample is the shortest sample timed: an operation faster than that
-// is repeated within a sample, so that timer resolution and scheduling
-// granularity do not dominate it.
-const minimumSample = 2 * time.Millisecond
+// is repeated within a sample, so that clock resolution and the cost of
+// reading the clock do not dominate it.
+const minimumSample = 5 * time.Millisecond
 
 // Growth reports how the running time of an operation grows when its input
 // grows from n to GrowthFactor*n. prepare builds the input of a size outside
@@ -81,11 +84,26 @@ func repeatsFor(operation func()) int {
 	return repeats
 }
 
+// sample is the CPU time the process spends running operation repeats
+// times. A wall-clock sample was not enough: on a saturated CPU a short
+// sample of the small input could finish within one scheduler time slice
+// while every long sample of the large input was shared with the competing
+// processes, so the ratio grew with load (68x for linear code with two busy
+// loops on one CPU under the race detector). CPU time charges the test only
+// for the time it ran.
 func sample(operation func(), repeats int) time.Duration {
 	runtime.GC()
-	started := time.Now()
+	started := processCPUTime()
 	for range repeats {
 		operation()
 	}
-	return time.Since(started)
+	return processCPUTime() - started
+}
+
+func processCPUTime() time.Duration {
+	var now unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_PROCESS_CPUTIME_ID, &now); err != nil {
+		panic(fmt.Sprintf("testtiming: reading the process CPU clock: %v", err))
+	}
+	return time.Duration(now.Nano())
 }

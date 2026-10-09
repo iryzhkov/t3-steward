@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestContainedTokenFIFOIsRejectedWithoutBlocking(t *testing.T) {
@@ -22,7 +24,7 @@ func TestContainedTokenFIFOIsRejectedWithoutBlocking(t *testing.T) {
 		if err == nil {
 			t.Fatal("FIFO accepted")
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testtiming.Bound(time.Second)):
 		t.Fatal("token reader blocked on provider FIFO")
 	}
 }

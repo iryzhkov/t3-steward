@@ -2,6 +2,7 @@ package workerruntime
 
 import (
 	"context"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"net"
 	"os"
@@ -36,7 +37,7 @@ func TestWorkerSocketPersistsAcrossReconnectAndStopsIdlePeers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		c.SetDeadline(time.Now().Add(time.Second))
+		c.SetDeadline(time.Now().Add(testtiming.Bound(time.Second)))
 		for j := 0; j < 2; j++ {
 			if err = frames.Write(c, []byte("signed intent")); err != nil {
 				t.Fatal(err)
@@ -59,7 +60,7 @@ func TestWorkerSocketPersistsAcrossReconnectAndStopsIdlePeers(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testtiming.Bound(2 * time.Second)):
 		t.Fatal("idle peer prevented shutdown")
 	}
 }

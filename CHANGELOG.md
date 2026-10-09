@@ -87,8 +87,9 @@ or rc.115 coordinator.
 - Tests no longer fail on a loaded host for want of wall-clock time. The two
   complexity tests (`TestSecretScanRedactionLinearInMatches`,
   `TestCommitOutputValidationIsLinear`) bound how running time grows with a
-  16x larger input, measured back to back in the same process, instead of an
-  absolute duration, and each has a companion test proving the bound rejects
+  16x larger input, measured back to back in the same process as process CPU
+  time (so competing processes do not skew one size more than the other),
+  instead of an absolute duration, and each has a companion test proving the bound rejects
   a deliberately quadratic stand-in. The tests that bound a hang keep an
   absolute bound, scaled 5x under the race detector by the new
   `internal/testtiming` package, with the hang they detect lengthened where
