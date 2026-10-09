@@ -108,7 +108,8 @@ func TestTaskWaitsForSeveralRunsInOnePark(t *testing.T) {
 
 // A request ID reused for a different condition is refused by name, never
 // answered with the first wait. A retry of the same condition still replays,
-// and a record written before conditions were digested still replays as before.
+// and so does one against a record written before conditions were digested,
+// which refuses a different condition just the same.
 func TestTaskWaitReplayOfAnotherConditionIsRefused(t *testing.T) {
 	ctx := context.Background()
 	store, attempt, now := taskWaitFixture(t)
@@ -146,10 +147,37 @@ func TestTaskWaitReplayOfAnotherConditionIsRefused(t *testing.T) {
 		t.Fatalf("the refused condition left %d waits", len(waits))
 	}
 
-	// A record from before the digest has none, and is replayed on the
-	// fields that were compared then.
+	// A record from before the digest has none. It is compared on the
+	// canonical condition it stored: the same condition replays, and run B
+	// under run A's request ID is refused rather than answered with run A's
+	// wait.
 	legacy := registered
 	legacy.ConditionDigest = ""
+	saveLegacyTaskWait(t, ctx, store, legacy)
+	if _, err := store.RegisterTaskWait(ctx, second, now); !errors.Is(err, domain.ErrTaskWaitReplayCondition) {
+		t.Fatalf("a legacy record answered another condition: %v", err)
+	} else if !strings.Contains(err.Error(), "registered before conditions were recorded") {
+		t.Fatalf("the legacy refusal does not say why: %v", err)
+	}
+	if replayed, err := store.RegisterTaskWait(ctx, retry, now); err != nil || replayed.ID != registered.ID {
+		t.Fatalf("a legacy record did not replay the same condition: %+v %v", replayed, err)
+	}
+	// The target is compared after resolution, as it was stored: the run's
+	// sink spelled by its ID rather than its name is the same condition.
+	byID := nodeRegistration(attempt, "park-same", domain.NodeRef{RunID: "run-a", TaskID: domain.SinkTaskID("run-a")}, "")
+	byID.Wake = domain.WakeAll
+	if replayed, err := store.RegisterTaskWait(ctx, byID, now); err != nil || replayed.ID != registered.ID {
+		t.Fatalf("a legacy record did not replay the same resolved target %+v: %+v %v", legacy.Node.Target, replayed, err)
+	}
+	if waits, _ := store.ListTaskWaits(ctx); len(waits) != 1 {
+		t.Fatalf("the legacy replays left %d waits", len(waits))
+	}
+}
+
+// saveLegacyTaskWait overwrites a stored wait, as a record written before a
+// field existed would read.
+func saveLegacyTaskWait(t *testing.T, ctx context.Context, store *Store, legacy domain.TaskWait) {
+	t.Helper()
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +188,37 @@ func TestTaskWaitReplayOfAnotherConditionIsRefused(t *testing.T) {
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if replayed, err := store.RegisterTaskWait(ctx, second, now); err != nil || replayed.ID != registered.ID {
-		t.Fatalf("a legacy record did not replay as before: %+v %v", replayed, err)
+}
+
+// TestTaskWaitLegacyReplayOfALocalCondition covers a digest-less record of a
+// local kind, stored exactly as it was sent: the same command replays, and a
+// different one under the same request ID is refused.
+func TestTaskWaitLegacyReplayOfALocalCondition(t *testing.T) {
+	ctx := context.Background()
+	store, attempt, now := taskWaitFixture(t)
+	request := domain.TaskWaitRegistration{
+		RequestID: "park-local", WorkflowRunID: attempt.WorkflowRunID, TaskID: attempt.TaskID,
+		AttemptID: attempt.ID, IssuedRevision: attempt.Revision, ThreadID: attempt.ThreadID,
+		Wake: domain.WakeAll, MaxDuration: time.Hour, Name: "./ready.sh a", Condition: "./ready.sh a",
+	}
+	registered, err := store.RegisterTaskWait(ctx, request, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := registered
+	legacy.ConditionDigest = ""
+	saveLegacyTaskWait(t, ctx, store, legacy)
+	if replayed, err := store.RegisterTaskWait(ctx, request, now); err != nil || replayed.ID != registered.ID {
+		t.Fatalf("a legacy local record did not replay the same command: %+v %v", replayed, err)
+	}
+	other := request
+	other.Name, other.Condition = "./ready.sh b", "./ready.sh b"
+	if _, err := store.RegisterTaskWait(ctx, other, now); !errors.Is(err, domain.ErrTaskWaitReplayCondition) {
+		t.Fatalf("a legacy local record answered another command: %v", err)
+	}
+	other = request
+	other.OrTimeout = true
+	if _, err := store.RegisterTaskWait(ctx, other, now); !errors.Is(err, domain.ErrTaskWaitReplayCondition) {
+		t.Fatalf("a legacy local record answered another deadline treatment: %v", err)
 	}
 }

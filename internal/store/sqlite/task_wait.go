@@ -47,6 +47,11 @@ CREATE INDEX IF NOT EXISTS coordinator_task_waits_live
 
 func taskWaitID(requestID string) string { return "tw-" + requestID }
 
+// TaskWaitID is the ID the coordinator gives the task-bound wait registered
+// under requestID, so a registering command can find the local check of an
+// earlier registration of the same request before it sends this one.
+func TaskWaitID(requestID string) string { return taskWaitID(requestID) }
+
 func sameAttentionRegistration(stored, requested *domain.AttentionRequest) bool {
 	if stored == nil || requested == nil {
 		return stored == nil && requested == nil
@@ -164,6 +169,20 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 			return domain.TaskWait{}, fmt.Errorf("%w: request ID %q is wait %s, which waits for %q; register the new condition without --request-id, or with a different one, to add it to this park",
 				domain.ErrTaskWaitReplayCondition, request.RequestID, wait.ID, wait.Condition)
 		}
+		// A record written before the digest existed is compared on the
+		// canonical condition it stored. When that comparison cannot be made
+		// the replay is refused: answering it with this wait could be the same
+		// silent loss of a second condition the digest exists to prevent.
+		if wait.ConditionDigest == "" {
+			same, err := sameLegacyConditionTx(ctx, tx, wait, request, s.quotaStaleAfter)
+			if err != nil {
+				return domain.TaskWait{}, err
+			}
+			if !same {
+				return domain.TaskWait{}, fmt.Errorf("%w: request ID %q is wait %s, registered before conditions were recorded, which waits for %q, and this registration cannot be shown to name the same condition; register it without --request-id, or with a different one, to add it to this park",
+					domain.ErrTaskWaitReplayCondition, request.RequestID, wait.ID, wait.Condition)
+			}
+		}
 		// A replay may only report a park that is actually in force. The wait
 		// and the attempt are checked separately because they can disagree: a
 		// settled wait whose attempt resumed keeps the same attempt ID, so the
@@ -248,6 +267,63 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 		return domain.TaskWait{}, err
 	}
 	return wait, tx.Commit()
+}
+
+// sameLegacyConditionTx reports whether a replayed registration names the
+// condition of a stored wait that has no condition digest. The stored record
+// holds the condition after registration canonicalised it, so the request is
+// brought to the same form first: local kinds and the attention and ask kinds
+// are stored as sent, a node target is resolved against the current records,
+// and a quota condition keeps everything but the reset time it was given.
+// Anything that cannot be brought to that form is reported as different.
+func sameLegacyConditionTx(ctx context.Context, tx *sql.Tx, stored domain.TaskWait, request domain.TaskWaitRegistration, quotaStaleAfter time.Duration) (bool, error) {
+	if stored.OrTimeout != request.OrTimeout {
+		return false, nil
+	}
+	// A coordinator kind sent without a name or condition has them derived
+	// from its structured condition, which is compared below.
+	derived := request.Kind.OrShell().Coordinator()
+	if (request.Condition != "" || !derived) && request.Condition != stored.Condition {
+		return false, nil
+	}
+	if (request.Name != "" || !derived) && request.Name != stored.Name {
+		return false, nil
+	}
+	switch kind := request.Kind.OrShell(); {
+	case !kind.Coordinator():
+		return stored.Node == nil && stored.Quota == nil, nil
+	case kind == domain.WaitKindAttention || kind == domain.WaitKindAsk:
+		// Their condition is the attention or ask request, compared with the
+		// other replay fields.
+		return true, nil
+	case request.Node != nil:
+		if stored.Node == nil {
+			return false, nil
+		}
+		condition := *request.Node
+		if condition.State == "" {
+			condition.State = domain.NodeStateTerminal
+		}
+		records, err := nodeStateRecordsTx(ctx, tx, quotaStaleAfter)
+		if err != nil {
+			return false, err
+		}
+		observation, err := resolveNodeState(condition, records)
+		if err != nil {
+			return false, nil
+		}
+		return observation.Target == stored.Node.Target && condition.State == stored.Node.State, nil
+	case request.Quota != nil:
+		if stored.Quota == nil {
+			return false, nil
+		}
+		sent, kept := *request.Quota, *stored.Quota
+		if sent.ResetAt == nil {
+			kept.ResetAt = nil
+		}
+		return reflect.DeepEqual(sent, kept), nil
+	}
+	return false, nil
 }
 
 // parkTaskWaitTx persists a validated registration and its parent CAS together.

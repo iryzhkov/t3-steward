@@ -27,7 +27,12 @@ or rc.115 coordinator.
   waits and in combination with `--wake`. Every registration prints "Wake:
   all" or "Wake: any". The coordinator records a condition digest on each
   task wait and refuses a reused request id for a different condition
-  instead of replaying the earlier wait. A grouped task wake adds
+  instead of replaying the earlier wait; a record written before the digest
+  is compared on its stored condition and refused when it cannot be shown to
+  match. A reused request id whose shell check runs in another directory or
+  splits its arguments differently is refused by the registering host. The
+  default request id also covers a shell check's directory, and a retry of
+  `--for DURATION` keeps the instant of its first registration. A grouped task wake adds
   `waits=<id>:<outcome>,...` to its trailer, and its prose says the waits
   settled and reports each. Output changes: task wait JSON gains
   `conditionDigest`; a mixed-side all set refusal now suggests `--any`.

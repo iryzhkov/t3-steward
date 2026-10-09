@@ -263,6 +263,8 @@ type localWaitSpec struct {
 	Command []string
 	// At is the instant of a time wait.
 	At *time.Time
+	// For is the duration of a time wait given by --for rather than --at.
+	For time.Duration
 	// GitHub is the target of a github wait.
 	GitHub *wait.GitHubTarget
 	// Name is the name to use when --name was not given.
@@ -381,9 +383,10 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 			return spec, err
 		}
 		spec.Kind = domain.WaitKindTime
-		spec.At = &instant
-		spec.Condition = "time at " + instant.UTC().Format(time.RFC3339)
-		spec.Name = spec.Condition
+		if *after != "" {
+			spec.For, _ = time.ParseDuration(*after)
+		}
+		spec.setTimeInstant(instant)
 	default:
 		spec.Kind = domain.WaitKindShell
 		spec.Condition = strings.Join(spec.Command, " ")
@@ -424,6 +427,15 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 		return spec, errors.New("--timeout must be longer than --every")
 	}
 	return spec, nil
+}
+
+// setTimeInstant makes instant the instant of a time wait, with the condition
+// text and default name that name it.
+func (spec *localWaitSpec) setTimeInstant(instant time.Time) {
+	instant = instant.UTC()
+	spec.At = &instant
+	spec.Condition = "time at " + instant.Format(time.RFC3339)
+	spec.Name = spec.Condition
 }
 
 // parseTimeWaitInstant reads --at or --for into an instant in the future.

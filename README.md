@@ -799,8 +799,9 @@ reports every condition's outcome, in the trailer as `count=<n>
 waits=<id>:<outcome>,...` and in the prose. `--any` on a condition wakes the
 task as soon as that condition settles. An all set is all local kinds or all
 coordinator kinds; a registration that would mix the two is refused and names
-`--any` as the way to add it. A reused `--request-id` for a different condition
-is refused rather than answered with the earlier wait.
+`--any` as the way to add it. A reused `--request-id` for a different condition,
+including the same command in another `--dir`, is refused rather than answered
+with the earlier wait.
 
 ```sh
 t3-steward wait add --task current --node <run-a>

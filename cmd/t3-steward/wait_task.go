@@ -157,12 +157,16 @@ func readTaskIdentityFileFrom(directory string) (map[string]string, error) {
 // anyway. An explicit id that ends in "-" is almost always a shell variable
 // that was empty when the command line was built, so it is warned about, but
 // still used: a repeated registration must keep returning the same wait.
-func taskWaitRequestID(explicit string, identity taskIdentity, args []string, warnings io.Writer) string {
+//
+// dir is the working directory a shell check runs in, and empty for every
+// other kind: the same command in another directory is another condition, and
+// it is usually not on the command line.
+func taskWaitRequestID(explicit string, identity taskIdentity, args []string, dir string, warnings io.Writer) string {
 	if explicit == "" {
 		if identity.AttemptID == "" {
 			return strings.TrimPrefix(newWaitID(), "w-")
 		}
-		return fmt.Sprintf("park-%s-%d-%s", identity.AttemptID, identity.AttemptRevision, taskWaitArgsDigest(args))
+		return fmt.Sprintf("park-%s-%d-%s", identity.AttemptID, identity.AttemptRevision, taskWaitArgsDigest(args, dir))
 	}
 	if strings.HasSuffix(explicit, "-") {
 		fmt.Fprintf(warnings, "warning: --request-id %q ends in \"-\", which usually means an empty shell variable was interpolated into it; "+
@@ -177,9 +181,16 @@ func taskWaitRequestID(explicit string, identity taskIdentity, args []string, wa
 // because it changes only how the answer is printed, so a retry that adds it
 // still replays the same wait. The arguments are hashed rather than the parsed
 // condition because a relative condition such as --for 30m resolves to a
-// different instant on every run, and a retry must not become a new wait.
-func taskWaitArgsDigest(args []string) string {
+// different instant on every run, and a retry must not become a new wait. A
+// shell check's directory is hashed first, made absolute, when there is one.
+func taskWaitArgsDigest(args []string, dir string) string {
 	hash := sha256.New()
+	if dir != "" {
+		if absolute, err := filepath.Abs(dir); err == nil {
+			dir = absolute
+		}
+		hash.Write([]byte("\x01dir=" + dir + "\x00"))
+	}
 	for index, arg := range args {
 		if arg == "--" {
 			for _, rest := range args[index:] {
@@ -286,11 +297,39 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	if spec.Dir == "" {
 		spec.Dir, _ = os.Getwd()
 	}
-	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, args, os.Stderr)
+	checkDir := ""
+	if spec.Kind == domain.WaitKindShell {
+		checkDir = spec.Dir
+	}
+	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, args, checkDir, os.Stderr)
+
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		return err
+	}
+	store, err := sqlite.Open(statePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	checks, err := store.ListWaits(ctx, "")
+	if err != nil {
+		return err
+	}
+	saved, retry := registeredTaskCheck(checks, sqlite.TaskWaitID(spec.RequestID))
+	if retry && spec.Kind == domain.WaitKindTime && spec.For > 0 && saved.For == spec.For && saved.At != nil {
+		// A retry of --for DURATION keeps the instant its first registration
+		// resolved. Resolving it again names a later instant, which is another
+		// condition, and the retry would be refused for it.
+		spec.setTimeInstant(*saved.At)
+		if spec.ExplicitName != "" {
+			spec.Name = spec.ExplicitName
+		}
+	}
 
 	local := wait.Wait{
 		ID: newWaitID(), ThreadID: identity.ThreadID, Name: spec.Name, Kind: spec.Kind, Command: spec.Command, Dir: spec.Dir,
-		At: spec.At, GitHub: spec.GitHub, OrTimeout: spec.OrTimeout,
+		At: spec.At, For: spec.For, GitHub: spec.GitHub, OrTimeout: spec.OrTimeout,
 		Every: spec.Every, MaxEvery: spec.MaxEvery, Timeout: spec.Timeout, RunTimeout: spec.RunTimeout,
 		Wake: wait.WakeMode(spec.WakeMode), Status: wait.StatusWaiting, CreatedAt: now,
 	}
@@ -301,6 +340,16 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	code, firstLine, err := probeLocalWait(ctx, spec, &local, "so there is nothing to park for")
 	if err != nil {
 		return err
+	}
+	// A retry is refused before it reaches the coordinator when it changes
+	// part of the condition the coordinator record does not hold, such as a
+	// shell check's directory. Answering it with the saved wait would report
+	// the new condition registered while only the old one is watched.
+	if retry {
+		local.TaskWaitID = saved.TaskWaitID
+		if err := refuseChangedTaskCheck(spec.RequestID, saved, local); err != nil {
+			return err
+		}
 	}
 
 	transport, err := newCoordinatorTransport(cfg)
@@ -329,19 +378,12 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return fmt.Errorf("task-bound wait %s is already settled, so this task is not parked; register a new wait with a different --request-id", registered.ID)
 	}
 
-	statePath, err := cfg.ResolveStatePath()
-	if err != nil {
-		return err
-	}
-	store, err := sqlite.Open(statePath)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
 	local.TaskWaitID = registered.ID
 	// A registration retry must never create a second poll or reset a settled one.
 	local.ID = "w-" + registered.ID
-	if err := saveRegisteredTaskCheck(ctx, store, local); err != nil {
+	if err := saveRegisteredTaskCheck(ctx, store, spec.RequestID, local); errors.Is(err, errTaskCheckConditionChanged) {
+		return err
+	} else if err != nil {
 		// The attempt is parked and the coordinator owns its maximum duration,
 		// so an unpolled wait expires with a structured timeout rather than
 		// stranding the task. Report the failure honestly instead of implying

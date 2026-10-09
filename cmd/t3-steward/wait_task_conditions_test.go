@@ -202,11 +202,96 @@ func TestTaskWaitRetryOfTheSameConditionReplays(t *testing.T) {
 	if len(records) != 1 || !strings.Contains(outputs[1], records[0].ID) {
 		t.Fatalf("a retry made %d waits: %+v", len(records), records)
 	}
-	if taskWaitArgsDigest([]string{"--task", "current", "--json", "--for", "30m"}) != taskWaitArgsDigest([]string{"--task", "current", "--for", "30m"}) {
+	if taskWaitArgsDigest([]string{"--task", "current", "--json", "--for", "30m"}, "") != taskWaitArgsDigest([]string{"--task", "current", "--for", "30m"}, "") {
 		t.Fatal("--json changed the derived request id")
 	}
-	if taskWaitArgsDigest([]string{"--task", "current", "--", "a", "--json"}) == taskWaitArgsDigest([]string{"--task", "current", "--", "a"}) {
+	if taskWaitArgsDigest([]string{"--task", "current", "--", "a", "--json"}, "") == taskWaitArgsDigest([]string{"--task", "current", "--", "a"}, "") {
 		t.Fatal("an argument of the shell check itself was dropped from the derived request id")
+	}
+}
+
+// A relative time wait retried after the clock has moved on is the same wait,
+// at the instant its first registration resolved, whether its request id is
+// derived or explicit. The same request id with another duration is refused.
+func TestTaskWaitRetryOfARelativeTimeKeepsItsInstant(t *testing.T) {
+	ctx := context.Background()
+	cfg, store := taskWaitCLIFixture(t)
+	derived := []string{"--task", "current", "--for", "30m"}
+	explicit := []string{"--task", "current", "--request-id", "later", "--for", "45m"}
+	registerTaskConditions(t, ctx, cfg, derived, explicit)
+	before, err := store.ListWaits(ctx, "")
+	if err != nil || len(before) != 2 {
+		t.Fatalf("local checks = %+v %v, want two", before, err)
+	}
+	// RFC 3339 conditions are whole seconds, so a retry within the same
+	// second would pass without keeping the instant.
+	time.Sleep(1100 * time.Millisecond)
+	registerTaskConditions(t, ctx, cfg, derived, explicit)
+	records, _ := store.ListTaskWaits(ctx)
+	if len(records) != 2 {
+		t.Fatalf("the retries made %d waits, want 2: %+v", len(records), records)
+	}
+	after, _ := store.ListWaits(ctx, "")
+	for index := range before {
+		if len(after) != 2 || !after[index].At.Equal(*before[index].At) || after[index].For == 0 {
+			t.Fatalf("a retry moved the instant or lost the duration: before %+v after %+v", before, after)
+		}
+	}
+
+	var refused error
+	captureStdout(t, func() {
+		refused = cmdTaskWaitAdd(ctx, cfg, []string{"--task", "current", "--request-id", "later", "--for", "2h"})
+	})
+	if refused == nil || !strings.Contains(refused.Error(), "already registered a different condition") {
+		t.Fatalf("another duration under the same request id was not refused: %v", refused)
+	}
+}
+
+// A shell check is also its directory and its exact argument vector, which
+// the coordinator record does not hold. Under a reused --request-id either
+// change is refused, and the first check is left as it was; without one, the
+// same command run from another directory is a second condition.
+func TestTaskWaitShellCheckIdentityIncludesDirectoryAndArguments(t *testing.T) {
+	ctx := context.Background()
+	cfg, store := taskWaitCLIFixture(t)
+	firstDir, secondDir := t.TempDir(), t.TempDir()
+	registerTaskConditions(t, ctx, cfg,
+		[]string{"--task", "current", "--request-id", "dir-check", "--dir", firstDir, "--", "false"},
+		[]string{"--task", "current", "--request-id", "argv-check", "--", "sh", "-c", "false x"},
+	)
+	for _, args := range [][]string{
+		{"--task", "current", "--request-id", "dir-check", "--dir", secondDir, "--", "false"},
+		// The same condition text, "sh -c false x", split differently.
+		{"--task", "current", "--request-id", "argv-check", "--", "sh", "-c", "false", "x"},
+	} {
+		var err error
+		output := captureStdout(t, func() { err = cmdTaskWaitAdd(ctx, cfg, args) })
+		if err == nil || !strings.Contains(err.Error(), "already registered a different condition") || !strings.Contains(err.Error(), "was not registered") {
+			t.Fatalf("%v was answered with the earlier wait: %v\n%s", args, err, output)
+		}
+		if strings.Contains(output, "registered") {
+			t.Fatalf("%v printed a registration it did not make:\n%s", args, output)
+		}
+	}
+	checks, _ := store.ListWaits(ctx, "")
+	if len(checks) != 2 {
+		t.Fatalf("local checks = %+v, want the first two alone", checks)
+	}
+	for _, check := range checks {
+		if check.TaskWaitID == "tw-dir-check" && check.Dir != firstDir {
+			t.Fatalf("the refused registration changed the check's directory: %+v", check)
+		}
+	}
+
+	t.Chdir(firstDir)
+	registerTaskConditions(t, ctx, cfg, []string{"--task", "current", "--", "false"})
+	t.Chdir(secondDir)
+	registerTaskConditions(t, ctx, cfg, []string{"--task", "current", "--", "false"})
+	if records, _ := store.ListTaskWaits(ctx); len(records) != 4 {
+		t.Fatalf("one command from two directories made %d waits in all, want 4: %+v", len(records), records)
+	}
+	if taskWaitArgsDigest([]string{"--", "false"}, firstDir) != taskWaitArgsDigest([]string{"--", "false"}, firstDir+"/.") {
+		t.Fatal("two spellings of one directory derived different request ids")
 	}
 }
 

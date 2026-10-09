@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -25,7 +26,11 @@ func TestTaskWaitRequestIDDefaultsToParkAttemptRevisionAndCondition(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "park-attempt-1-7-" + taskWaitArgsDigest([]string{"--task", "current", "--", "false"})
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "park-attempt-1-7-" + taskWaitArgsDigest([]string{"--task", "current", "--", "false"}, dir)
 	if len(records) != 1 || records[0].RequestID != want {
 		t.Fatalf("registered waits = %+v, want one with request id %s", records, want)
 	}

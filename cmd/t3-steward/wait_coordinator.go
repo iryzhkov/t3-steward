@@ -333,7 +333,7 @@ func cmdTaskCoordinatorWaitAdd(ctx context.Context, cfg config.Config, args []st
 	if err != nil {
 		return err
 	}
-	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, args, os.Stderr)
+	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, args, "", os.Stderr)
 	if spec.Attention != nil {
 		spec.Attention.AssignmentID = identity.AssignmentID
 	}

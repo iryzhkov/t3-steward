@@ -1397,15 +1397,23 @@ its own run's sink (the run cannot settle while the attempt is parked).
 One park can hold several conditions. Each `wait add --task current` before
 the turn ends registers its own task wait: the default request id is
 `park-<attempt>-<revision>-<digest>`, where the digest covers the command's
-arguments (`--json` aside), so a retry of the same command replays the same
-wait and every other condition gets a new one. Before this, the id was
+arguments (`--json` aside) and, for a shell check, its working directory, so
+a retry of the same command replays the same wait and every other condition
+gets a new one. A retry of `--for DURATION` keeps the instant its first
+registration resolved, read from the local check, rather than naming a later
+one. Before this, the id was
 `park-<attempt>-<revision>` alone, and a second condition in the same park
 replayed the first wait: the task was told it was parked on run B while only
 run A was watched. The coordinator also records a digest of each
 registration's condition and refuses a replayed request id whose condition
 differs (`the request ID already registered a different condition`), naming
-the wait the id already is; a record written before the digest existed
-replays as before.
+the wait the id already is. A record written before the digest existed is
+compared on the condition it stored (a node target after resolving the
+replayed one); when they differ, or cannot be shown to match, the replay is
+refused the same way. What the coordinator record does not hold, a shell
+check's directory and exact argument vector, a time wait's instant and a
+GitHub target's repository, is compared against the local check already
+saved for the request id, and a change is refused before anything is sent.
 
 A task-bound wait takes `--wake all` unless told otherwise (`--all` is the
 same; `--any` is `--wake each`), and the registration says which: "Wake: all"
