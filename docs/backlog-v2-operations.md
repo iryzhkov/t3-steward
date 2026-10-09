@@ -1417,9 +1417,17 @@ a replay adopt a different shell condition. An older saved relative directory
 cannot identify its original working directory and is refused. Older shell
 registrations lacking complete identity are also refused on replay; use a new
 request id. Shell registrations now require an identity-aware coordinator:
-older strict coordinators reject the new `shell` field. A time wait's instant
-and a GitHub target's repository are also compared against the saved local
-check, and a change is refused before anything is sent.
+older strict coordinators reject the new `shell` field. Deploy the matching
+coordinator before updating workers that use task-bound shell waits. The admin-read
+fallback applies to reads, not wait registration; no shell fallback drops replay
+identity. Task-bound GitHub waits resolve the repository before registration and
+bind it into the coordinator condition, even with an explicit display name.
+If resolution fails, registration is refused with a request for `--repo owner/name`.
+A retry from another repository after a lost local save is therefore refused;
+a complete identical retry restores the check. Without an explicit request id,
+the resolved repository also distinguishes conditions from different checkouts.
+A time wait's instant and a GitHub target's repository are also compared against
+the saved local check, and a change is refused before anything is sent.
 
 A task-bound wait takes `--wake all` unless told otherwise (`--all` is the
 same; `--any` is `--wake each`), and the registration says which: "Wake: all"

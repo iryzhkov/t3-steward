@@ -270,12 +270,18 @@ func localTaskWaitRegistration(spec localWaitSpec, identity taskIdentity) domain
 	if spec.Kind == domain.WaitKindShell {
 		shell = &domain.ShellWaitCondition{Dir: spec.Dir, Command: spec.Command}
 	}
+	condition := spec.Condition
+	if spec.Kind == domain.WaitKindGitHub && spec.GitHub != nil && spec.GitHub.Repo != "" {
+		// Bind the resolved repository even when the display name was supplied
+		// explicitly. The coordinator must protect identity without a local save.
+		condition = "github " + spec.GitHub.Ref() + " " + spec.GitHub.State + " in " + spec.GitHub.Repo
+	}
 	return domain.TaskWaitRegistration{
 		Shell:     shell,
 		RequestID: spec.RequestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
 		AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
 		ThreadID: identity.ThreadID, Wake: domain.WakeMode(spec.WakeMode), MaxDuration: spec.Timeout,
-		Name: spec.Name, Condition: spec.Condition, Kind: kind, OrTimeout: spec.OrTimeout,
+		Name: spec.Name, Condition: condition, Kind: kind, OrTimeout: spec.OrTimeout,
 	}
 }
 
@@ -305,6 +311,18 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	checkDir := ""
 	if spec.Kind == domain.WaitKindShell {
 		checkDir = spec.Dir
+	}
+	if spec.Kind == domain.WaitKindGitHub {
+		if spec.GitHub.Repo == "" {
+			runner := wait.New(nil, nil, nil)
+			runner.GitHub = gitHubCommand
+			spec.GitHub.Repo = gitHubRepository(ctx, runner, spec.Dir)
+			if spec.GitHub.Repo == "" {
+				return errors.New("cannot resolve the GitHub repository for this task-bound wait; give --repo owner/name so its condition can be recorded before parking")
+			}
+		}
+		// Identical arguments in different checkouts must name distinct waits.
+		checkDir = spec.GitHub.Repo
 	}
 	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, args, checkDir, os.Stderr)
 

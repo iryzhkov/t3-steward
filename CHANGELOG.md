@@ -21,7 +21,14 @@ or rc.115 coordinator.
   Replays after a lost local save cannot replace the original condition. Older
   relative local directories and shell registrations without complete identity
   are refused on replay. The new `shell` registration field requires a matching
-  coordinator; older strict coordinators clearly refuse it.
+  coordinator; older strict coordinators clearly refuse it. Deploy the matching
+  coordinator before updating workers that use task-bound shell waits; the
+  admin-read fallback above does not apply to wait registration.
+- Task-bound GitHub waits bind the resolved repository into the coordinator
+  condition before parking, preventing a retry from another checkout after a
+  lost local save from replacing the condition. If the repository cannot be
+  resolved, registration asks for `--repo owner/name` and refuses to park.
+  Derived request ids also distinguish resolved repositories.
 
 - Several conditions per task-bound wait (W2). A second `wait add --task
   current` in the same park used to print the first wait's id and

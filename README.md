@@ -805,7 +805,11 @@ with the earlier wait. Relative shell directories are resolved before probing;
 the coordinator digest binds that path and the exact argv even if the local
 save is lost. Older shell records with incomplete identity are refused on
 replay. Shell registrations require an identity-aware coordinator; older
-strict coordinators reject the new `shell` field.
+strict coordinators reject the new `shell` field. Deploy the matching coordinator
+before updating workers that use task-bound shell waits; admin-read fallback does
+not cover wait registration. Task-bound GitHub waits bind the resolved repository
+into the coordinator condition before parking, including when `--repo` was omitted.
+If resolution fails, give `--repo owner/name`; an unbound wait is refused.
 
 ```sh
 t3-steward wait add --task current --node <run-a>
