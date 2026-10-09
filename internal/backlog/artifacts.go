@@ -88,9 +88,6 @@ type VerificationReport struct {
 	Output      string    `json:"output"`
 	StartedAt   time.Time `json:"startedAt"`
 	CompletedAt time.Time `json:"completedAt"`
-	// TempDirectories are the real temporary directories the command was
-	// given in place of the worker's TMPDIR and GOTMPDIR.
-	TempDirectories []TempDirectory `json:"tempDirectories,omitempty"`
 }
 
 // FinalizedAttempt contains artifacts ready for coordinator persistence and the
@@ -623,8 +620,8 @@ func (f AttemptFinalizer) runVerification(ctx context.Context, processID, worksp
 	})
 	completed := f.now()
 	report := VerificationReport{
-		Command: command, ExitCode: result.ExitCode, Output: result.Output,
-		StartedAt: started, CompletedAt: completed, TempDirectories: temp,
+		Command: command, ExitCode: result.ExitCode, Output: tempDirectoryLog(temp) + result.Output,
+		StartedAt: started, CompletedAt: completed,
 	}
 	if err == nil {
 		return report, nil

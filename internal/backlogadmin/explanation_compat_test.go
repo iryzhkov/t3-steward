@@ -156,8 +156,8 @@ func TestExplanationOlderLocalCoordinatorAndFailures(t *testing.T) {
 			defer stopLocalTransport(t, cancel, done)
 			got, err := client.Query(context.Background(), explanationQuery)
 			if mode == "older" {
-				// It refuses this release's version, rc.118's, rc.117's and rc.116's before v1.
-				if err != nil || got.Explanation == nil || got.Explanation.AttemptID != "a" || calls.Load() != 5 {
+				// It refuses rc.120 through rc.116 read versions before v1.
+				if err != nil || got.Explanation == nil || got.Explanation.AttemptID != "a" || calls.Load() != 6 {
 					t.Fatalf("older: %+v %v calls=%d", got, err, calls.Load())
 				}
 				if got.Explanation.Placement != nil || got.Explanation.ReviewVerdict != nil {
@@ -196,7 +196,7 @@ func TestExplanationSSHProjectionAndOlderCoordinator(t *testing.T) {
 			extended := got.Explanation.Placement != nil && got.Explanation.ReviewVerdict != nil
 			wantCalls := int32(1)
 			if state == "older" {
-				wantCalls = 5
+				wantCalls = 6
 			}
 			if extended != (state == "current") || calls.Load() != wantCalls {
 				t.Fatalf("SSH %s: %+v calls=%d", state, got.Explanation, calls.Load())

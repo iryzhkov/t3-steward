@@ -281,10 +281,16 @@ func (s *Service) RecoverUnknown(ctx context.Context, principal Principal, reque
 
 func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	response, err := s.query(ctx, query)
-	// A progress mirror is asked for only by a client of this release, which
-	// reads the whole response.
-	if err != nil || query.ProgressMirror != nil {
+	if err != nil {
 		return response, err
+	}
+	// The v1 progress-mirror request is an explicit extension introduced before
+	// rc.119. Keep its mirror while freezing any nested evidence at that shape.
+	if query.ProgressMirror != nil && query.Version == Version {
+		if err := projectRC119ExtendedResponse(&response); err != nil {
+			return Response{}, fmt.Errorf("project the rc.119 progress mirror: %w", err)
+		}
+		return response, nil
 	}
 	// A strict older client rejects every field its release did not declare,
 	// so a v1 read keeps the shape v1 had, an ExtendedReadVersion read the
@@ -298,6 +304,10 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	case ExtendedReadVersion:
 		if err := projectRC116ExtendedResponse(&response); err != nil {
 			return Response{}, fmt.Errorf("project the rc.116 extended %s response: %w", query.Kind, err)
+		}
+	case RC119ReadVersion:
+		if err := projectRC119ExtendedResponse(&response); err != nil {
+			return Response{}, fmt.Errorf("project the rc.119 extended %s response: %w", query.Kind, err)
 		}
 	case RC118ReadVersion:
 		if err := projectRC118ExtendedResponse(&response); err != nil {
@@ -313,7 +323,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 
 func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	extendedRead := (query.Version == ExtendedReadVersion || query.Version == RC117ReadVersion || query.Version == RC118ReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
+	extendedRead := (query.Version == ExtendedReadVersion || query.Version == RC117ReadVersion || query.Version == RC118ReadVersion || query.Version == RC119ReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
 	if query.Version != Version && !intakeStatus && !extendedRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}

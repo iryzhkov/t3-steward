@@ -31,9 +31,12 @@ const RC117ReadVersion = "backlog.admin/v1-extended-read-rc117"
 // RC118ReadVersion freezes the complete rc.118 read response, including role receipts.
 const RC118ReadVersion = "backlog.admin/v1-extended-read-rc118"
 
-// CurrentReadVersion adds ranked role receipts. Any future additive read change
-// must freeze this shape and negotiate a new version for strict older clients.
-const CurrentReadVersion = "backlog.admin/v1-extended-read-m17-2b"
+// RC119ReadVersion freezes ranked role receipts and the complete rc.119 read shape.
+const RC119ReadVersion = "backlog.admin/v1-extended-read-m17-2b"
+
+// CurrentReadVersion adds lineage, capacity deferrals and provider error evidence.
+// Future additive changes must freeze this shape and negotiate a new version.
+const CurrentReadVersion = "backlog.admin/v1-extended-read-rc120"
 
 type QueryKind string
 

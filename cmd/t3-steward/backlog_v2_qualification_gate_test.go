@@ -68,7 +68,7 @@ func TestBacklogV2ProductionQualification(t *testing.T) {
 			name:     "stale_quota_schedule_and_legacy_exclusion",
 			packages: []string{"./cmd/t3-steward", "./internal/backlog"},
 			tests: []string{
-				"TestRunBacklogV2RefusesLegacyCoordinatorOverlapBeforeStateOpen",
+				"TestRunBacklogV2RefusesRetiredRunnerBeforeStateOpen",
 				"TestCoordinatorQuotaReconcilerPersistsClosedAdmissionWithoutEvidence",
 				"TestQuotaBridgeDeduplicatesSharedPoolAndFailsClosedWhenStale",
 				"TestScheduleTimerCatchUpOverlapAndRestart",

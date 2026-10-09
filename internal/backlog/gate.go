@@ -38,9 +38,6 @@ type GateReport struct {
 	LogTruncated     bool         `json:"logTruncated"`
 	LogArtifact      string       `json:"logArtifact"`
 	OutputLimitation string       `json:"outputLimitation,omitempty"`
-	// TempDirectories are the real temporary directories the gate commands
-	// were given in place of the worker's TMPDIR and GOTMPDIR.
-	TempDirectories []TempDirectory `json:"tempDirectories,omitempty"`
 	// attestedCommit is this attempt's HEAD commit, whose tree the gate
 	// attests. Finalize publishes a declared commit only if it still resolves
 	// to this one.
@@ -130,11 +127,11 @@ func (f AttemptFinalizer) runGate(ctx context.Context, req AttemptFinalization) 
 	if err != nil {
 		return fail("temporary directory", 1, err.Error())
 	}
-	report.TempDirectories = temp
 	if f.GateContained {
 		report.OutputLimitation = "Contained supervisor exposes exit status only; gate/log.txt retains the invocation receipt, not command stdout/stderr. Tool versions describe the host."
 	}
 	log := boundedBuffer{limit: gateLogLimit}
+	_, _ = log.Write([]byte(tempDirectoryLog(temp)))
 	for index, command := range gate.Commands {
 		started := f.now()
 		fmt.Fprintf(&log, "$ %s\n", command)

@@ -291,7 +291,7 @@ func TestTaskReadNegotiatesTheExtendedVersion(t *testing.T) {
 			}
 			wantCalls := int32(1)
 			if older {
-				wantCalls = 5
+				wantCalls = 6
 			}
 			if (got.Task.Attempt.ReviewVerdict != nil) == older || calls.Load() != wantCalls {
 				t.Fatalf("older=%v: verdict %+v, calls %d", older, got.Task.Attempt.ReviewVerdict, calls.Load())

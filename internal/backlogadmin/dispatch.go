@@ -52,8 +52,13 @@ func (d adminDispatch) handle(
 	principal Principal,
 	request localRequest,
 	body io.Reader,
-) (localResponse, *ArtifactContent) {
-	response := localResponse{Version: LocalTransportVersion}
+) (response localResponse, artifact *ArtifactContent) {
+	response = localResponse{Version: LocalTransportVersion}
+	defer func() {
+		if err := projectRC119UnversionedAnswer(&response); err != nil {
+			response = localResponse{Version: LocalTransportVersion, Error: "project the rc.119 answer: " + err.Error()}
+		}
+	}()
 	if request.CommitExport != nil && request.Operation != localOperationCommitExport {
 		response.Error = "unexpected commit export request"
 		return response, nil

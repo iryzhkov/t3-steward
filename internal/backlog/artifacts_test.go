@@ -53,7 +53,7 @@ func TestAttemptFinalizerCapturesOutputsAndVerification(t *testing.T) {
 	if err := json.Unmarshal(raw, &report); err != nil {
 		t.Fatalf("decode verification report: %v", err)
 	}
-	if report.Command != "test -f dist/result.txt && printf checked" || report.ExitCode != 0 || report.Output != "checked" {
+	if report.Command != "test -f dist/result.txt && printf checked" || report.ExitCode != 0 || !strings.HasSuffix(report.Output, "checked") {
 		t.Fatalf("verification report = %#v", report)
 	}
 	if result.StorageDir != filepath.Join(storage, "runs", "run-1", "task-build", "attempt-1") {
@@ -210,7 +210,7 @@ func TestAttemptFinalizerRetainsFailedVerification(t *testing.T) {
 		}
 		reports = append(reports, report)
 	}
-	if len(reports) != 2 || reports[1].ExitCode != 7 || reports[1].Output != "broken" {
+	if len(reports) != 2 || reports[1].ExitCode != 7 || !strings.HasSuffix(reports[1].Output, "broken") {
 		t.Fatalf("reports = %#v", reports)
 	}
 }

@@ -15,6 +15,11 @@ func offerPlacement(placement *domain.PlacementDecision, capabilities []string) 
 	if placement == nil {
 		return nil
 	}
+	// Role re-resolution is coordinator evidence; workers do not consume it.
+	// Keep it off the unversioned assignment wire, including to rc.119 peers.
+	wire := *placement
+	wire.RouteReresolution = nil
+	placement = &wire
 	if !slices.Contains(capabilities, workerproto.CapabilityResourceTelemetry) {
 		projected := *placement
 		projected.ResourceEvaluations = nil

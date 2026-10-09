@@ -64,7 +64,7 @@ func TestVerificationUsesConventionalUmask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.ExitCode != 0 || strings.TrimSpace(report.Output) != "0022" {
+	if report.ExitCode != 0 || !strings.HasSuffix(report.Output, "\n0022\n") {
 		t.Errorf("verification umask: exit = %d, output = %q; want 0, 0022", report.ExitCode, report.Output)
 	}
 	if report.Command != "umask" {
@@ -80,7 +80,7 @@ func TestVerificationUsesConventionalUmask(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "literal $HOME; \"quoted\"\n" + workspace + "\n"
-	if report.Command != command || report.ExitCode != 7 || report.Output != want {
+	if report.Command != command || report.ExitCode != 7 || !strings.HasSuffix(report.Output, want) {
 		t.Errorf("shell command report = %+v, want original command, exit 7, output %q", report, want)
 	}
 }

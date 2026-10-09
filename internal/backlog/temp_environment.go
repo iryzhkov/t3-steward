@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/iryzhkov/t3-steward/internal/symlinkpath"
@@ -58,6 +59,16 @@ func ResolveTempDirectories(lookup func(string) (string, bool)) ([]TempDirectory
 		directories = append(directories, TempDirectory{Variable: variable, Configured: configured, Resolved: resolved})
 	}
 	return directories, nil
+}
+
+// tempDirectoryLog keeps directory evidence in existing free-text logs, outside
+// report schemas that older coordinators decode with DisallowUnknownFields.
+func tempDirectoryLog(directories []TempDirectory) string {
+	var log strings.Builder
+	for _, directory := range directories {
+		fmt.Fprintf(&log, "[temporary directory] %s configured=%q resolved=%q\n", directory.Variable, directory.Configured, directory.Resolved)
+	}
+	return log.String()
 }
 
 // tempEnvironment is the environment a command gets from directories.

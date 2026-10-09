@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep verification and gate report JSON readable by rc.119 during canary and
+  rollback; retain resolved temporary-directory evidence in verification output
+  and `gate/log.txt` without changing symlink resolution.
+- Freeze rc.119 admin response shapes, negotiate a new rc.120 read version, and
+  keep coordinator role re-resolution evidence off the unversioned worker wire.
+- Repair nightly qualification to run the renamed retired-runner refusal test.
+
 ## [0.11.0-rc.120] - 2026-10-09
 
 This integration keeps the rc.119 database schema and side-store compatibility
@@ -17,8 +26,8 @@ versions unchanged; it adds no schema migration.
   running a task's verify and gate commands the worker resolves TMPDIR
   (default `/tmp`) and, when set, GOTMPDIR to paths free of symbolic links,
   creating a missing directory, and passes the resolved values to the
-  command's scope. The verification report and the gate report gain
-  `tempDirectories` (variable, configured value, resolved path), so a host
+  command's scope. Verification output and `gate/log.txt` record the variable,
+  configured value and resolved path, so a host
   whose temporary directory is a symlink to another disk can no longer fail
   every task's checks that refuse symlinked paths. The worker's inventory
   snapshot logs a warning, once per process, naming a symlinked TMPDIR or
