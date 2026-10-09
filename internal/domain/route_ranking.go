@@ -25,7 +25,27 @@ type RouteRankPool struct {
 	ID        string
 	Admission AdmissionState
 	Windows   QuotaWindowSet
+	// Active counts the pool's active and planned assignments and
+	// MaxConcurrent is its concurrency limit. A pool at its limit ranks in the
+	// saturated band, below every pool with room and above gated pools. Zero
+	// MaxConcurrent means the caller supplied no concurrency evidence, which
+	// leaves the band to quota alone, as before.
+	Active        int
+	MaxConcurrent int
 }
+
+// RouteBandSaturated is the band of a pool at its concurrency limit.
+const RouteBandSaturated = "saturated"
+
+// RouteRankBand orders bands from best to worst: reset-soon, healthy,
+// unknown, saturated, then gated and anything unrecognized.
+func RouteRankBand(band string) int { return rankBand(band) }
+
+// Saturated reports whether the pool is at its concurrency limit.
+func (pool RouteRankPool) Saturated() bool {
+	return pool.MaxConcurrent > 0 && pool.Active >= pool.MaxConcurrent
+}
+
 type RouteRankEntry struct {
 	Route          string
 	Ordinal        int
@@ -103,11 +123,27 @@ func rankBand(band string) int {
 		return 1
 	case "unknown":
 		return 2
-	default:
+	case RouteBandSaturated:
 		return 3
+	default:
+		return 4
 	}
 }
+
+// rankRoutePool bands one pool by quota and then by concurrency. Saturation
+// only ever makes a band worse: a gated pool stays gated, and a pool with room
+// keeps the band its quota earns.
 func rankRoutePool(pool RouteRankPool, now time.Time) RouteRankEntry {
+	e := rankRoutePoolQuota(pool, now)
+	if pool.Saturated() && rankBand(e.Band) < rankBand(RouteBandSaturated) {
+		e.Band = RouteBandSaturated
+		e.Reason = fmt.Sprintf("%s: %s has %d active or planned assignments at its concurrency limit of %d (saturated)",
+			RouteRankingV1, pool.ID, pool.Active, pool.MaxConcurrent)
+	}
+	return e
+}
+
+func rankRoutePoolQuota(pool RouteRankPool, now time.Time) RouteRankEntry {
 	e := RouteRankEntry{Pool: pool.ID, Band: "healthy"}
 	reason := func(text string) RouteRankEntry { e.Reason = RouteRankingV1 + ": " + pool.ID + " " + text; return e }
 	// Window usage is a tie-break in every band, including admission gates

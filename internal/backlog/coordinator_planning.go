@@ -139,7 +139,8 @@ func BuildCoordinatorPlanInput(input CoordinatorPlanningStateInput) (PlanInput, 
 			if readySince.IsZero() {
 				readySince = input.Now
 			}
-			ordering[attempt.ID] = PlanningAttemptOrdering{ReadySince: readySince}
+			readySince, nestedUnder := nestedReadySince(run, readySince, attemptByID)
+			ordering[attempt.ID] = PlanningAttemptOrdering{ReadySince: readySince, NestedUnder: nestedUnder}
 		}
 	}
 	sort.Slice(planningWorkflows, func(i, j int) bool {

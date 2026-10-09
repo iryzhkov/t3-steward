@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -22,6 +23,9 @@ type ArchiveSubmission struct {
 	Principal        string
 	Unverified       bool
 	UnverifiedReason string
+	// Parent is the submitting task's claim about itself, when the client runs
+	// inside a Steward task. It is checked before any lineage is recorded.
+	Parent *domain.SubmissionParent
 }
 
 // SubmitArchive validates and expands one uncompressed tar bundle into a
@@ -59,6 +63,7 @@ func (s *SubmissionService) SubmitArchive(ctx context.Context, request ArchiveSu
 		Principal:        request.Principal,
 		Unverified:       request.Unverified,
 		UnverifiedReason: request.UnverifiedReason,
+		Parent:           request.Parent,
 	})
 }
 

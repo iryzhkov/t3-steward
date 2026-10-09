@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -638,7 +637,7 @@ func (c reviewCLI) run(ctx context.Context, a reviewArgs) error {
 	}
 	sum := sha256.Sum256(bundle.Archive)
 	key := "review-" + hex.EncodeToString(sum[:])
-	response, err := client.SubmitArchive(ctx, backlogadmin.LocalSubmissionRequest{IdempotencyKey: key, Principal: c.task.campaign.submissionPrincipal()}, bytes.NewReader(bundle.Archive), int64(len(bundle.Archive)))
+	response, err := submitArchiveClaimingParent(ctx, client, backlogadmin.LocalSubmissionRequest{IdempotencyKey: key, Principal: c.task.campaign.submissionPrincipal(), Parent: submissionParentLookup()}, bundle.Archive)
 	if err != nil {
 		return err
 	}

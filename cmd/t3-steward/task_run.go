@@ -577,9 +577,14 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 		fmt.Fprintln(c.stderr, "warning: "+warning)
 	}
 
+	role := ""
+	if parsed.model == "" && parsed.worker == "" {
+		role = parsed.role
+	}
 	directory, err := writeTaskRunCampaign(taskRunCampaign{
 		name: name, project: project.Name, ref: ref, fresh: parsed.fresh,
 		route: route, pinned: parsed.worker != "", prompts: prompts,
+		role: role, roleEffort: parsed.effort,
 		outputs: parsed.outputs, verify: parsed.verify, inputs: inputs,
 		class: domain.TaskClass(parsed.class), maxTurns: parsed.maxTurns,
 	})
@@ -609,9 +614,10 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	response, err := client.SubmitArchive(ctx, backlogadmin.LocalSubmissionRequest{
+	response, err := submitArchiveClaimingParent(ctx, client, backlogadmin.LocalSubmissionRequest{
 		IdempotencyKey: key, Principal: c.campaign.submissionPrincipal(),
-	}, bytes.NewReader(bundle.Archive), int64(len(bundle.Archive)))
+		Parent: submissionParentLookup(),
+	}, bundle.Archive)
 	if err != nil {
 		return explainSubmissionConflict(err)
 	}
@@ -1184,18 +1190,20 @@ func manifestSlug(text string) string {
 
 // taskRunCampaign is the campaign directory this start will build.
 type taskRunCampaign struct {
-	name     string
-	project  string
-	ref      string
-	fresh    bool
-	route    taskRunRoute
-	pinned   bool
-	prompts  []taskRunPrompt
-	outputs  []string
-	verify   []string
-	class    domain.TaskClass
-	maxTurns int
-	inputs   pinnedinput.Snapshot
+	name       string
+	project    string
+	ref        string
+	fresh      bool
+	route      taskRunRoute
+	pinned     bool
+	prompts    []taskRunPrompt
+	outputs    []string
+	verify     []string
+	class      domain.TaskClass
+	maxTurns   int
+	role       string
+	roleEffort string
+	inputs     pinnedinput.Snapshot
 }
 
 // writeTaskRunCampaign writes the version 2 directory the campaign path
@@ -1233,8 +1241,16 @@ func writeTaskRunCampaign(spec taskRunCampaign) (string, error) {
 		Routes: []backlog.ManifestRoute{route},
 		Tasks:  make(map[string]backlog.ManifestTask, len(spec.prompts)),
 	}
+	if spec.role != "" {
+		manifest.Routes = nil
+	}
 	for _, prompt := range spec.prompts {
+		var options map[string]string
+		if spec.role != "" && spec.roleEffort != "" {
+			options = map[string]string{"effort": spec.roleEffort}
+		}
 		manifest.Tasks[prompt.name] = backlog.ManifestTask{
+			Role: spec.role, Options: options,
 			PromptFile: "prompts/" + prompt.name + ".md",
 			Outputs:    append([]string(nil), spec.outputs...),
 			Verify:     append([]string(nil), spec.verify...),

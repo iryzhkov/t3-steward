@@ -101,7 +101,7 @@ func TestPlanningExplainRealFullPoolAndV1(t *testing.T) {
 // Mapping deliberately uses arbitrary planner codes: it must not drop newly
 // introduced verdicts or silently translate policy semantics in the admin.
 func TestPlanningExplainMapsPlanningPolicyCodes(t *testing.T) {
-	for _, code := range []string{backlog.PlanningBlockerExecutorCapacity, backlog.PlanningBlockerTaskClass, backlog.PlanningBlockerQuotaCapacity, backlog.PlanningBlockerQuotaWindowMissing, backlog.PlanningBlockerQuotaObservationStale, backlog.PlanningBlockerSurplusWindow, backlog.PlanningBlockerDeadlineRunway, backlog.PlanningBlockerQuotaDrainRunway, backlog.PlanningBlockerQuotaAdmission, backlog.PlanningBlockerRouteWorkerMismatch, backlog.PlanningBlockerProviderUnavailable, backlog.PlanningBlockerModelUnavailable, backlog.PlanningBlockerQuotaPoolUnavailable, backlog.PlanningBlockerNoEligibleWorker, backlog.PlanningBlockerCandidatePolicy, "future-policy"} {
+	for _, code := range []string{backlog.PlanningBlockerExecutorCapacity, backlog.PlanningBlockerTaskClass, backlog.PlanningBlockerQuotaCapacity, backlog.PlanningBlockerQuotaWindowMissing, backlog.PlanningBlockerQuotaObservationStale, backlog.PlanningBlockerSurplusWindow, backlog.PlanningBlockerDeadlineRunway, backlog.PlanningBlockerQuotaDrainRunway, backlog.PlanningBlockerQuotaAdmission, backlog.PlanningBlockerRouteWorkerMismatch, backlog.PlanningBlockerProviderUnavailable, backlog.PlanningBlockerModelUnavailable, backlog.PlanningBlockerQuotaPoolUnavailable, backlog.PlanningBlockerNoEligibleWorker, backlog.PlanningBlockerCandidatePolicy, backlog.PlanningBlockerCapacityDeadlock, "future-policy"} {
 		t.Run(code, func(t *testing.T) {
 			reader, _ := planningExplainFixture()
 			at := adminTestNow.Add(time.Minute)

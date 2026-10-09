@@ -46,7 +46,10 @@ func (v view) roleQuotaSnapshot() RoleQuotaSnapshot {
 				}
 			}
 		}
-		snapshot.Pools[pool.ID] = domain.RouteRankPool{ID: pool.ID, Admission: state, Windows: windows}
+		// Concurrency is ranking evidence too: a pool at its limit ranks in the
+		// saturated band below every pool with room.
+		snapshot.Pools[pool.ID] = domain.RouteRankPool{ID: pool.ID, Admission: state, Windows: windows,
+			Active: pool.ActiveAssignments, MaxConcurrent: pool.MaxConcurrent}
 	}
 	return snapshot
 }

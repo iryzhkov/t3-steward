@@ -181,6 +181,38 @@ func (v view) addPlanningExplanation(e *Explanation, attempt *domain.Attempt) {
 	})
 }
 
+// runCapacityDeadlocks reads the capacity-deadlock blockers the last planning
+// pass recorded for a run's tasks. A stale pass reports none: the cycle it saw
+// may already be broken.
+func (v view) runCapacityDeadlocks(runID string) []CapacityDeadlock {
+	if v.planning.at.IsZero() {
+		return nil
+	}
+	maxAge := time.Duration(1<<63 - 1)
+	if v.planning.interval <= maxAge/3 {
+		maxAge = 3 * v.planning.interval
+	}
+	if v.now.Sub(v.planning.at) > maxAge {
+		return nil
+	}
+	var deadlocks []CapacityDeadlock
+	for _, decision := range v.planning.decisions {
+		if decision.WorkflowRunID != runID {
+			continue
+		}
+		for _, blocker := range decision.Blockers {
+			if blocker.Code != backlog.PlanningBlockerCapacityDeadlock {
+				continue
+			}
+			deadlocks = append(deadlocks, CapacityDeadlock{
+				TaskID: decision.TaskID, TaskName: v.tasks[decision.TaskID].Name, AttemptID: decision.AttemptID,
+				HolderID: blocker.OwnerID, Detail: blocker.Detail,
+			})
+		}
+	}
+	return deadlocks
+}
+
 // Choose one stable representative when routes repeat the same worker/code/pool.
 // Prefer the earliest known retry time when their verdict text is identical.
 func planningBlockerLess(a, b Blocker) bool {

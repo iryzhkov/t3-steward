@@ -1395,6 +1395,10 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 	fmt.Fprintf(out, "run: %s\nworkflow: %s (%s)\nproject: %s\nclass: %s\nprogress: %s\nrevision: %d\n",
 		summary.Run.ID, summary.Workflow.Name, summary.Workflow.ID, summary.Workflow.Project,
 		summary.Workflow.Class, summary.Run.Progress, summary.Run.Revision)
+	if lineage := summary.Run.Lineage; lineage != nil {
+		fmt.Fprintf(out, "parent: run %s task %s attempt %s (parent started %s)\n",
+			lineage.ParentRunID, lineage.ParentTaskID, lineage.ParentAttemptID, formatTime(lineage.ParentStartedAt))
+	}
 	taskNames := make(map[string]string, len(detail.Tasks))
 	for _, task := range detail.Tasks {
 		taskNames[task.Task.ID] = task.Task.Name
@@ -1441,6 +1445,9 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 			}
 			fmt.Fprintf(out, "    wait %s %q: settled %s exit=%d at %s%s\n", wait.ID, wait.Name,
 				wait.Outcome, wait.ExitCode, formatTime(settledWaitTime(wait)), waitReasonSuffix(wait.Reason))
+			if deferral := wait.WakeDeferral; deferral != nil {
+				fmt.Fprintf(out, "      wake deferred %s: %s (since %s)\n", deferral.Code, deferral.Detail, formatTime(deferral.ObservedAt))
+			}
 		}
 	}
 	if len(detail.Gates) != 0 {

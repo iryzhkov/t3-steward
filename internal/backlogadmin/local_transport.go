@@ -115,6 +115,10 @@ type LocalSubmissionRequest struct {
 	// it with the principal its own authentication produced, exactly as it does
 	// for every other operation, so a claimed identity is never trusted.
 	Principal string `json:"principal,omitempty"`
+	// Parent is set when the client runs inside a Steward task: the run, task
+	// and attempt it is running as. The coordinator checks the claim against
+	// its own records and records the run's lineage from that, never from this.
+	Parent *domain.SubmissionParent `json:"parent,omitempty"`
 }
 
 type LocalSubmissionResponse struct {

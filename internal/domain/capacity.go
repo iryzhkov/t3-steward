@@ -482,7 +482,10 @@ type PlacementDecision struct {
 	Rejections          []PlacementRejection  `json:"rejections,omitempty"`
 	Scores              []PlacementScore      `json:"scores,omitempty"`
 	Snapshots           []CapacitySnapshotRef `json:"snapshots,omitempty"`
-	DecidedAt           time.Time             `json:"decidedAt"`
+	// RouteReresolution is set when the planner moved a role task off a
+	// saturated quota pool to another candidate of its role.
+	RouteReresolution *RouteReresolution `json:"routeReresolution,omitempty"`
+	DecidedAt         time.Time          `json:"decidedAt"`
 }
 
 // Placed reports whether the decision selected a worker.

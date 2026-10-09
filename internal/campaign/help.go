@@ -85,12 +85,24 @@ schedule occurrences and never grants eligibility or review authority.
 Campaign and schedule roles use route-ranking/v1 after policy, catalog and
 worker eligibility checks, using a coherent coordinator quota snapshot.
 Healthy authorized candidates rank ahead of exhausted, gated or unknown pools.
+A pool at its concurrency limit, counting active and planned assignments, ranks
+in the saturated band: below every pool with room, above gated pools.
 Equal bands retain policy order, with review diversity soft within a usable band.
-Receipts retain ranking version, candidate bands, pools and reasons. Missing or
+Receipts retain ranking version, candidate bands, pools and reasons, and each
+candidate's effort. Missing or
 stale quota cannot supply headroom; explicitly disabled checks remain disabled.
 Ranking never grants admission: submission and occurrence admission still check
 quota atomically, including changes after resolution. Explicit pins stay literal.
 New occurrences read fresh quota; prior run selections and templates stay fixed.
+
+At planning time a role task whose first attempt has never started, and whose
+resolved pool is saturated, moves to the best other eligible, ungated candidate
+of its receipt whose pool has room and whose effort is recorded. The
+assignment's placement records the move, the pools and the reason, and campaign
+explain prints it. Retries, started attempts, tasks with review-independence
+constraints, producers of constrained downstream reviews and explicit model or
+worker pins are never moved. Unpinned task run --role submissions retain their
+role. An effort override cannot exceed the alternative candidate's policy effort.
 
 
 Multi-task work is authored as a static version 2 DAG. Every task declared in
@@ -462,6 +474,25 @@ Recovery:
   no-configured-route        add the instance and model to an eligible worker
   catalog-digest-mismatch    t3-steward worker enroll <worker> --current-catalog --reason TEXT   (on the coordinator host)
 
+After submission, campaign explain says why a ready task has not started.
+executor-capacity and quota-pool-concurrency mean its worker or pool is full. A
+task parked on a task-bound wait holds neither, nor CPU or memory: it keeps only
+its workspace on its worker. capacity-deadlock means every slot the task can
+use is held by attempts waiting on it, or on work blocked the same way; Steward
+changes nothing, and triage lists it for an operator.
+
+A parked task whose wait has settled resumes on the same worker, ahead of work
+that became ready after the wait settled. Until a slot is free it waits, never
+fails, and says why: wake-executor-capacity, wake-pool-concurrency,
+wake-quota-admission, wake-worker-unavailable (the worker holding its workspace
+is away; a worker that returns without the execution abandons the wake) or
+wake-yields-to-older-work.
+
+A run submitted from inside a task (task run, campaign submit or review) records
+that task's attempt as its parent, which campaign show prints. While the parent
+is live, the run is planned as if ready when the parent started, so newer root
+work cannot take the capacity it needs.
+
 Exit codes: 0 when the campaign is ready or accepted_waiting, 8 when it is
 impossible, and the transport classes 3 to 7 when the coordinator could not be
 reached. --json prints the whole matrix; read schemaVersion first.
@@ -716,12 +747,24 @@ schedule occurrences and never grants eligibility or review authority.
 Campaign and schedule roles use route-ranking/v1 after policy, catalog and
 worker eligibility checks, using a coherent coordinator quota snapshot.
 Healthy authorized candidates rank ahead of exhausted, gated or unknown pools.
+A pool at its concurrency limit, counting active and planned assignments, ranks
+in the saturated band: below every pool with room, above gated pools.
 Equal bands retain policy order, with review diversity soft within a usable band.
-Receipts retain ranking version, candidate bands, pools and reasons. Missing or
+Receipts retain ranking version, candidate bands, pools and reasons, and each
+candidate's effort. Missing or
 stale quota cannot supply headroom; explicitly disabled checks remain disabled.
 Ranking never grants admission: submission and occurrence admission still check
 quota atomically, including changes after resolution. Explicit pins stay literal.
 New occurrences read fresh quota; prior run selections and templates stay fixed.
+
+At planning time a role task whose first attempt has never started, and whose
+resolved pool is saturated, moves to the best other eligible, ungated candidate
+of its receipt whose pool has room and whose effort is recorded. The
+assignment's placement records the move, the pools and the reason, and campaign
+explain prints it. Retries, started attempts, tasks with review-independence
+constraints, producers of constrained downstream reviews and explicit model or
+worker pins are never moved. Unpinned task run --role submissions retain their
+role. An effort override cannot exceed the alternative candidate's policy effort.
 
 
 

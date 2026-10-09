@@ -402,6 +402,20 @@ type WorkflowSummary struct {
 	Run      domain.WorkflowRun `json:"run"`
 	Workflow domain.Workflow    `json:"workflow"`
 	Progress Progress           `json:"progress"`
+	// CapacityDeadlocks lists this run's ready tasks that the last fresh
+	// planning pass found blocked only by capacity held by attempts waiting on
+	// this run. It is explanation for triage; nothing acts on it.
+	CapacityDeadlocks []CapacityDeadlock `json:"capacityDeadlocks,omitempty"`
+}
+
+// CapacityDeadlock is one capacity-deadlock planning blocker of a run's task.
+type CapacityDeadlock struct {
+	TaskID    string `json:"taskId"`
+	TaskName  string `json:"taskName,omitempty"`
+	AttemptID string `json:"attemptId"`
+	// HolderID is one attempt holding the capacity the task needs.
+	HolderID string `json:"holderId,omitempty"`
+	Detail   string `json:"detail"`
 }
 
 type WorkflowDetail struct {
@@ -449,6 +463,10 @@ type TaskWaitDetail struct {
 	ExitCode  int        `json:"exitCode,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
 	SettledAt *time.Time `json:"settledAt,omitempty"`
+	// WakeDeferral says why a settled wait has not resumed its attempt yet,
+	// for example a full worker or a pool at its limit. It is absent once the
+	// wake is applied.
+	WakeDeferral *domain.TaskWaitWakeDeferral `json:"wakeDeferral,omitempty"`
 }
 
 // GateDetail is one gate of a supervised run and, while it is pending, the

@@ -169,15 +169,18 @@ type WorkflowRun struct {
 	// the sink because both are coordinator-owned state that belongs to the
 	// run rather than to any task, and outside the worker DAG so an overseer
 	// cannot deadlock behind its own review gate.
-	Supervision      *SupervisionRecord `json:"supervision,omitempty"`
-	ScheduleID       string             `json:"scheduleId,omitempty"`
-	TriggerID        string             `json:"triggerId,omitempty"`
-	Progress         ProgressState      `json:"progress"`
-	InputArtifactIDs []string           `json:"inputArtifactIds,omitempty"`
-	Revision         int64              `json:"revision"`
-	CreatedAt        time.Time          `json:"createdAt"`
-	UpdatedAt        time.Time          `json:"updatedAt"`
-	CompletedAt      *time.Time         `json:"completedAt,omitempty"`
+	Supervision *SupervisionRecord `json:"supervision,omitempty"`
+	// Lineage names the task attempt this run was submitted from, or is nil
+	// for a root run.
+	Lineage          *RunLineage   `json:"lineage,omitempty"`
+	ScheduleID       string        `json:"scheduleId,omitempty"`
+	TriggerID        string        `json:"triggerId,omitempty"`
+	Progress         ProgressState `json:"progress"`
+	InputArtifactIDs []string      `json:"inputArtifactIds,omitempty"`
+	Revision         int64         `json:"revision"`
+	CreatedAt        time.Time     `json:"createdAt"`
+	UpdatedAt        time.Time     `json:"updatedAt"`
+	CompletedAt      *time.Time    `json:"completedAt,omitempty"`
 }
 
 // ArtifactDeclaration names an output a task promises to retain.

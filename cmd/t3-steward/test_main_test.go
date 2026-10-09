@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 // CLI tests must never discover the operator's coordinator, credentials or
@@ -18,6 +20,9 @@ import (
 // otherwise every run downloads the module graph again beneath the scratch
 // directory and leaves a read-only tree that RemoveAll cannot delete.
 func TestMain(m *testing.M) {
+	// The suite may run inside a Steward task's workspace, whose identity file
+	// would otherwise make every test submission claim that task as a parent.
+	submissionParentLookup = func() *domain.SubmissionParent { return nil }
 	// Several tests re-execute this test binary as a helper process (the
 	// qualification roles, the idle coordinator RSS child, the remote task-wait
 	// helper). A child inherits the parent's environment, so HOME is already

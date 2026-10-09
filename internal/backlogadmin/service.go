@@ -787,7 +787,8 @@ func (v view) workflowSummaries(filter Filter) []WorkflowSummary {
 		if !ok || !matchesWorkflowFilter(v, run, workflow, filter) {
 			continue
 		}
-		result = append(result, WorkflowSummary{Run: run, Workflow: workflow, Progress: v.progress(run.ID, workflow.ID)})
+		result = append(result, WorkflowSummary{Run: run, Workflow: workflow, Progress: v.progress(run.ID, workflow.ID),
+			CapacityDeadlocks: v.runCapacityDeadlocks(run.ID)})
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].Run.CreatedAt.Equal(result[j].Run.CreatedAt) {
@@ -933,6 +934,10 @@ func (v view) runTaskWaits(runID string) []TaskWaitDetail {
 		if wait.SettledAt != nil {
 			settled := *wait.SettledAt
 			detail.SettledAt = &settled
+		}
+		if wait.WakeDeferral != nil && wait.Settled() && !wait.Woken() {
+			deferral := *wait.WakeDeferral
+			detail.WakeDeferral = &deferral
 		}
 		waits = append(waits, detail)
 	}
@@ -1142,6 +1147,11 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		for _, assignment := range v.records.Assignments {
 			if assignment.AttemptID == attempt.ID && assignment.Placement != nil {
 				explanation.Placement = assignment.Placement
+				if moved := assignment.Placement.RouteReresolution; moved != nil {
+					explanation.Details = append(explanation.Details, fmt.Sprintf(
+						"role %s re-resolved at planning from %s (pool %s) to %s (pool %s, effort %s): %s",
+						moved.Role, moved.FromRoute, moved.FromPool, moved.ToRoute, moved.ToPool, moved.Effort, moved.Reason))
+				}
 				break
 			}
 		}
@@ -1167,6 +1177,19 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		}
 		if attempt.Control == domain.ControlPaused || attempt.Control == domain.ControlPausedUncheckpointed || attempt.Control == domain.ControlDraining {
 			explanation.Blockers = append(explanation.Blockers, Blocker{Code: "control", Detail: "attempt control state is " + string(attempt.Control)})
+		}
+		// A parked attempt whose wait has settled but has not resumed says why:
+		// a full worker, a pool at its limit, an absent worker or older work.
+		for _, wait := range v.taskWaits {
+			if wait.AttemptID != attempt.ID || !wait.Settled() || wait.Woken() || wait.WakeDeferral == nil {
+				continue
+			}
+			deferral := wait.WakeDeferral
+			explanation.Blockers = append(explanation.Blockers, Blocker{
+				Code: deferral.Code, Detail: fmt.Sprintf("wait %s settled; its wake is deferred: %s", wait.ID, deferral.Detail),
+				WorkerID: deferral.WorkerID, QuotaPoolID: deferral.PoolID,
+			})
+			break
 		}
 	}
 	for _, dependency := range task.Needs {
