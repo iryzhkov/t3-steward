@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 const exactRefFixtureRef = "refs/heads/steward/run-x/task-y/cp-1"
@@ -132,7 +134,7 @@ func TestResolveExactRefTimesOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(started) > 10*time.Second {
+	if time.Since(started) > testtiming.Bound(10*time.Second) {
 		t.Fatal("the resolution was not bounded by its timeout")
 	}
 	if resolution.Found || resolution.Class != RepositoryProbeTimeout {

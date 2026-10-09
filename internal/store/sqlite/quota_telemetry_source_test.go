@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 func TestQuotaTelemetrySourceAuditTailAfterSequence(t *testing.T) {
@@ -113,14 +114,14 @@ func TestQuotaTelemetrySourceIsQueryOnly(t *testing.T) {
 	if _, err := writer.ExecContext(ctx, `INSERT INTO kv(key, value) VALUES ('held', 'x')`); err != nil {
 		t.Fatal(err)
 	}
-	readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	readCtx, cancel := context.WithTimeout(ctx, testtiming.Bound(2*time.Second))
 	defer cancel()
 	started := time.Now()
 	maximum, err := source.MaxAuditSequence(readCtx)
 	if err != nil || maximum != 1 {
 		t.Fatalf("read during an open write transaction = %d, %v; want 1", maximum, err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
+	if elapsed := time.Since(started); elapsed > testtiming.Bound(time.Second) {
 		t.Fatalf("read waited %s for the writer", elapsed)
 	}
 	if _, err := writer.ExecContext(ctx, `INSERT INTO kv(key, value) VALUES ('held-2', 'x')`); err != nil {
