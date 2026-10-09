@@ -241,6 +241,7 @@ func TestPinnedReceiptPreservesCausesAndReplay(t *testing.T) {
 	tests := []struct {
 		name, band, reason, changedReading, want string
 	}{
+		{"saturated", "saturated", "has 8 active or planned assignments at its concurrency limit of 8 (saturated)", "has 15 active or planned assignments at its concurrency limit of 12 (saturated)", "at its concurrency limit (saturated)"},
 		{"stale", "unknown", "stale primary (unknown); codex-pool quota stale, observed 2h0m0s ago (maximum age 1h0m0s)", "stale primary (unknown); codex-pool quota stale, observed 3h0m0s ago (maximum age 1h0m0s)", "stale primary (unknown); codex-pool quota stale (maximum age 1h0m0s)"},
 		{"missing", "unknown", "missing primary (unknown); codex-pool quota missing (maximum age 1h0m0s)", "", "missing primary (unknown); codex-pool quota missing (maximum age 1h0m0s)"},
 		{"unknown buckets", "unknown", "quota unknown (unknown); quota unknown for every candidate; policy order", "", "quota unknown (unknown); quota unknown for every candidate; policy order"},
@@ -286,7 +287,19 @@ func TestPinnedReceiptPreservesCausesAndReplay(t *testing.T) {
 			if tt.changedReading == "" {
 				return
 			}
-			second, err := policySnapshotInputs(pinnedinput.Snapshot{}, p, []policySelection{makeSelection(tt.changedReading)})
+			changed := makeSelection(tt.changedReading)
+			pinnedBefore, err := json.Marshal(retained)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pinnedAfter, err := json.Marshal(pinnedRankedSelection(changed))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(pinnedBefore) != string(pinnedAfter) {
+				t.Fatalf("volatile readings changed pinned bytes: %s != %s", pinnedBefore, pinnedAfter)
+			}
+			second, err := policySnapshotInputs(pinnedinput.Snapshot{}, p, []policySelection{changed})
 			if err != nil {
 				t.Fatal(err)
 			}

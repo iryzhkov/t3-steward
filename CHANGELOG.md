@@ -6,32 +6,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.11.0-rc120] - 2026-10-09
+## [0.11.0-rc.120] - 2026-10-09
 
-This integration keeps the rc119 database schema and side-store compatibility
+This integration keeps the rc.119 database schema and side-store compatibility
 versions unchanged; it adds no schema migration.
-
-### Fixed
-
-- Make timing tests reliable under load and keep Git maintenance in the foreground.
-- Decode irregular thread-archive activities and bound permanent collection failures.
-- Resolve symlinked temporary directories for verification and gate commands.
-- Derive built-in provider families for standalone review selection.
-- Resume the same provider session after bounded transient infrastructure errors.
-- Validate identifiers, artifact paths and idempotency keys before submission.
-- Release parked executor capacity, explain deferred wakes and capacity deadlocks,
-  and account for concurrency saturation when selecting roles.
-- Use one fresh quota view for task, campaign and schedule role ranking.
-
-The accepted units' detailed entries follow.
-
-No database migration: the schema stays at 42 (V2..V34, V37, V39, V42).
-Admin reads gain a new version, `backlog.admin/v1-extended-read-rc118`,
-which this release's clients ask for first; an rc.117 client's
-`backlog.admin/v1-extended-read-rc117` read now keeps the exact rc.117
-response shape, so rc.117 clients keep working against this coordinator,
-and this release's clients fall back step by step against an rc.117, rc.116
-or rc.115 coordinator.
 
 ### Added
 
@@ -118,79 +96,9 @@ or rc.115 coordinator.
   explicit model and worker pins stay fixed. Role receipts record each
   candidate's `effort`, and alternatives without a policy ceiling or below
   the task's effort override are skipped.
-- M16-4 review round budgets and escalation: a task's `review.round_limit`
-  defaults to 2 for routine work and 3 for risky work, which is also its
-  maximum, and is frozen with the review authority at the first
-  checkpoint. Every allocated round counts, including cancelled and
-  timed-out rounds and rounds of earlier attempts. When completion needs a
-  new round but the budget is spent, the review gate fails as
-  `review-round-limit-exhausted` instead of `review-not-accepted`, naming
-  the rounds used, the limit, the latest verdict and the remedy `campaign
-  rerun <run> --from <task>`, which starts a new run with a fresh budget.
-  Output changes: the `reviewGate` object in `task result`, `task show`,
-  `backlog explain` and diagnose JSON gains `roundsUsed`, `roundLimit` and
-  `newRoundNeeded`, and the text lines name the budget. `triage` lists a
-  `review-round-limit` action with the rerun command for each latest failed
-  attempt with that code, including in settled runs, and clears it once a
-  run's recorded rerun provenance names that source run and task. Pending
-  review members whose executor ended (run or attempt ended or superseded,
-  assignment ownership lost, review deadline reached) are now cancelled
-  automatically with that reason, under the coordinator epoch fence. See
-  docs/m16-review-round-limits.md.
-- M17-3 roles for campaigns and schedules: a workflow or task may declare
-  `role:` (with optional `options: {effort: low|medium|high}`) instead of
-  `routes:`. The coordinator resolves each role task against its own route
-  policy, freezes the selection at submission (rerun reuses it) and
-  resolves afresh for each schedule occurrence; an occurrence it cannot
-  resolve is suppressed as `role-unresolved`. Review-type role tasks prefer
-  a candidate outside the producers' provider families (soft review
-  diversity); explicit routes are never changed. Receipts explain skipped
-  policy candidates. Output changes: `campaign check` and `campaign show`
-  (text and JSON) report each role selection with its route, effort, policy
-  digest, candidate verdicts and diversity outcome; task and run JSON gain
-  `role`, `roleEffort`, `roleSelection` and `routeSelections`; schedule
-  triggers gain `roleResolutionError`. Role selection ranks candidates with
-  `route-ranking/v1` from the same quota view as `task run` (see Fixed);
-  the selected route still passes quota admission at submission. A `role:` manifest is refused against a
-  coordinator older than this release with an upgrade remedy; workers still
-  receive concrete routes. See docs/route-policy.md.
-- A3 standalone review of commits and retained failed commits: `review
-  --commit REF [--base REF]` reviews one commit reachable on the catalog
-  project's remote, and `review --bundle FILE` a single-head Git bundle
-  (for example from `campaign commit export`) whose prerequisites are on
-  that remote. Both need a coordinator of this release or newer; older
-  coordinators are refused before submission (docs/review.md). When an
-  attempt fails only its own verification commands, its declared commits
-  are retained under the attempt's quarantine ref (`refs/campaigns-quarantine/...`) with a record
-  naming the failed attempt and its verification failures, and are never
-  published as the task's campaign output. Any other failure, including a
-  worker-owned gate failure, still withholds the commit. `campaign rerun
-  --use-commit` explicitly reuses such a commit in a new run; text and JSON
-  rerun receipts record it under `provenance.reusedCommits` (commit, failed
-  source attempt, first verification failure), as do consumer commit
-  provenance and `campaign explain`. Workers must advertise
-  `campaign-failed-commit-v1` to produce or consume failed candidates, so
-  older bundle-only workers are never offered a task that carries one.
-  `--use-commit` needs a coordinator of this release or newer
-  (docs/architecture/adr-h5-recovery-provenance-and-evidence.md).
 
 ### Changed
 
-- Release note for rc.119, which changed the shape of derived coordinator
-  identities: new reruns, clones, graph additions, scheduled attempts and
-  recovery retries are named `<kind>-<32 hex>` (for example
-  `run-0677c79b49a37db7d761f68d1a4773ff`) instead of the colon forms
-  `run:rerun:<key>`, `run:clone:<key>`, `task:rerun:<key>:<index>`,
-  `task:clone:...`, `task:graph:<key>`, `input:rerun:...`, `attempt:<task>:1`,
-  `attempt:<run>:<task>:1` and `attempt:recovery:<digest>`. Consumers that find
-  a rerun or clone by its `run:rerun:` or `run:clone:` prefix, or that parse the
-  key back out of an ID, must adapt: read the new run from the command's
-  `runId` JSON field or its first `run <id>` line, and the key from the
-  graph's `rerunOf.idempotencyKey`. Scripts and dashboards that grep feed or
-  log lines for `run:rerun:` no longer match new reruns; the qualification
-  harness (`scripts/qualification/recovery_provenance.py`) was adapted in
-  rc.119. Existing records keep their colon IDs and stay valid references.
-  See docs/safe-identities.md.
 - `route-ranking/v1` ranks a pool at its concurrency limit in a new
   `saturated` band, below every pool with room and above `gated`. Saturation
   only ever makes a band worse, and callers that supply no concurrency
@@ -325,6 +233,94 @@ or rc.115 coordinator.
   collection tests start a collection under a collection pass instead of
   cutting a 50ms pass short. `make test-stress` runs these tests repeatedly
   under the race detector while busy loops saturate their CPUs.
+
+## [0.11.0-rc.119]
+
+### Changed
+
+- Release note for rc.119, which changed the shape of derived coordinator
+  identities: new reruns, clones, graph additions, scheduled attempts and
+  recovery retries are named `<kind>-<32 hex>` (for example
+  `run-0677c79b49a37db7d761f68d1a4773ff`) instead of the colon forms
+  `run:rerun:<key>`, `run:clone:<key>`, `task:rerun:<key>:<index>`,
+  `task:clone:...`, `task:graph:<key>`, `input:rerun:...`, `attempt:<task>:1`,
+  `attempt:<run>:<task>:1` and `attempt:recovery:<digest>`. Consumers that find
+  a rerun or clone by its `run:rerun:` or `run:clone:` prefix, or that parse the
+  key back out of an ID, must adapt: read the new run from the command's
+  `runId` JSON field or its first `run <id>` line, and the key from the
+  graph's `rerunOf.idempotencyKey`. Scripts and dashboards that grep feed or
+  log lines for `run:rerun:` no longer match new reruns; the qualification
+  harness (`scripts/qualification/recovery_provenance.py`) was adapted in
+  rc.119. Existing records keep their colon IDs and stay valid references.
+  See docs/safe-identities.md.
+
+## [0.11.0-rc.118]
+
+No database migration: the schema stays at 42 (V2..V34, V37, V39, V42).
+Admin reads gain a new version, `backlog.admin/v1-extended-read-rc118`,
+which this release's clients ask for first; an rc.117 client's
+`backlog.admin/v1-extended-read-rc117` read now keeps the exact rc.117
+response shape, so rc.117 clients keep working against this coordinator,
+and this release's clients fall back step by step against an rc.117, rc.116
+or rc.115 coordinator.
+
+### Added
+
+- M16-4 review round budgets and escalation: a task's `review.round_limit`
+  defaults to 2 for routine work and 3 for risky work, which is also its
+  maximum, and is frozen with the review authority at the first
+  checkpoint. Every allocated round counts, including cancelled and
+  timed-out rounds and rounds of earlier attempts. When completion needs a
+  new round but the budget is spent, the review gate fails as
+  `review-round-limit-exhausted` instead of `review-not-accepted`, naming
+  the rounds used, the limit, the latest verdict and the remedy `campaign
+  rerun <run> --from <task>`, which starts a new run with a fresh budget.
+  Output changes: the `reviewGate` object in `task result`, `task show`,
+  `backlog explain` and diagnose JSON gains `roundsUsed`, `roundLimit` and
+  `newRoundNeeded`, and the text lines name the budget. `triage` lists a
+  `review-round-limit` action with the rerun command for each latest failed
+  attempt with that code, including in settled runs, and clears it once a
+  run's recorded rerun provenance names that source run and task. Pending
+  review members whose executor ended (run or attempt ended or superseded,
+  assignment ownership lost, review deadline reached) are now cancelled
+  automatically with that reason, under the coordinator epoch fence. See
+  docs/m16-review-round-limits.md.
+- M17-3 roles for campaigns and schedules: a workflow or task may declare
+  `role:` (with optional `options: {effort: low|medium|high}`) instead of
+  `routes:`. The coordinator resolves each role task against its own route
+  policy, freezes the selection at submission (rerun reuses it) and
+  resolves afresh for each schedule occurrence; an occurrence it cannot
+  resolve is suppressed as `role-unresolved`. Review-type role tasks prefer
+  a candidate outside the producers' provider families (soft review
+  diversity); explicit routes are never changed. Receipts explain skipped
+  policy candidates. Output changes: `campaign check` and `campaign show`
+  (text and JSON) report each role selection with its route, effort, policy
+  digest, candidate verdicts and diversity outcome; task and run JSON gain
+  `role`, `roleEffort`, `roleSelection` and `routeSelections`; schedule
+  triggers gain `roleResolutionError`. Role selection uses policy order,
+  not the quota ranking of `task run`; the selected route still passes
+  quota admission at submission. A `role:` manifest is refused against a
+  coordinator older than this release with an upgrade remedy; workers still
+  receive concrete routes. See docs/route-policy.md.
+- A3 standalone review of commits and retained failed commits: `review
+  --commit REF [--base REF]` reviews one commit reachable on the catalog
+  project's remote, and `review --bundle FILE` a single-head Git bundle
+  (for example from `campaign commit export`) whose prerequisites are on
+  that remote. Both need a coordinator of this release or newer; older
+  coordinators are refused before submission (docs/review.md). When an
+  attempt fails only its own verification commands, its declared commits
+  are retained under the attempt's quarantine ref (`refs/campaigns-quarantine/...`) with a record
+  naming the failed attempt and its verification failures, and are never
+  published as the task's campaign output. Any other failure, including a
+  worker-owned gate failure, still withholds the commit. `campaign rerun
+  --use-commit` explicitly reuses such a commit in a new run; text and JSON
+  rerun receipts record it under `provenance.reusedCommits` (commit, failed
+  source attempt, first verification failure), as do consumer commit
+  provenance and `campaign explain`. Workers must advertise
+  `campaign-failed-commit-v1` to produce or consume failed candidates, so
+  older bundle-only workers are never offered a task that carries one.
+  `--use-commit` needs a coordinator of this release or newer
+  (docs/architecture/adr-h5-recovery-provenance-and-evidence.md).
 
 ## [0.11.0-rc.117] - 2026-10-07
 

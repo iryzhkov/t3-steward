@@ -452,6 +452,7 @@ var pinnedRankingMetrics = []struct {
 	pattern     *regexp.Regexp
 	replacement string
 }{
+	{regexp.MustCompile(` has [0-9]+ active or planned assignments at its concurrency limit of [0-9]+ \(saturated\)`), " at its concurrency limit (saturated)"},
 	{regexp.MustCompile(`; maximum used [^ ;]+%`), ""},
 	{regexp.MustCompile(`, observed [^ ]+ ago`), ""},
 	{regexp.MustCompile(` until [^ ]+ \(gated\)`), " (gated)"},
