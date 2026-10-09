@@ -171,6 +171,13 @@ const CapabilityQuotaObservations = "quota-observations-v1"
 // gated the way CapabilityQuotaObservations is, for the same strict decoding.
 const CapabilityTurnEndCommands = "turn-end-commands-v1"
 
+// CapabilityProviderResume advertises that this worker build resumes the
+// same session after a provider-side error ends an attempt's turn, honours
+// the coordinator's SnapshotRequest.ProviderResume, and reports the error in
+// the journal excerpt's ProviderError field when asked. It is gated the way
+// CapabilityTurnEndCommands is, for the same strict decoding.
+const CapabilityProviderResume = "provider-resume-v1"
+
 // CapabilityResourceTelemetry gates optional fields for peers with strict JSON decoding.
 const CapabilityResourceTelemetry = "resource-telemetry-v1"
 
@@ -233,6 +240,55 @@ type SnapshotRequest struct {
 	// the quota observations QuotaObservationsWanted asks for. It is sent only
 	// to a worker advertising CapabilityQuotaRunway.
 	QuotaRunwayWanted bool `json:"quotaRunwayWanted,omitempty"`
+	// ProviderResume is the coordinator's bound on in-session resumes after
+	// provider errors and the quota pools that admit no resumed turn now. It
+	// also asks for the journal excerpt's ProviderError field. It is sent
+	// only to a worker advertising CapabilityProviderResume.
+	ProviderResume *ProviderResumePolicy `json:"providerResume,omitempty"`
+}
+
+// ProviderResumePolicy is the coordinator's part of the in-session resume:
+// the most resumes, and the longest backoff before one, a worker's own
+// schedule may use, and the quota pools whose admission is closed.
+type ProviderResumePolicy struct {
+	MaxResumes      int   `json:"maxResumes"`
+	MaxDelaySeconds int64 `json:"maxDelaySeconds"`
+	// ClosedPools is the complete list of pools that do not admit work now.
+	// A resume due on one of them waits, with the pool as its reason.
+	ClosedPools []ClosedQuotaPool `json:"closedPools,omitempty"`
+}
+
+// ClosedQuotaPool is one quota pool whose admission is closed or draining.
+type ClosedQuotaPool struct {
+	PoolID    string                `json:"poolId"`
+	Admission domain.AdmissionState `json:"admission"`
+	Reason    string                `json:"reason,omitempty"`
+}
+
+// MaxClosedQuotaPools bounds the closed pools one statement lists.
+const MaxClosedQuotaPools = 256
+
+// validateProviderResume checks the coordinator's resume policy before a
+// worker applies it.
+func validateProviderResume(policy *ProviderResumePolicy) error {
+	if policy == nil {
+		return nil
+	}
+	if policy.MaxResumes < 0 || policy.MaxResumes > domain.MaxProviderResumes {
+		return fmt.Errorf("worker protocol: provider resume maximum %d is outside 0 to %d", policy.MaxResumes, domain.MaxProviderResumes)
+	}
+	if policy.MaxDelaySeconds < 0 || policy.MaxDelaySeconds > int64(domain.MaxProviderResumeDelay/time.Second) {
+		return fmt.Errorf("worker protocol: provider resume delay maximum %ds is outside 0 to %s", policy.MaxDelaySeconds, domain.MaxProviderResumeDelay)
+	}
+	if len(policy.ClosedPools) > MaxClosedQuotaPools {
+		return fmt.Errorf("worker protocol: %d closed quota pools exceed the limit of %d", len(policy.ClosedPools), MaxClosedQuotaPools)
+	}
+	for _, pool := range policy.ClosedPools {
+		if pool.PoolID == "" || len(pool.PoolID) > 256 || len(pool.Reason) > 1024 {
+			return errors.New("worker protocol: closed quota pool identity or reason is invalid")
+		}
+	}
+	return nil
 }
 
 const MaxUsageDelivery = 128
@@ -274,6 +330,9 @@ func ValidateSnapshotRequest(request SnapshotRequest) error {
 		seen[parked.AssignmentID] = struct{}{}
 	}
 	if err := validateSessionStates(request); err != nil {
+		return err
+	}
+	if err := validateProviderResume(request.ProviderResume); err != nil {
 		return err
 	}
 	return validateRetainedCampaignRuns(request)

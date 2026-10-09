@@ -38,6 +38,29 @@ or rc.115 coordinator.
   `testutil.RealTempDir`, `testutil.RerunWithSymlinkedTempDir` reruns the
   affected tests in a child with a symlinked TMPDIR, and Linux CI runs the
   plain test pass with TMPDIR a symlink.
+- In-session resume after provider-side errors (R2, feedback 148): when a
+  task's provider turn ends because the model is at capacity, the provider
+  is overloaded, rate limiting or failing on its servers, or T3 leaves the
+  session in error or not ready, the worker records an infrastructure
+  failure event on the attempt and resumes the same T3 thread in the same
+  workspace after a backoff, with a message pointing the agent at
+  `continuation.md`. A turn T3 left running under a session it moved to
+  error now counts as ended; such attempts used to read "active running"
+  forever. The schedule is the worker's `backlog_v2.provider_resume.backoff`
+  (default 1m, 5m, 15m), capped by the coordinator's `max_resumes` (default
+  3, 0 disables) and `max_delay`; a resume due while the route's pool is
+  closed or draining, or the host bucket is draining or stopped, waits with a
+  `quota-closed:` reason. Coordinator limits and closed pools survive worker
+  restarts, and a lowered maximum also gates already scheduled resumes.
+  Once the budget is spent the attempt fails as
+  `infrastructure: provider error (KIND) after N of M in-session resumes:
+  ...`, keeping its workspace, continuation checkpoint and `wip.bundle`.
+  Agent-ended turns, failed commands or tests, stops, policy refusals and
+  over-limit prompts are never resumed. `backlog explain`, `task show`,
+  `campaign show` and `task result` (new `providerError` JSON field) show the
+  event, and `triage` lists held attempts as `provider-error`. Gated by the
+  worker capability `provider-resume-v1`; older workers and coordinators see
+  no new fields.
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first

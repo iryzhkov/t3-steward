@@ -40,12 +40,17 @@ func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) er
 	// Session states ride the same statement and are applied whether or not it
 	// reports parked assignments; the titles they drive are updated after the
 	// reconcile that Snapshot performs.
+	policy := cloneProviderResumePolicy(request.ProviderResume)
 	if err := r.journal.update(func(state *journalState) error {
 		applySessionStates(state, request)
+		state.ProviderResumePolicy = policy
 		return nil
 	}); err != nil {
 		return err
 	}
+	// Publish only after persistence succeeds, so the next reconcile and a
+	// restart enforce the same statement.
+	r.providerResume.Store(policy)
 	if !request.ParkedReported {
 		// An older coordinator says nothing about parked assignments. Keeping
 		// the previous statement would freeze it forever, so the worker goes on

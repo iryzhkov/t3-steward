@@ -1128,9 +1128,16 @@ func (v view) explanation(runID, taskID string) (Explanation, bool) {
 		if found, ok := v.assignments[attempt.AssignmentID]; ok {
 			assignment = &found
 		}
-		if evidence := v.attemptEvidence(*attempt, assignment); evidence != nil && evidence.TurnEnd != "" &&
+		evidence := v.attemptEvidence(*attempt, assignment)
+		if evidence != nil && evidence.TurnEnd != "" &&
 			(!attempt.Progress.Terminal() || !strings.HasPrefix(evidence.TurnEnd, "waiting for ")) {
 			explanation.Details = append(explanation.Details, "turn end: "+evidence.TurnEnd)
+		}
+		// A provider error the worker is resuming from is an infrastructure
+		// failure event of the attempt; one it recovered from or failed on
+		// stays visible as history.
+		if evidence != nil && evidence.ProviderError != nil {
+			explanation.Details = append(explanation.Details, "provider error: "+evidence.ProviderError.Summary())
 		}
 		for _, assignment := range v.records.Assignments {
 			if assignment.AttemptID == attempt.ID && assignment.Placement != nil {

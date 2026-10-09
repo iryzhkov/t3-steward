@@ -1416,6 +1416,11 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		if task.Attempt != nil && task.Attempt.Failure != "" {
 			fmt.Fprintf(out, "    failure: %s\n", task.Attempt.Failure)
 		}
+		// A provider error the worker is resuming from is why a running task
+		// is not moving; it is printed here so it is not read as progress.
+		if task.Evidence != nil && task.Evidence.ProviderError != nil {
+			fmt.Fprintf(out, "    provider error: %s\n", task.Evidence.ProviderError.Summary())
+		}
 		// The run's answer names a checkpoint only where one exists; task
 		// show and explain also say when there is none.
 		if task.Checkpoint != nil {
@@ -1570,6 +1575,9 @@ func renderAttemptEvidence(out io.Writer, detail *backlogadmin.TaskDetail) {
 	}
 	if evidence.TurnEnd != "" {
 		fmt.Fprintf(out, "turn end: %s\n", evidence.TurnEnd)
+	}
+	if evidence.ProviderError != nil {
+		fmt.Fprintf(out, "provider error: %s\n", evidence.ProviderError.Summary())
 	}
 	if evidence.Failure != "" && (detail.Attempt == nil || detail.Attempt.Failure != evidence.Failure) {
 		fmt.Fprintf(out, "worker failure: %s\n", evidence.Failure)

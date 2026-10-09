@@ -240,6 +240,73 @@ assignment outstanding, so the same activation is offered again once the worker
 is back on a capable release. Unsupervised campaigns are unaffected and require
 no capability at all.
 
+## Turns a provider error ends
+
+A task's provider turn can end because of the provider rather than the task:
+the model is at capacity, the provider is overloaded or rate limiting, its
+servers fail transiently, or T3 leaves the provider session in error or not
+ready. The worker reads T3's own record of the thread (the turn's runtime
+error, a refused turn start, the session's status and last error) when a turn
+ends with nothing parking the attempt. A turn T3 still calls running under a
+session it moved to error at or after the turn's request is read as ended too;
+before this release such an attempt was reported active and running for good.
+
+Such a turn is not collected. The worker records the error on the attempt as
+an infrastructure failure event and, after a backoff, sends the same T3 thread,
+in the same workspace, a short message telling the agent to read
+`continuation.md` and continue. The resume is claimed in the worker journal
+before it is sent and carries T3 identities derived from the dispatch token and
+the ended turn, so a retry or a restart never sends a second one for the same
+turn. A resumed turn that then ends normally is collected as usual.
+
+The backoff is the worker host's own `backlog_v2.provider_resume.backoff`
+(default `[1m, 5m, 15m]`); its length is the resume budget per attempt. The
+coordinator caps it on every exchange with its `max_resumes` (default 3; 0
+disables resuming) and `max_delay` (default and ceiling 6h); neither side may
+exceed 10 resumes. The worker journals the last coordinator policy, including
+closed pools, and restores it after a restart until a new exchange replaces it.
+A worker with no recorded policy uses its own schedule under those ceilings.
+Pending resumes also recheck the current maximum before sending: disabling
+resumes or lowering the maximum below a pending claim exhausts that attempt's
+resume budget without sending the pending turn.
+
+```yaml
+backlog_v2:
+  provider_resume:
+    backoff: [1m, 5m, 15m]   # worker host: delay before each resume
+    max_resumes: 3           # coordinator: most resumes per attempt
+    max_delay: 30m           # coordinator: longest single delay
+```
+
+Quota admission applies to the resumed turn. A resume that is due while the
+coordinator reports the route's quota pool closed or draining, or while this
+host's watchdog bucket for the route is in its drain or stop phase, waits with
+a reason starting `quota-closed:` and is sent once quota reopens.
+
+Only when the budget is spent does the attempt fail, with a reason that starts
+with the failure class: `infrastructure: provider error (KIND) after N of M
+in-session resumes: DETAIL`, followed by the declared outputs present or
+missing and, for a task that declares a commit, the `wip.bundle` snapshot. The
+workspace and its `continuation.md` checkpoint stay on the worker for the
+attempt's retention, so a retry can start from them. Retrying the whole attempt
+is the failure-classification policy's decision, not this one's.
+
+Nothing else is resumed this way: a turn the agent ended, a failed command or
+test, a stop, a thread waiting for input, a turn error that names no provider
+condition, and a request the provider refused for what it asked (a prompt over
+the input limit, a credential or permission error, a policy refusal, an
+exhausted usage plan) are the task's own ending.
+
+`backlog explain` and `backlog task show` (a `provider error:` line), `campaign
+show` (under the task) and `task result` (text and the `providerError` JSON
+field) show the event, for example `capacity (infrastructure): Selected model is
+at capacity; resume 1 of 3 of the same session at 2026-10-07T05:41:00Z`.
+`triage` lists every attempt the worker still holds whose session ended with a
+provider error as `provider-error`, as an action while the resume waits for
+quota. These reports need the worker build capability `provider-resume-v1`; the
+coordinator asks for them, and sends its maximum and the closed pools, only to a
+worker that advertises it.
+
 ## Turns that end while their commands still run
 
 Ending a turn completes a task, so a turn that ends while a command the task

@@ -152,7 +152,7 @@ func newCoordinatorWorkerSessions(
 		workerIDs = append(workerIDs, workerID)
 	}
 	sort.Strings(workerIDs)
-	coordinator := backlog.FleetCoordinator{Store: store}
+	coordinator := backlog.FleetCoordinator{Store: store, ProviderResume: coordinatorProviderResume(settings)}
 	cached := map[string]coordinatorWorkerSession{}
 	skips := make(map[string]*checkpointScanSkips, len(workerIDs))
 	for _, workerID := range workerIDs {

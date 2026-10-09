@@ -26,6 +26,10 @@ func (v view) attemptEvidence(attempt domain.Attempt, assignment *domain.Assignm
 					evidence.ThreadState = observed.Journal.ThreadState
 					evidence.PauseReason = observed.Journal.PauseReason
 					evidence.TurnEnd = observed.Journal.TurnEnd
+					if observed.Journal.ProviderError != nil {
+						providerError := *observed.Journal.ProviderError
+						evidence.ProviderError = &providerError
+					}
 					evidence.Failure = observed.Journal.Failure
 				}
 			}

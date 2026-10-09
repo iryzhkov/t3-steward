@@ -105,19 +105,23 @@ type AttemptRecord struct {
 	// CollectionDeferred is when the attempt's collection first deferred and
 	// why it last did. It is cleared when the attempt leaves collecting, and
 	// reported only while it is collecting.
-	CollectionDeferred *CollectionDeferral                       `json:"collectionDeferred,omitempty"`
-	Assignment         domain.Assignment                         `json:"assignment"`
-	Package            workerproto.ExecutionPackageManifest      `json:"package"`
-	Phase              Phase                                     `json:"phase"`
-	WorkspacePath      string                                    `json:"workspacePath,omitempty"`
-	ThreadID           string                                    `json:"threadId,omitempty"`
-	Failure            string                                    `json:"failure,omitempty"`
-	CommandRequests    map[string]domain.WorkerCommand           `json:"commandRequests,omitempty"`
-	CommandResults     map[string]domain.WorkerAcknowledgement   `json:"commandResults,omitempty"`
-	ThrottleRequests   map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
-	ThrottleResults    map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
-	PendingThrottle    *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
-	PrepareAttempts    int                                       `json:"prepareAttempts,omitempty"`
+	CollectionDeferred *CollectionDeferral `json:"collectionDeferred,omitempty"`
+	// ProviderResume is the in-session resume of the attempt's turns that
+	// ended on a provider-side error: the errors seen, the resumes spent and
+	// the one scheduled.
+	ProviderResume   *ProviderResumeRecord                     `json:"providerResume,omitempty"`
+	Assignment       domain.Assignment                         `json:"assignment"`
+	Package          workerproto.ExecutionPackageManifest      `json:"package"`
+	Phase            Phase                                     `json:"phase"`
+	WorkspacePath    string                                    `json:"workspacePath,omitempty"`
+	ThreadID         string                                    `json:"threadId,omitempty"`
+	Failure          string                                    `json:"failure,omitempty"`
+	CommandRequests  map[string]domain.WorkerCommand           `json:"commandRequests,omitempty"`
+	CommandResults   map[string]domain.WorkerAcknowledgement   `json:"commandResults,omitempty"`
+	ThrottleRequests map[string]domain.ThrottleCommand         `json:"throttleRequests,omitempty"`
+	ThrottleResults  map[string]domain.ThrottleAcknowledgement `json:"throttleResults,omitempty"`
+	PendingThrottle  *domain.ThrottleCommand                   `json:"pendingThrottle,omitempty"`
+	PrepareAttempts  int                                       `json:"prepareAttempts,omitempty"`
 	// Continuation is the attempt's latest continuation.md checkpoint taken
 	// at a turn end or a pause: its digest, size and time, never its content,
 	// which the attempt directory keeps.
@@ -168,6 +172,10 @@ type journalState struct {
 	// restarted worker converges its titles on its first pass.
 	SessionStates         map[string]workerproto.AssignmentSessionState `json:"sessionStates,omitempty"`
 	SessionStatesReported bool                                          `json:"sessionStatesReported,omitempty"`
+
+	// ProviderResumePolicy retains the last coordinator limits and closed pools
+	// across restarts, so a restart cannot admit a previously blocked resume.
+	ProviderResumePolicy *workerproto.ProviderResumePolicy `json:"providerResumePolicy,omitempty"`
 }
 
 type Journal struct {

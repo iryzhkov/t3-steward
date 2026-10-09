@@ -523,7 +523,10 @@ type AttemptEvidence struct {
 	// it: the background commands it is waiting for, or that it could not
 	// look for them on its platform.
 	TurnEnd string `json:"turnEnd,omitempty"`
-	Failure string `json:"failure,omitempty"`
+	// ProviderError is the provider-side error that ended the attempt's
+	// latest turn, with the worker's in-session resume of it.
+	ProviderError *domain.WorkerProviderError `json:"providerError,omitempty"`
+	Failure       string                      `json:"failure,omitempty"`
 	// ObservedAt is when the worker reported this; zero when the worker has
 	// not reported the assignment yet.
 	ObservedAt time.Time `json:"observedAt,omitzero"`

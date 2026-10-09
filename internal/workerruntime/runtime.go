@@ -76,6 +76,11 @@ type Config struct {
 	// keeps working: the daemon's stop_verify_timeout. Zero escalates on the
 	// first reconcile after the notice failed to end the turn.
 	PauseEscalation time.Duration
+	// ProviderResumeBackoff is the delay before each in-session resume of a
+	// turn that ended on a provider-side error; its length is the resume
+	// budget, which the coordinator's maximum may cut. Empty uses
+	// domain.DefaultProviderResumeBackoff.
+	ProviderResumeBackoff []time.Duration
 	// Lifetime bounds work the runtime starts on its own behalf and lets outlive
 	// the call that started it: today, the collection of an attempt, whose
 	// verification commands may run for minutes. It is the worker process's
@@ -119,6 +124,10 @@ type Runtime struct {
 	// reportTurnEnd records that the coordinator asked for turn-end notes on
 	// its last snapshot request, like reportQuota.
 	reportTurnEnd bool
+	// providerResume caches the journalled coordinator policy. Restarts retain
+	// its limits and closed pools until another authenticated exchange replaces
+	// it. A nil policy preserves compatibility with older coordinators.
+	providerResume atomic.Pointer[workerproto.ProviderResumePolicy]
 	// failuresRedacted records that this process has redacted the failure
 	// reasons an earlier release left raw in the journal.
 	failuresRedacted atomic.Bool
@@ -162,7 +171,9 @@ func New(config Config, journal *Journal, driver Driver) (*Runtime, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runtime{config: config, desiredInventory: config.Inventory, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}, nil
+	runtime := &Runtime{config: config, desiredInventory: config.Inventory, journal: journal, driver: driver, log: logger.With("component", "worker-runtime")}
+	runtime.providerResume.Store(state.ProviderResumePolicy)
+	return runtime, nil
 }
 
 // AdvertisedCapabilities merges the capabilities an operator configured for
@@ -207,6 +218,9 @@ func AdvertisedCapabilities(configured []string) []string {
 	}
 	if !slices.Contains(merged, workerproto.CapabilityTurnEndCommands) {
 		merged = append(merged, workerproto.CapabilityTurnEndCommands)
+	}
+	if !slices.Contains(merged, workerproto.CapabilityProviderResume) {
+		merged = append(merged, workerproto.CapabilityProviderResume)
 	}
 	if !slices.Contains(merged, workerproto.CapabilityResourceTelemetry) {
 		merged = append(merged, workerproto.CapabilityResourceTelemetry)
@@ -260,6 +274,9 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 			}
 			if note := collectionDeferredNote(record); r.reportTurnEnd && note != "" && observed.Journal != nil {
 				observed.Journal.TurnEnd = note
+			}
+			if r.providerResume.Load() != nil && record.ProviderResume != nil && observed.Journal != nil {
+				observed.Journal.ProviderError = record.ProviderResume.report()
 			}
 			assignments = append(assignments, observed)
 		}
@@ -1261,6 +1278,12 @@ func (r *Runtime) collectUnlessWaiting(ctx context.Context, id string, record At
 			if err := r.markPhase(id, PhaseStopped, "", record.WorkspacePath, record.ThreadID); err != nil {
 				return err
 			}
+		}
+		// A turn a provider-side error ended is not the end of the task
+		// either: the same session is resumed after a backoff, and only an
+		// error that outlasts every resume fails the attempt.
+		if held, err := r.holdForProviderError(ctx, id, record, endedTurn); held || err != nil {
+			return err
 		}
 		// A turn that ended while commands it started still run is not the
 		// end of the task: the session is told to wait for them, and only a

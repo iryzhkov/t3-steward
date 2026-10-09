@@ -210,7 +210,11 @@ var _ TaskWaitParkStore = (*sqlite.Store)(nil)
 // replaces everything it believed, because an incremental list cannot express
 // "this one is no longer parked" without another message to lose.
 func (c FleetCoordinator) parkedAssignments(ctx context.Context, workerID string) (workerproto.SnapshotRequest, error) {
-	return ParkedAssignmentsFor(ctx, c.Store, workerID)
+	request, err := ParkedAssignmentsFor(ctx, c.Store, workerID)
+	if err == nil && request.ProviderResume != nil {
+		c.ProviderResume.apply(request.ProviderResume)
+	}
+	return request, err
 }
 
 // ParkedAssignmentsFor builds the statement parkedAssignments sends, for any
@@ -249,6 +253,14 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 			sessionTitles = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilitySessionTitles)
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTurnEndCommands) {
 				request.TurnEndWanted = true
+			}
+			// The resume policy likewise goes only to a build that honours it.
+			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityProviderResume) {
+				policy, err := providerResumePolicy(ctx, source)
+				if err != nil {
+					return workerproto.SnapshotRequest{}, err
+				}
+				request.ProviderResume = policy
 			}
 			if snapshot.Sequence > 0 && slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityTaskWaitCollectionFence) {
 				request.ObservedWorkerEpoch = snapshot.WorkerEpoch

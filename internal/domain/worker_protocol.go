@@ -37,11 +37,15 @@ type WorkerJournalExcerpt struct {
 	// is not simply collected: the background commands it is waiting for, or
 	// why it could not look for them on this host. It is sent only when the
 	// coordinator asked for it (workerproto.CapabilityTurnEndCommands).
-	TurnEnd       string    `json:"turnEnd,omitempty"`
-	PackageSHA256 string    `json:"packageSha256"`
-	GraphRevision int64     `json:"graphRevision"`
-	TaskRevision  int64     `json:"taskRevision"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	TurnEnd string `json:"turnEnd,omitempty"`
+	// ProviderError is the provider-side error that ended the attempt's
+	// latest turn and the in-session resume answering it. It is sent only
+	// when the coordinator asked for it (workerproto.CapabilityProviderResume).
+	ProviderError *WorkerProviderError `json:"providerError,omitempty"`
+	PackageSHA256 string               `json:"packageSha256"`
+	GraphRevision int64                `json:"graphRevision"`
+	TaskRevision  int64                `json:"taskRevision"`
+	UpdatedAt     time.Time            `json:"updatedAt"`
 }
 
 type WorkerAssignmentObservation struct {

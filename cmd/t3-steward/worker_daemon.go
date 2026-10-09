@@ -279,6 +279,9 @@ func persistentWorkerOptions(
 		// A local quota stop sends the drain notice first and escalates to the
 		// stop after the window the watchdog itself gives a stop to take effect.
 		PauseEscalation: cfg.Policy.StopVerifyTimeout.D(),
+		// The resume schedule after provider-side errors is this host's own;
+		// the coordinator only caps it, on every exchange.
+		ProviderResumeBackoff: cfg.BacklogV2.ProviderResume.Schedule(),
 		// A collection outlives the exchange or reconcile tick that starts it,
 		// because its verification commands may run for minutes; it ends with
 		// the daemon, never with a request.

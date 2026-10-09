@@ -1111,7 +1111,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		planning: coordinatorPlanner{
 			planningSnapshot: planningSnapshot,
 			settings:         &cfg.BacklogV2,
-			store:            store, coordinator: backlog.FleetCoordinator{Store: store}, epoch: epoch,
+			store:            store, coordinator: backlog.FleetCoordinator{Store: store, ProviderResume: coordinatorProviderResume(cfg.BacklogV2)}, epoch: epoch,
 			maxWorkerSnapshotAge:       cfg.BacklogV2.Freshness.WorkerMaxAge.D(),
 			maxQuotaObservationAge:     cfg.BacklogV2.Freshness.QuotaMaxAge.D(),
 			deadlineRiskWindow:         24 * time.Hour,
