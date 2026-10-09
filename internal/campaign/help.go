@@ -83,14 +83,15 @@ Explicit routes always stay as written. This preference is also applied to
 schedule occurrences and never grants eligibility or review authority.
 
 Campaign and schedule roles use route-ranking/v1 after policy, catalog and
-worker eligibility checks, using a coherent coordinator quota snapshot.
+worker eligibility checks, using the coordinator quota view task run ranks with:
+one snapshot ranks a role alike in task run, campaign check, submit and schedules.
 Healthy authorized candidates rank ahead of exhausted, gated or unknown pools.
 A pool at its concurrency limit, counting active and planned assignments, ranks
 in the saturated band: below every pool with room, above gated pools.
 Equal bands retain policy order, with review diversity soft within a usable band.
-Receipts retain ranking version, candidate bands, pools and reasons, and each
-candidate's effort. Missing or
-stale quota cannot supply headroom; explicitly disabled checks remain disabled.
+Receipts retain ranking version, candidate bands, pools, reasons and each candidate's effort; each reason
+ends with its pool's reading state and age. Missing or stale quota cannot supply
+headroom. Disabled quota checks gate nothing, but readings still rank.
 Ranking never grants admission: submission and occurrence admission still check
 quota atomically, including changes after resolution. Explicit pins stay literal.
 New occurrences read fresh quota; prior run selections and templates stay fixed.
@@ -745,14 +746,15 @@ Explicit routes always stay as written. This preference is also applied to
 schedule occurrences and never grants eligibility or review authority.
 
 Campaign and schedule roles use route-ranking/v1 after policy, catalog and
-worker eligibility checks, using a coherent coordinator quota snapshot.
+worker eligibility checks, using the coordinator quota view task run ranks with:
+one snapshot ranks a role alike in task run, campaign check, submit and schedules.
 Healthy authorized candidates rank ahead of exhausted, gated or unknown pools.
 A pool at its concurrency limit, counting active and planned assignments, ranks
 in the saturated band: below every pool with room, above gated pools.
 Equal bands retain policy order, with review diversity soft within a usable band.
-Receipts retain ranking version, candidate bands, pools and reasons, and each
-candidate's effort. Missing or
-stale quota cannot supply headroom; explicitly disabled checks remain disabled.
+Receipts retain ranking version, candidate bands, pools, reasons and each candidate's effort; each reason
+ends with its pool's reading state and age. Missing or stale quota cannot supply
+headroom. Disabled quota checks gate nothing, but readings still rank.
 Ranking never grants admission: submission and occurrence admission still check
 quota atomically, including changes after resolution. Explicit pins stay literal.
 New occurrences read fresh quota; prior run selections and templates stay fixed.

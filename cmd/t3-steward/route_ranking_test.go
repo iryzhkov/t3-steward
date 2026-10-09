@@ -35,7 +35,7 @@ func TestM172SelectionAndVerdicts(t *testing.T) {
 	workers, quotas := availabilityFixture(now)
 	reset := now.Add(18 * time.Hour)
 	workers[0].Snapshot.QuotaObservations[1].ResetsAt = &reset
-	view := buildRouteRankView(workers, quotas, time.Hour)
+	view := campaignTaskRankView(backlogadmin.ViabilityTask{Class: domain.TaskClassRequired}, buildRouteRankView(workers, quotas, time.Hour))
 	p := rankingPolicy(t)
 	project := rankingProject()
 	s, err := selectPolicyRouteRanked(p, "execute", "", "", "", project, nil, view)
@@ -180,7 +180,8 @@ func TestM172TaskQuotaReplayAndFailure(t *testing.T) {
 	if first.Selection == nil || first.Selection.Ranking != domain.RouteRankingV1 || len(first.Selection.Candidates) != 2 {
 		t.Fatalf("%+v", first)
 	}
-	if strings.Contains(files["route-selection.json"], "candidates") || strings.Contains(files["route-selection.json"], "reset-soon") {
+	// The pinned receipt keeps bands and pools, never live percentages or ages.
+	if !strings.Contains(files["route-selection.json"], "candidates") || !strings.Contains(files["route-selection.json"], "reset-soon") || strings.Contains(files["route-selection.json"], "used") || strings.Contains(files["route-selection.json"], "observed") {
 		t.Fatal(files["route-selection.json"])
 	}
 	workers[0].Snapshot.QuotaObservations[1].UsedPercent = 40

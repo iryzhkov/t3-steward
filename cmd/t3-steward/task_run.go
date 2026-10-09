@@ -508,7 +508,7 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if parsed.role != "" {
 		view := routeRankView{}
 		if parsed.model == "" {
-			view = c.routeRankingView(ctx, policyWorkers)
+			view = c.routeRankingView(ctx, policyWorkers, domain.TaskClass(parsed.class))
 		}
 		selection, selectErr := selectPolicyRouteRanked(p, parsed.role, parsed.model, parsed.effort, parsed.worker, project, nil, view)
 		if selectErr != nil {

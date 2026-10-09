@@ -93,9 +93,25 @@ verdict validation and gate authority remain unchanged.
 Automatic task and review role selection uses `route-ranking/v1`. Eligibility
 still checks project readiness, catalog tiers, role constraints and review
 diversity. Explicit model/reviewer pins use policy order and never rank.
-The quota view merges snapshots from all coordinator-reported workers, then reads
-each serving pool with the configured `quota_stale_after`. The best pool among
-the candidate's ready, advertising project workers determines its band.
+One quota view serves every ranked selection: `task run`, review roles,
+`campaign check`, campaign submission and schedule occurrences. It merges the
+quota readings of all coordinator-reported workers, then reads each serving
+pool against `backlog_v2.coordinator_client.defaults.quota_stale_after` (one
+hour when unset); the client reads it from the coordinator's quota and workers
+answers, and the coordinator from the same records, with the same code. Window
+freshness alone decides whether a pool has headroom. An admission record that
+is draining or closed gates the pool; its own age does not hide fresh
+readings. A pool whose quota checks are disabled is never gated by retained
+admission, but its readings still rank. Surplus work treats a constrained or
+recovering pool as gated. The best pool among the candidate's ready,
+advertising project workers determines its band.
+
+Every candidate reason ends with its pool's reading state (fresh, stale or
+missing) and the age of its oldest governing reading, for example
+`claude-main quota stale, observed 2h0m0s ago (maximum age 1h0m0s)`, or says
+why there is none: no pool bound to the route, the pool absent from the
+coordinator's quota view, or the quota query failing. Stale or missing quota
+is never reported silently.
 
 Bands, in order, are reset-soon, healthy, unknown, saturated, gated. A pool at
 its concurrency limit, counting active and planned assignments, is saturated
@@ -124,11 +140,16 @@ Planner adoption for explicit campaign routes remains M17-2b.
 
 Text, JSON and task dry-run receipts show the ranking version, chosen route and
 candidate eligibility, band, pool and reason. The pinned `route-selection.json`
-keeps stable provenance plus the ranking version and chosen route; live reasons
-and candidate telemetry are excluded. Changed readings selecting the same route
-therefore retain the same run key. Changing the ranking version changes run keys
-once. Unknown quota falls back to policy order while still recording v1 as the
-ranking used.
+keeps stable provenance, the ranking version, the chosen route and every
+candidate's eligibility, band, pool and reason: the reason a candidate was
+skipped, or the causal ranking explanation (such as stale/missing windows,
+exhausted windows or admission closed/constrained). Live percentages,
+observation ages and reset times are excluded, because the file is part of
+the archive the run key covers: changed readings with the same bands and
+causes retain the same run key, while a changed cause, band or chosen route
+produces a new key.
+Changing the ranking version changes run keys once. Unknown quota falls back to
+policy order while still recording v1 as the ranking used.
 
 Provenance is `route-selection/v1`: role, actual route, raw-policy SHA-256 digest,
 reason and effective effort. The reason distinguishes an explicit model override
@@ -222,14 +243,17 @@ next occurrence. Older coordinators must be upgraded to support `role:`;
 workers still receive ordinary concrete routes.
 
 Campaign and schedule roles use `route-ranking/v1` after policy, catalog and
-worker eligibility checks, from the coordinator's request-local quota snapshot.
+worker eligibility checks, from the coordinator's request-local quota snapshot:
+the one quota view `task run` ranks with (see Ranking), so one snapshot ranks a
+role the same through `task run`, `campaign check`, submission and an occurrence.
 A healthy authorized candidate wins over an exhausted, gated or unknown pool;
 equal bands retain policy order before the soft review diversity preference.
 Selections retain the ranking version and candidate bands, pools and reasons.
 Missing, stale or malformed quota cannot supply healthy headroom. Existing
 class admission gates apply before ranking: surplus tasks cannot prefer a
 constrained or recovering pool over a usable alternative. Explicitly
-disabled quota checks retain their operator-defined behavior. Ranking is a
+disabled quota checks gate nothing and admit as configured; the workers'
+readings still rank, so an exhausted policy leader loses its preference. Ranking is a
 preference: submission and schedule admission still enforce quota atomically,
 including changes after resolution. If every candidate is gated or unknown,
 the ranked receipt explains the preference and admission can refuse or suppress

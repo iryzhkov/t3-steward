@@ -4,6 +4,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,15 +51,25 @@ func TestRoleQuotaSnapshotCoherentFreshnessAndDisabled(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "unknown"
-			if mode == "fresh" {
-				want = "healthy"
+			// Window freshness alone decides headroom: an old or absent
+			// admission record does not erase fresh windows, and disabled
+			// checks neither gate on retained admission nor hide readings.
+			want, freshness := "unknown", QuotaStale
+			switch mode {
+			case "fresh", "future-admission", "missing-admission", "disabled":
+				want, freshness = "healthy", QuotaFresh
+			case "closed":
+				want, freshness = "gated", QuotaFresh
+			case "missing":
+				freshness = QuotaMissing
+			case "invalid":
+				freshness = QuotaFresh
 			}
-			if mode == "closed" {
-				want = "gated"
+			if ranked[0].Band != want || snapshot.ChecksDisabled["p"] != (mode == "disabled") || snapshot.Freshness["p"].State != freshness {
+				t.Fatalf("snapshot=%+v ranked=%+v want=%s/%s", snapshot, ranked, want, freshness)
 			}
-			if ranked[0].Band != want || snapshot.ChecksDisabled["p"] != (mode == "disabled") {
-				t.Fatalf("snapshot=%+v ranked=%+v want=%s", snapshot, ranked, want)
+			if mode == "stale" && (snapshot.Freshness["p"].Age != 2*time.Hour || !strings.Contains(snapshot.Freshness["p"].String(), "p quota stale, observed 2h0m0s ago (maximum age 1h0m0s)")) {
+				t.Fatalf("stale quota reported without its age: %s", snapshot.Freshness["p"])
 			}
 			// Returned evidence cannot change the coordinator snapshot.
 			got := snapshot.Pools["p"]
