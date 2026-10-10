@@ -37,8 +37,10 @@ func decodeFile(path string, data []byte) (Config, error) {
 
 // ValidateStagedFile validates immutable staged bytes plus the applicable
 // original-HOME owned projections, using LoadFile's decoder, projection and
-// Validate semantics. It never applies environment overrides or resolves
-// credentials. The digest describes the staged YAML, not the effective
+// Validate semantics for configurations whose validity needs no credential
+// resolution. Coordinator Discord configurations refuse because runtime
+// validation must read their webhook credential. It never applies environment
+// overrides or resolves credentials. The digest describes the staged YAML, not the effective
 // projection inputs. Every observed input must remain stable until completion.
 func ValidateStagedFile(path string) (string, error) {
 	return validateStagedFile(path, nil)
@@ -94,6 +96,14 @@ func validateStagedFile(path string, beforeCheck func()) (string, error) {
 			c.BacklogV2.CoordinatorClient = projection.Settings()
 			c.BacklogV2.CoordinatorClient.Defaults = defaults
 		}
+	}
+	// Notifications.validate resolves the Discord webhook only in coordinator
+	// mode. The pure contract authorizes no credential resolution: refuse
+	// before Validate rather than skipping notification checks or asserting
+	// full validity without their required external input. Runtime validation
+	// remains unchanged, including its private-file and URL checks.
+	if c.BacklogV2.Mode == "coordinator" && c.Notifications.Discord != nil {
+		return refuse()
 	}
 	if err := c.Validate(); err != nil {
 		return refuse()

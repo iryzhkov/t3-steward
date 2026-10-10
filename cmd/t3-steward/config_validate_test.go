@@ -56,6 +56,16 @@ func configValidationFixture(t *testing.T) (string, string, []byte) {
 	if err := os.WriteFile(path, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// Unsafe input controls exercise the same production invoke/binary matrix.
+	if err := os.WriteFile(path+".unsafe", raw, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path+".unsafe", 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(path, path+".symlink"); err != nil {
+		t.Fatal(err)
+	}
 	// These are intentionally unusable runtime inputs. A production DB open
 	// must fail; external transport/service/provider execution writes a marker.
 	if err := os.WriteFile(cfg.StatePath, []byte("NOT A DATABASE; NEVER OPEN"), 0600); err != nil {
@@ -118,12 +128,14 @@ func assertConfigValidationRefusal(t *testing.T, code int, out, stderr string) {
 }
 
 func configValidationBadArgs(path string) [][]string {
-	return [][]string{
+	bad := [][]string{
 		{"config", "validate", "--json"},
 		{"config", "validate", "--file", "help", "--json"},
 		{"config", "validate", "--file", "", "--json"},
 		{"config", "validate", "--file", path},
 		{"config", "validate", "--file", path + ".missing", "--json"},
+		{"config", "validate", "--file", path + ".unsafe", "--json"},
+		{"config", "validate", "--file", path + ".symlink", "--json"},
 		{"config", "validate", "--file", path, "--json", "--SECRET=VALUE"},
 		{"config", "validate", "--file", path, "--json", "SECRET-operand"},
 		{"config", "validate", "--file", path, "--json", "--config", "SECRET"},
@@ -132,6 +144,21 @@ func configValidationBadArgs(path string) [][]string {
 		{"config", "validate", "--file", path, "--file", path, "--json"},
 		{"config", "validate", "--file", path, "--json", "--dry-run"},
 	}
+	for _, help := range []string{"help", "-h", "--help"} {
+		bad = append(bad,
+			[]string{"config", "validate", help, "--file", path, "--json"},
+			[]string{"config", "validate", help, "--file", path + ".missing", "--json", "--SECRET"},
+			[]string{"config", "validate", help, "--file", path + ".unsafe", "--json"},
+			[]string{"config", "validate", "--file", path + ".symlink", help, "--json"},
+			[]string{"config", help, "full", "validate", "--file", path, "--json"},
+			[]string{"config", "validate", "--file", path, help, "--json"},
+			[]string{"config", "validate", "--file", path, "--json", help},
+			[]string{"config", help, "validate", "--file", path, "--json"},
+			[]string{"config", "validate", help, "--json"},
+			[]string{"config", "validate", help, "SECRET-operand"},
+		)
+	}
+	return bad
 }
 
 func TestConfigValidateInvokePureAndRedacted(t *testing.T) {
