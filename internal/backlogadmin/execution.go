@@ -356,6 +356,17 @@ func planAttemptCommand(records sqlite.CoordinatorRecords, workers []domain.Work
 			TaskID: attempt.TaskID, Number: attempt.Number + 1, Progress: retryProgress(records, task, run.ID),
 			Control: domain.ControlUnassigned, Revision: 1, UpdatedAt: now,
 		}
+		// An automatic retry is the same retry with a receipt and a backoff:
+		// the new attempt names the failure it retries and is not admitted
+		// before the backoff ends.
+		if automatic, ok := backlog.AutomaticRetryFromCommand(command); ok {
+			receipt := automatic
+			retry.AutomaticRetry = &receipt
+			if automatic.NotBefore.After(now) {
+				notBefore := automatic.NotBefore.UTC()
+				retry.AdminNotBefore = &notBefore
+			}
+		}
 		nextRun := run
 		nextRun.Progress, nextRun.Revision, nextRun.UpdatedAt, nextRun.CompletedAt = domain.ProgressQueued, run.Revision+1, now, nil
 		return &next, &retry, &nextRun, nil

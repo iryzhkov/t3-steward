@@ -113,6 +113,7 @@ func summaryRunOf(detail backlogadmin.WorkflowDetail) wait.SummaryRun {
 		}
 		if task.Attempt != nil {
 			row.Attempt, row.Progress, row.Failure = task.Attempt.ID, task.Attempt.Progress, task.Attempt.Failure
+			row.FailureClass = failureClassText(task.Attempt)
 			row.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
 		}
 		seen := map[string]bool{}

@@ -641,6 +641,10 @@ type coordinatorAdminExecutor interface {
 	ExecutePendingCommands(context.Context) (backlogadmin.CommandExecutionReport, error)
 }
 
+type coordinatorAutomaticRetrier interface {
+	SubmitAutomaticRetries(context.Context, int) (backlogadmin.AutomaticRetryReport, error)
+}
+
 type coordinatorWorkerTicker interface {
 	Tick(context.Context, backlog.QuotaBridgeReport) coordinatorWorkerTickReport
 }
@@ -650,12 +654,17 @@ type coordinatorCampaignRefTicker interface {
 }
 
 type coordinatorBoundaryCycle struct {
-	reviews      *backlog.ReviewCollector
-	projection   backlog.ProjectionStore
-	quota        coordinatorQuotaTicker
-	schedules    coordinatorScheduleTicker
-	planning     coordinatorPlanningTicker
-	admin        coordinatorAdminExecutor
+	reviews    *backlog.ReviewCollector
+	projection backlog.ProjectionStore
+	quota      coordinatorQuotaTicker
+	schedules  coordinatorScheduleTicker
+	planning   coordinatorPlanningTicker
+	admin      coordinatorAdminExecutor
+	// retries classifies failed attempts and submits automatic retries of
+	// infrastructure failures, up to retryCeiling per task. A nil value, or
+	// a zero ceiling, retries nothing automatically.
+	retries      coordinatorAutomaticRetrier
+	retryCeiling int
 	workers      coordinatorWorkerTicker
 	campaignRefs coordinatorCampaignRefTicker
 	// supervision advances gates, raises review incidents and escalates a
@@ -712,8 +721,21 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 			logTickFailure(ctx, c.logger, "review collection failed", err)
 		}
 	}
+	// Automatic retries are decided before the projection, so a failure the
+	// last worker exchange recorded is retried before its run could settle.
+	// The projection holds such a run in any case until the retry exists.
+	retryCeiling := 0
+	if c.retries != nil {
+		retryCeiling = c.retryCeiling
+		if report, err := c.retries.SubmitAutomaticRetries(ctx, retryCeiling); err != nil {
+			logTickFailure(ctx, c.logger, "automatic retry pass failed", err)
+		} else if len(report.Submitted) != 0 || report.Classified != 0 {
+			c.logger.Info("failed attempts classified and automatic retries submitted",
+				"classified", report.Classified, "retries", len(report.Submitted))
+		}
+	}
 	if c.projection != nil {
-		if _, err := backlog.ProjectWorkflowRuns(ctx, c.projection, time.Now().UTC()); err != nil {
+		if _, err := backlog.ProjectWorkflowRunsWithRetries(ctx, c.projection, time.Now().UTC(), retryCeiling); err != nil {
 			logTickFailure(ctx, c.logger, "workflow run projection failed", err)
 		}
 	}
@@ -1129,8 +1151,10 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 			checkpointMargin:           cfg.BacklogV2.Leases.RenewInterval.D(),
 			supervisorClientConfigured: supervisorPrincipal != "",
 		},
-		admin:   service,
-		workers: workers,
+		admin:        service,
+		retries:      service,
+		retryCeiling: cfg.BacklogV2.Coordinator.AutomaticRetries.InfrastructureCeiling(),
+		workers:      workers,
 		// The campaign ref store is the one this host's worker publishes into,
 		// a sibling of the repository cache under the same configured
 		// workspaces root. A worker on another host keeps its own store and

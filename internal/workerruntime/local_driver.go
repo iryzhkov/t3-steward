@@ -1118,6 +1118,11 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 			return err
 		}
 	}
+	// A collection retry captures the workspace again only if it still holds
+	// what the first collection captured.
+	if err := d.verifyPreservedResult(ctx, pkg, workspace, identity); err != nil {
+		return err
+	}
 	// The continuation checkpoint is taken before verification runs in the
 	// workspace, keyed by the turn this collection binds to.
 	continuation := d.continuationForResult(ctx, pkg, workspace, identity)
@@ -1162,6 +1167,9 @@ func (d *LocalDriver) collect(ctx context.Context, pkg workerproto.ExecutionPack
 	if err != nil {
 		return err
 	}
+	// The result is captured; what it was captured from is recorded before
+	// publication can fail, so a retry can prove the workspace unchanged.
+	d.recordPreservedResult(ctx, pkg, workspace, identity)
 	continuation = d.admitContinuation(pkg, message, archive, finalized.Artifacts, continuation)
 	result := PublishedResult{
 		Finalized: finalized, FinalMessage: message, ThreadArchive: archive, WorkspaceDir: workspace, Continuation: continuation,

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/ownernotify"
 	"github.com/iryzhkov/t3-steward/internal/privatefile"
 	"gopkg.in/yaml.v3"
@@ -549,6 +550,25 @@ type V2Coordinator struct {
 	// principal. A client that is not listed here cannot be authenticated,
 	// because the coordinator would have no credential to verify it against.
 	AdminClients map[string]V2AdminClient `yaml:"admin_clients"`
+	// AutomaticRetries bounds the automatic retries of infrastructure
+	// failures this coordinator performs.
+	AutomaticRetries V2AutomaticRetries `yaml:"automatic_retries"`
+}
+
+// V2AutomaticRetries is the coordinator's ceiling on automatic retries.
+// MaxInfrastructure caps the budget any task may use, whatever its workflow
+// declares; absent means domain.DefaultCoordinatorMaxInfrastructureRetries,
+// and zero turns automatic retries off on this coordinator.
+type V2AutomaticRetries struct {
+	MaxInfrastructure *int `yaml:"max_infrastructure"`
+}
+
+// InfrastructureCeiling is the effective ceiling.
+func (r V2AutomaticRetries) InfrastructureCeiling() int {
+	if r.MaxInfrastructure == nil {
+		return domain.DefaultCoordinatorMaxInfrastructureRetries
+	}
+	return *r.MaxInfrastructure
 }
 
 // V2AdminClient is one remote admin client's credential reference. The value

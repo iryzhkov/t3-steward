@@ -88,13 +88,23 @@ type ProjectionReport struct {
 // It also backfills sink metadata on old imported runs. Quota planning is not a
 // prerequisite: a stopped run can settle while an unrelated bucket is broken.
 func ProjectWorkflowRuns(ctx context.Context, store ProjectionStore, now time.Time) (ProjectionReport, error) {
+	return ProjectWorkflowRunsWithRetries(ctx, store, now, 0)
+}
+
+// ProjectWorkflowRunsWithRetries is ProjectWorkflowRuns on a coordinator that
+// retries infrastructure failures automatically, with coordinatorMax as its
+// ceiling. A run with a retry about to be created is left unprojected for
+// this boundary (see AutomaticRetryPendingRuns); a zero ceiling disables
+// automatic retries and is exactly ProjectWorkflowRuns.
+func ProjectWorkflowRunsWithRetries(ctx context.Context, store ProjectionStore, now time.Time, coordinatorMax int) (ProjectionReport, error) {
 	var report ProjectionReport
 	records, err := store.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		return report, fmt.Errorf("load records for projection: %w", err)
 	}
+	retryPending := AutomaticRetryPendingRuns(records, coordinatorMax)
 	for _, run := range records.WorkflowRuns {
-		if run.Sink != nil && run.Sink.Progress.Terminal() {
+		if run.Sink != nil && run.Sink.Progress.Terminal() || retryPending[run.ID] {
 			continue
 		}
 		before := sqlite.WorkflowProjectionSnapshot{Run: run}

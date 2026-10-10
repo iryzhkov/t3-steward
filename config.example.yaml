@@ -168,6 +168,11 @@ backlog_v2:
     admin_clients: {}
     #  omarchy-pc:
     #    credential: secretref:f03-admin/omarchy-pc
+    # Ceiling on the automatic retries of infrastructure failures any task may
+    # use, whatever its workflow declares (0..5; 0 turns them off). Leave it
+    # out for the default of 3. See docs/failure-classification.md.
+    # automatic_retries:
+    #   max_infrastructure: 3
   # coordinator_client points a host that is not the coordinator at the
   # coordinator it administers. Declaring it selects the remote carrier for
   # every command that talks to the coordinator, so an agent runs the ordinary

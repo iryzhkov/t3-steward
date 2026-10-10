@@ -95,6 +95,11 @@ type taskResultTask struct {
 	// the attempt, with the in-session resume answering it: an
 	// infrastructure failure event, whether or not the attempt recovered.
 	ProviderError *domain.WorkerProviderError `json:"providerError,omitempty"`
+	// FailureClass is the failure's class and reason code, "class/code".
+	FailureClass string `json:"failureClass,omitempty"`
+	// AutomaticRetry says the attempt is the coordinator's automatic retry
+	// of an infrastructure failure, and of which attempt.
+	AutomaticRetry string `json:"automaticRetry,omitempty"`
 	// ReviewGate is the review completion gate's decision for a
 	// review-declared task, with the reviewed and the workspace heads.
 	ReviewGate *domain.ReviewCompletionGate `json:"reviewGate,omitempty"`
@@ -372,6 +377,8 @@ func (c taskResultCLI) collect(ctx context.Context, detail backlogadmin.Workflow
 		collected.Progress = string(task.Attempt.Progress)
 		collected.AttemptID = task.Attempt.ID
 		collected.Failure = task.Attempt.Failure
+		collected.FailureClass = failureClassText(task.Attempt)
+		collected.AutomaticRetry = automaticRetryText(task.Attempt)
 		collected.ReviewVerdict = domain.CloneReviewVerdict(task.Attempt.ReviewVerdict)
 		collected.ReviewGate = task.Attempt.ReviewGate
 	}
@@ -553,6 +560,12 @@ func renderTaskResult(out io.Writer, document taskResultDocument) error {
 		}
 		if task.Failure != "" {
 			fmt.Fprintf(out, "  failure: %s\n", task.Failure)
+			if task.FailureClass != "" {
+				fmt.Fprintf(out, "  failure class: %s\n", task.FailureClass)
+			}
+		}
+		if task.AutomaticRetry != "" {
+			fmt.Fprintf(out, "  %s\n", task.AutomaticRetry)
 		}
 		if task.ProviderError != nil {
 			fmt.Fprintf(out, "  provider error: %s\n", task.ProviderError.Summary())

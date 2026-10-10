@@ -1419,6 +1419,12 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		}
 		if task.Attempt != nil && task.Attempt.Failure != "" {
 			fmt.Fprintf(out, "    failure: %s\n", task.Attempt.Failure)
+			if class := failureClassText(task.Attempt); class != "" {
+				fmt.Fprintf(out, "    failure class: %s\n", class)
+			}
+		}
+		if retry := automaticRetryText(task.Attempt); retry != "" {
+			fmt.Fprintf(out, "    %s\n", retry)
 		}
 		// A provider error the worker is resuming from is why a running task
 		// is not moving; it is printed here so it is not read as progress.
@@ -1535,6 +1541,12 @@ func renderTask(out io.Writer, detail *backlogadmin.TaskDetail, now time.Time) {
 		fmt.Fprintf(out, "attempt number: %d\nrevision: %d\n", detail.Attempt.Number, detail.Attempt.Revision)
 		if detail.Attempt.Failure != "" {
 			fmt.Fprintf(out, "failure: %s\n", detail.Attempt.Failure)
+			if class := failureClassText(detail.Attempt); class != "" {
+				fmt.Fprintf(out, "failure class: %s\n", class)
+			}
+		}
+		if retry := automaticRetryText(detail.Attempt); retry != "" {
+			fmt.Fprintln(out, retry)
 		}
 	}
 	if detail.Assignment != nil {

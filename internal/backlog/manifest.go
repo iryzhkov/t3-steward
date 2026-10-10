@@ -61,6 +61,9 @@ type Manifest struct {
 	// Ledger opts the campaign into the Steward-authored Jocasta milestone
 	// ledger. A nil pointer is the default and writes no ledger anywhere.
 	Ledger *ManifestLedger `yaml:"ledger"`
+	// Retry is the default automatic retry budget of every task; see
+	// ManifestRetry.
+	Retry *ManifestRetry `yaml:"retry,omitempty"`
 }
 
 // ManifestPlacement limits eligible hosts and names capabilities that a worker
@@ -113,6 +116,7 @@ type ManifestTask struct {
 	Difficulty         int                         `yaml:"difficulty"`
 	EstimatedCost      *float64                    `yaml:"estimated_cost"`
 	MaxTurns           int                         `yaml:"max_turns"`
+	Retry              *ManifestRetry              `yaml:"retry,omitempty"`
 	NotBefore          *time.Time                  `yaml:"not_before"`
 	Deadline           *time.Time                  `yaml:"deadline"`
 	ExpiresAt          *time.Time                  `yaml:"expires_at"`
@@ -544,6 +548,9 @@ func validateManifest(manifest Manifest) error {
 	if err := validateAuthoredRoles(manifest); err != nil {
 		return err
 	}
+	if err := validateManifestRetry("workflow", manifest.Retry); err != nil {
+		return err
+	}
 	if err := ValidateReviewManifest(manifest); err != nil {
 		return err
 	}
@@ -684,6 +691,9 @@ func validateManifestTask(name string, task ManifestTask, tasks map[string]Manif
 	}
 	if task.MaxTurns < 1 {
 		return fmt.Errorf("%s max_turns must be positive", prefix)
+	}
+	if err := validateManifestRetry(prefix, task.Retry); err != nil {
+		return err
 	}
 	if task.EstimatedCost != nil && *task.EstimatedCost <= 0 {
 		return fmt.Errorf("%s estimated_cost must be positive", prefix)
