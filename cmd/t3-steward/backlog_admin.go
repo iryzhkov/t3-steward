@@ -1399,6 +1399,21 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 		fmt.Fprintf(out, "parent: run %s task %s attempt %s (parent started %s)\n",
 			lineage.ParentRunID, lineage.ParentTaskID, lineage.ParentAttemptID, formatTime(lineage.ParentStartedAt))
 	}
+	var loopTasks []domain.Task
+	var loopAttempts []domain.Attempt
+	for _, item := range detail.Tasks {
+		loopTasks = append(loopTasks, item.Task)
+		if item.Attempt != nil {
+			loopAttempts = append(loopAttempts, *item.Attempt)
+		}
+	}
+	for _, loop := range domain.SummarizeFixLoops(loopTasks, loopAttempts) {
+		fmt.Fprintf(out, "fix loop %s: rounds=%d/%d final verdict=%s", loop.Name, loop.Rounds, loop.MaxRounds, loop.FinalVerdict)
+		if loop.Exhausted {
+			fmt.Fprintf(out, " escalation=%s", loop.Escalation)
+		}
+		fmt.Fprintln(out)
+	}
 	taskNames := make(map[string]string, len(detail.Tasks))
 	for _, task := range detail.Tasks {
 		taskNames[task.Task.ID] = task.Task.Name

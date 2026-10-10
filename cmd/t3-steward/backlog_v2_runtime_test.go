@@ -404,20 +404,6 @@ func TestRunBacklogV2CoordinatorAcceptsNativeArchiveSubmissionAndReplay(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-<<<<<<< HEAD
-	// Generous: coordinator start-up under -race on a loaded macOS runner
-	// took longer than the two seconds this used to allow.
-	deadline := time.Now().Add(testtiming.Bound(15 * time.Second))
-	for {
-		if _, err := os.Stat(socketPath); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("admin socket was not created: %s", socketPath)
-		}
-		time.Sleep(10 * time.Millisecond)
-=======
 	// A socket path appears at bind, before listen has completed. Wait for
 	// the serving/startup boundary signal rather than racing that filesystem
 	// observation, especially under the race detector.
@@ -425,11 +411,10 @@ func TestRunBacklogV2CoordinatorAcceptsNativeArchiveSubmissionAndReplay(t *testi
 	case <-started:
 	case err := <-done:
 		t.Fatalf("coordinator stopped before readiness: %v", err)
-	case <-time.After(15 * time.Second):
+	case <-time.After(testtiming.Bound(15 * time.Second)):
 		cancel()
 		<-done
 		t.Fatal("coordinator did not report readiness")
->>>>>>> units/maintenance-steward
 	}
 
 	archive := runtimeSubmissionTar(t)
@@ -597,20 +582,6 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-<<<<<<< HEAD
-	// Generous: coordinator start-up under -race on a loaded macOS runner
-	// took longer than the two seconds this used to allow.
-	deadline := time.Now().Add(testtiming.Bound(15 * time.Second))
-	for {
-		if _, err := os.Stat(socketPath); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("admin socket was not created: %s", socketPath)
-		}
-		time.Sleep(10 * time.Millisecond)
-=======
 	// A socket path appears at bind, before listen has completed. Wait for
 	// the serving/startup boundary signal rather than racing that filesystem
 	// observation, especially under the race detector.
@@ -618,11 +589,10 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 	case <-started:
 	case err := <-done:
 		t.Fatalf("coordinator stopped before readiness: %v", err)
-	case <-time.After(15 * time.Second):
+	case <-time.After(testtiming.Bound(15 * time.Second)):
 		cancel()
 		<-done
 		t.Fatal("coordinator did not report readiness")
->>>>>>> units/maintenance-steward
 	}
 	client := backlogadmin.LocalClient{
 		Path: socketPath, MaxResponseBytes: int64(cfg.BacklogV2.MessageLimits.MaxBytes),
@@ -630,11 +600,7 @@ func TestRunBacklogV2CoordinatorReconcilesSchedulesAndAdminCommands(t *testing.T
 		RequestTimeout:   cfg.BacklogV2.Transport.RequestTimeout.D(),
 	}
 	var schedules backlogadmin.Response
-<<<<<<< HEAD
-	deadline = time.Now().Add(testtiming.Bound(5 * time.Second))
-=======
-	deadline := time.Now().Add(5 * time.Second)
->>>>>>> units/maintenance-steward
+	deadline := time.Now().Add(testtiming.Bound(5 * time.Second))
 	for {
 		schedules, err = client.Query(context.Background(), backlogadmin.Query{
 			Version: backlogadmin.Version, Kind: backlogadmin.QuerySchedules,

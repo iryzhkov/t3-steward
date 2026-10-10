@@ -133,6 +133,15 @@ func summaryRunOf(detail backlogadmin.WorkflowDetail) wait.SummaryRun {
 		}
 		run.Tasks = append(run.Tasks, row)
 	}
+	var tasks []domain.Task
+	var attempts []domain.Attempt
+	for _, item := range detail.Tasks {
+		tasks = append(tasks, item.Task)
+		if item.Attempt != nil {
+			attempts = append(attempts, *item.Attempt)
+		}
+	}
+	run.FixLoops = domain.SummarizeFixLoops(tasks, attempts)
 	return run
 }
 

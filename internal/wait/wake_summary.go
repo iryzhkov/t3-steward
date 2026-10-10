@@ -68,10 +68,11 @@ type WakeSummary struct {
 	Head    string `json:"head,omitempty"`
 
 	// Node waits.
-	Run      string            `json:"run,omitempty"`
-	Workflow string            `json:"workflow,omitempty"`
-	Progress string            `json:"progress,omitempty"`
-	Tasks    []WakeSummaryTask `json:"tasks,omitempty"`
+	Run      string                  `json:"run,omitempty"`
+	Workflow string                  `json:"workflow,omitempty"`
+	Progress string                  `json:"progress,omitempty"`
+	Tasks    []WakeSummaryTask       `json:"tasks,omitempty"`
+	FixLoops []domain.FixLoopSummary `json:"fixLoops,omitempty"`
 	// Truncated counts the tasks left out of Tasks.
 	Truncated int `json:"truncated,omitempty"`
 	// Unavailable is the fixed category word of a summary that could not be
@@ -163,6 +164,7 @@ type SummaryRun struct {
 	Workflow string
 	Progress domain.ProgressState
 	Tasks    []SummaryTask
+	FixLoops []domain.FixLoopSummary
 }
 
 // SummaryTask is one task with its latest attempt and that attempt's retained
@@ -743,6 +745,20 @@ func buildNodeSummary(ctx context.Context, source NodeSummarySource, w domain.No
 		s.Tasks = append(s.Tasks, budget.summarizeTask(ctx, source, run, task))
 	}
 	s.sink = sink
+	if sink {
+		for _, loop := range detail.FixLoops {
+			if !summaryName.MatchString(loop.Name) || loop.MaxRounds < 1 || loop.MaxRounds > 20 || loop.Rounds < 0 || loop.Rounds > loop.MaxRounds {
+				continue
+			}
+			if loop.FinalVerdict != "accept" && loop.FinalVerdict != "changes-requested" {
+				loop.FinalVerdict = ""
+			}
+			if loop.Escalation != "fix-loop-exhausted" {
+				loop.Escalation = ""
+			}
+			s.FixLoops = append(s.FixLoops, loop)
+		}
+	}
 	s.Headline, s.Verdict, s.Head = s.nodeHeadline()
 	return s
 }
@@ -901,6 +917,7 @@ func (s WakeSummary) nodeProse(rows *int) string {
 		b.WriteString(": " + annotationQuote(failure, summaryFailureClip))
 	}
 	b.WriteString(".\n")
+	b.WriteString(s.fixLoopText())
 	if *rows < 0 {
 		*rows = 0
 	}
@@ -976,6 +993,7 @@ func (s WakeSummary) Text() string {
 	b.WriteString(s.Headline + "\n")
 	switch s.Kind {
 	case string(domain.WaitKindNode):
+		b.WriteString(s.fixLoopText())
 		if len(s.Tasks) != 0 {
 			b.WriteString(renderSummaryTable(s.Tasks))
 		}

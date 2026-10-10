@@ -332,6 +332,15 @@ or rc.115 coordinator.
   also leave coordinator-marked databases unopened. Blocked shutdown checkpoints
   name the reader-close and checkpoint remedy. See
   docs/coordinator-maintenance.md for authority, artifact custody and restore limits.
+- Verdict-conditioned campaign dependencies: `needs_verdict` requires a recorded
+  `accept` or `changes-requested` verdict from a direct review dependency. Bounded
+  `fix_loops` expand implementation and fresh independent review tasks into a
+  finite graph with an integer `max_rounds` from 1 through 20. Acceptance skips
+  unused rounds; exhaustion fails the sink with `fix-loop-exhausted`. Campaign
+  show and wake summaries report rounds and the final verdict. Loop recovery
+  requires `campaign rerun` rather than in-place retry, preserving the remaining
+  round bound and refreshing stopped descendants. See docs/fix-loops.md and
+  `campaign help fix-loops`.
 
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its

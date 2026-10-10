@@ -851,6 +851,7 @@ func HelpTopics() []HelpTopic {
 		{Name: "plan", Body: PlanHelp},
 		{Name: "graph", Body: GraphHelp},
 		{Name: "dag-semantics", Body: DAGSemanticsHelp},
+		{Name: "fix-loops", Body: FixLoopsHelp},
 		{Name: "commits", Body: CommitsHelp},
 		{Name: "static-versus-dynamic", Body: StaticVersusDynamicHelp},
 		{Name: "readiness", Body: ReadinessHelp},

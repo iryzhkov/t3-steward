@@ -161,9 +161,21 @@ func (b *rerunReferences) detach(ctx context.Context, task *domain.Task, reused 
 			keptNeeds = append(keptNeeds, need)
 			continue
 		}
+		if expected, conditioned := task.NeedsVerdict[need]; conditioned {
+			var latest domain.Attempt
+			for _, candidate := range b.records.Attempts {
+				if candidate.WorkflowRunID == b.source.ID && candidate.TaskID == ancestor.ID && candidate.Number > latest.Number {
+					latest = candidate
+				}
+			}
+			if latest.Progress != domain.ProgressSucceeded || latest.ReviewVerdict == nil || latest.ReviewVerdict.Verdict != expected {
+				return fmt.Errorf("rerun verdict guard for %s requires %s from reused %s", task.Name, expected, need)
+			}
+		}
 		names := append([]string(nil), task.DependencyInputs[need]...)
 		slices.Sort(names)
 		delete(task.DependencyInputs, need)
+		delete(task.NeedsVerdict, need)
 		for _, name := range names {
 			artifact, found, err := b.output(ancestor, name)
 			if err != nil {
