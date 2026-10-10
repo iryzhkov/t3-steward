@@ -7,4 +7,5 @@ package config
 type stagedInput struct{ raw []byte }
 
 func observeStagedInput(string, int64, bool) (*stagedInput, error) { return nil, ErrStagedConfig }
+func (*stagedInput) close()                                        {}
 func (*stagedInput) check() error                                  { return ErrStagedConfig }

@@ -11,6 +11,9 @@ Drain changes are deferred to the next integration task.
 
 ### Added and changed
 
+- Staged validation monitors absent optional inputs with Linux inotify, refusing
+  transient create/remove cycles independently of directory timestamp granularity.
+
 - S1 roles and complete manifests in `campaign compile`: a compile/v1 plan's
   front matter accepts `roles: {execute: {effort}, review: {effort}}`, and
   role routing is now the default. The implement task takes role `execute`

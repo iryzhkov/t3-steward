@@ -56,6 +56,7 @@ func validateStagedFile(path string, beforeCheck func()) (string, error) {
 	if err != nil {
 		return refuse()
 	}
+	defer staged.close()
 	c, err := decodeFile(path, staged.raw)
 	if err != nil {
 		return refuse()
@@ -70,6 +71,7 @@ func validateStagedFile(path string, beforeCheck func()) (string, error) {
 		if err != nil {
 			return refuse()
 		}
+		defer fleet.close()
 		inputs = append(inputs, fleet)
 		if fleet.raw != nil {
 			projection, err := DecodeCoordinatorFleet(fleet.raw)
@@ -86,6 +88,7 @@ func validateStagedFile(path string, beforeCheck func()) (string, error) {
 		if err != nil {
 			return refuse()
 		}
+		defer client.close()
 		inputs = append(inputs, client)
 		if client.raw != nil {
 			projection, err := DecodeCoordinatorClientBootstrap(client.raw)
