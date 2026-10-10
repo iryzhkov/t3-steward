@@ -548,6 +548,7 @@ thread resolves unless `--no-notify` says that is intended. On wake:
 
 ```sh
 t3-steward task result <run>          # final message and declared outputs
+t3-steward campaign result <run>      # one block: states, verdicts, commits, acceptance
 ```
 
 It prints final messages of at most 4096 bytes inline and writes `<state>/results/<run>/<task>/` and exits 0 for a succeeded or skipped
@@ -888,9 +889,11 @@ t3-steward triage [--stale-days N] [--json]
 t3-steward backlog projects [--project NAME] [--verbose] [--json]
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
 t3-steward campaign cancel RUN[/TASK] --reason TEXT [--command-id ID] [--json]
+t3-steward campaign result RUN [--json] [--wait [--timeout D]]
 t3-steward wait add [--task current] [--name TEXT] [--timeout 24h] [--or-timeout] [--group G --wake all] -- CMD...
 t3-steward wait add [--task current] --at RFC3339 | --for DURATION
-t3-steward wait add [--task current] --github run ID | pr N [--state completed|merged|reviewed|checks-passed] [--repo owner/name]
+t3-steward wait add [--task current] --github run ID | pr N [--state completed|merged|reviewed|checks-passed|checks-completed] [--repo owner/name]
+t3-steward wait add [--task current] --github-checks OWNER/NAME@SHA | OWNER/NAME#N [--repo owner/name]
 t3-steward wait add [--task current] --node RUN[/TASK] [--state terminal|succeeded|paused|waiting-external|active]
 t3-steward wait add [--task current] --quota POOL --below N | --phase normal | --reset
 t3-steward wait list [--thread ID] [--host HOST] [--all] [--native] [--json]|cancel ID|run-now ID

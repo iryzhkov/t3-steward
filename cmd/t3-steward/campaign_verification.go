@@ -58,6 +58,12 @@ func (c backlogAdminCLI) verificationReport(ctx context.Context, id string) (bac
 	if len(raw) > maxInlineArtifactBytes {
 		return report, fmt.Errorf("report exceeds %d bytes", maxInlineArtifactBytes)
 	}
+	return parseVerificationReport(raw)
+}
+
+// parseVerificationReport decodes one retained verification report strictly.
+func parseVerificationReport(raw []byte) (backlog.VerificationReport, error) {
+	var report backlog.VerificationReport
 	// Require both fields: decoding {} as a passed report would invent evidence.
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {

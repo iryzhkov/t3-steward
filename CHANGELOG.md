@@ -342,6 +342,35 @@ or rc.115 coordinator.
   round bound and refreshing stopped descendants. See docs/fix-loops.md and
   `campaign help fix-loops`.
 
+- S5 one-command result: `t3-steward campaign result <run> [--json]
+  [--wait [--timeout D]]` prints one short block with the run state, one
+  line per task (state, failure class, recorded review verdict and the
+  commits it is about, review gate, declared commit, verification) and the
+  line "review ACCEPT and verification passed on the same commit: yes/no".
+  The acceptance fact is computed only from recorded facts that name one
+  commit: a recorded ACCEPT on a commit output the review consumed, whose
+  producing attempt succeeded with every declared verification command
+  reported at exit 0 and its `accepted-head` review gate binding verification
+  to that declared commit, or a review-declared task's `accepted-head` gate whose
+  reviewed head is its declared commit and whose own verification passed. A
+  recorded CHANGES_REQUESTED on the same commit makes it no; exit codes and
+  task success alone never make it yes. `--json` prints the versioned
+  `t3-steward.campaign-result/v1` document. Exit codes follow `task result`:
+  0 succeeded, 2 failed or cancelled, 1 not terminal. Client-only; it reads
+  the run document and retained artifacts any release's coordinator serves.
+  See docs/campaign-result.md.
+- PR-checks wait: `t3-steward wait add [--task current] --github-checks
+  owner/name@<sha>` (also a commit URL, a bare sha with `--repo`, or a pull
+  request as `owner/name#<n>`, its URL or `<n>`) waits until every check run
+  and commit status of the commit, or of the pull request's head, has
+  finished. It is met when none failed and failed when one did, with one
+  reason line such as "checks failed: 6 checks, 1 failure (lint), 5
+  success". It is a `github` wait in the new state `checks-completed`, which
+  `--github pr <n> --state checks-completed` also accepts; a commit target is
+  read with one `gh api graphql` call and reports `target=commit:<sha>`, and
+  every `checks-completed` wake carries `checks=<conclusion>=<n>,...`. The
+  wait runs on the registering host; a worker or session of an older release
+  refuses the flag.
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first

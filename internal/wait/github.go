@@ -16,12 +16,12 @@ import (
 // GitHubTarget is what a github wait observes: one workflow run or one pull
 // request, and the state it waits for.
 type GitHubTarget struct {
-	// Kind is run or pr.
+	// Kind is run, pr or commit.
 	Kind string `json:"kind"`
-	// ID is the run id or the pull request number.
+	// ID is the run id, the pull request number or the commit id.
 	ID string `json:"id"`
-	// State is completed for a run; merged, reviewed or checks-passed for a
-	// pull request.
+	// State is completed for a run; merged, reviewed, checks-passed or
+	// checks-completed for a pull request; checks-completed for a commit.
 	State string `json:"state"`
 	// Repo is owner/name, passed to gh as --repo when set.
 	Repo string `json:"repo,omitempty"`
@@ -29,8 +29,9 @@ type GitHubTarget struct {
 
 // GitHub states by target kind, the first being the default.
 var gitHubStates = map[string][]string{
-	"run": {"completed"},
-	"pr":  {"merged", "reviewed", "checks-passed"},
+	"run":    {"completed"},
+	"pr":     {"merged", "reviewed", "checks-passed", ChecksCompleted},
+	"commit": {ChecksCompleted},
 }
 
 // GitHubStates lists the states a target kind accepts, the default first.
@@ -57,6 +58,9 @@ func (t GitHubTarget) Validate() error {
 	if t.Repo != "" && (strings.Count(t.Repo, "/") != 1 || strings.HasPrefix(t.Repo, "/") || strings.HasSuffix(t.Repo, "/")) {
 		return fmt.Errorf("--repo %q is not owner/name", t.Repo)
 	}
+	if t.Kind == "commit" {
+		return validateCommitTarget(t)
+	}
 	return nil
 }
 
@@ -81,6 +85,9 @@ func (t GitHubTarget) Args() []string {
 		args = []string{"run", "view", t.ID, "--json", "status,conclusion,url,databaseId,attempt,headSha"}
 	case "pr":
 		args = []string{"pr", "view", t.ID, "--json", "state,mergedAt,reviewDecision,statusCheckRollup,url,headRefOid"}
+	case "commit":
+		// The repository is part of the query, so no --repo follows.
+		return commitChecksArgs(t)
 	}
 	if t.Repo != "" {
 		args = append(args, "--repo", t.Repo)
@@ -170,15 +177,11 @@ func EvaluateGitHub(target GitHubTarget, output []byte) (GitHubReading, error) {
 		}
 	case "pr":
 		var pr struct {
-			State             string  `json:"state"`
-			MergedAt          *string `json:"mergedAt"`
-			ReviewDecision    string  `json:"reviewDecision"`
-			StatusCheckRollup []struct {
-				Conclusion string `json:"conclusion"`
-				Status     string `json:"status"`
-				State      string `json:"state"`
-			} `json:"statusCheckRollup"`
-			URL string `json:"url"`
+			State             string        `json:"state"`
+			MergedAt          *string       `json:"mergedAt"`
+			ReviewDecision    string        `json:"reviewDecision"`
+			StatusCheckRollup []gitHubCheck `json:"statusCheckRollup"`
+			URL               string        `json:"url"`
 		}
 		if err := json.Unmarshal(output, &pr); err != nil {
 			return reading, fmt.Errorf("gh pr view returned something other than the requested JSON: %w", err)
@@ -240,9 +243,18 @@ func EvaluateGitHub(target GitHubTarget, output []byte) (GitHubReading, error) {
 				reading.Fields["conclusion"] = "success"
 				reading.Status, reading.Reason = StatusMet, "every check succeeded"
 			}
+		case ChecksCompleted:
+			summary := summarizeChecks(pr.StatusCheckRollup, len(pr.StatusCheckRollup), "")
+			if closed && summary.Pending > 0 {
+				reading.Status, reading.Reason = StatusFailed, "pull request closed without merging; "+summary.Line
+				break
+			}
+			reading = checksReading(reading, summary)
 		}
+	case "commit":
+		return evaluateCommitChecks(target, reading, output)
 	default:
-		return reading, fmt.Errorf("github target kind %q is not run or pr", target.Kind)
+		return reading, fmt.Errorf("github target kind %q is not run, pr or commit", target.Kind)
 	}
 	return reading, nil
 }
@@ -310,7 +322,7 @@ func (r *Runner) runGitHubOnce(ctx context.Context, w *Wait, now time.Time) {
 	}
 	w.Errors = 0
 	w.LastOutput = reading.Reason
-	if (reading.Status == StatusMet || reading.Status == StatusFailed) && (w.GitHub.Kind == "run" || w.GitHub.State == "checks-passed") {
+	if (reading.Status == StatusMet || reading.Status == StatusFailed) && (w.GitHub.Kind == "run" || w.GitHub.Kind == "pr" && (w.GitHub.State == "checks-passed" || w.GitHub.State == ChecksCompleted)) {
 		var summary WakeSummary
 		w.LastOutput, summary = r.gitHubAnnotations(ctx, *w.GitHub, w.Dir, reading)
 		w.Summary = &summary

@@ -2,7 +2,7 @@
 
 Authority: jocasta:715251cbbbfd43882e02587a54b70caa@1. Local implementation, provisional until both dependent independent reviews accept.
 
-Terminal workflow-run waits and PR checks-passed waits enrich LastOutput before settlement is saved. Status, conclusion, outcome, reason, exit code and the existing machine trailer remain authoritative. Annotation bodies never enter trailer fields. Registration ReadGitHub probes, pending polls and persisted settled replay make zero enrichment calls. Other PR wait states retain their existing behavior.
+Terminal workflow-run waits and PR checks-passed and checks-completed waits enrich LastOutput before settlement is saved. Status, conclusion, outcome, reason, exit code and the existing machine trailer remain authoritative. Annotation bodies never enter trailer fields. Registration ReadGitHub probes, pending polls and persisted settled replay make zero enrichment calls. Other PR wait states retain their existing behavior.
 
 The initial status request adds supported gh run view databaseId/attempt/headSha or gh pr view headRefOid fields. Its URL identifies the actual repository selected by explicit --repo or existing directory semantics. Only canonical HTTPS github.com target URLs with matching numeric run/PR identity and explicit repository binding are enriched. Unsupported enterprise hosts produce annotations unavailable without changing existing gate evaluation. No repository selection, trust, config, provider, quota or task-control behavior changes.
 

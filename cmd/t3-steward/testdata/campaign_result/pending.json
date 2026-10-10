@@ -1,0 +1,44 @@
+{
+  "workflow": {
+    "summary": {
+      "run": {"id": "run-pending", "workflowId": "wf-1", "progress": "active", "revision": 5},
+      "workflow": {"id": "wf-1", "name": "unit", "taskIds": ["t-implement", "t-review"]},
+      "progress": {"total": 2, "succeeded": 1, "active": 1}
+    },
+    "tasks": [
+      {
+        "task": {
+          "id": "t-implement", "workflowId": "wf-1", "name": "implement",
+          "outputs": [{"name": "implementation", "commit": {}}],
+          "verification": ["make test"]
+        },
+        "attempt": {
+          "id": "a-implement-1", "workflowRunId": "run-pending", "taskId": "t-implement", "number": 1,
+          "progress": "succeeded", "control": "released", "revision": 5
+        },
+        "artifacts": [
+          {"metadata": {"id": "art-commit", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "output", "name": "implementation"}},
+          {"metadata": {"id": "art-verify-0", "taskId": "t-implement", "attemptId": "a-implement-1", "kind": "verification", "name": "verification/000.json"}}
+        ]
+      },
+      {
+        "task": {
+          "id": "t-review", "workflowId": "wf-1", "name": "review", "needs": ["implement"],
+          "dependencyInputs": {"implement": ["implementation"]},
+          "reviewOutput": {"verdictLine": "review.md"},
+          "outputs": [{"name": "review.md"}]
+        },
+        "attempt": {
+          "id": "a-review-1", "workflowRunId": "run-pending", "taskId": "t-review", "number": 1,
+          "progress": "active", "control": "running", "revision": 2
+        }
+      }
+    ],
+    "taskWaits": [],
+    "waits": []
+  },
+  "artifacts": {
+    "art-commit": {"version": "campaign-commit/v1", "workflowRunId": "run-pending", "taskId": "t-implement", "name": "implementation", "repository": "git@github.com:o/r.git", "base": "0000000000000000000000000000000000000000", "commit": "5555555555555555555555555555555555555555"},
+    "art-verify-0": {"command": "make test", "exitCode": 0, "output": "ok"}
+  }
+}
