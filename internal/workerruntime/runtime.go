@@ -547,8 +547,16 @@ func (r *Runtime) deliverThrottle(ctx context.Context, command domain.ThrottleCo
 	if !ok || command.WorkerID != r.config.WorkerID || command.AttemptID != record.Assignment.AttemptID ||
 		command.AssignmentEpoch != record.Assignment.Epoch || command.ThreadID != record.Package.Package.Identity.ThreadID ||
 		command.WorkspacePath != record.WorkspacePath || command.Route.WorkerID != r.config.WorkerID ||
-		command.QuotaPoolID != record.Package.Package.Route.QuotaPoolID {
+		command.QuotaPoolID != record.Package.Package.Route.QuotaPoolID ||
+		!reflect.DeepEqual(command.Route, record.Package.Package.Route) {
 		return r.finishThrottle(command, false, "", nil, "stale or mismatched throttle command")
+	}
+	if binding := command.AttentionStop; binding != nil {
+		pkg := record.Package.Package
+		if binding.CoordinatorID != pkg.CoordinatorID || binding.CoordinatorEpoch != pkg.CoordinatorEpoch ||
+			binding.WorkflowRunID != pkg.Identity.WorkflowRunID || binding.TaskID != pkg.Identity.TaskID {
+			return r.finishThrottle(command, false, "", nil, "attention stop execution identity changed")
+		}
 	}
 	if err := r.journal.update(func(state *journalState) error {
 		current := state.Attempts[command.AssignmentID]
@@ -705,6 +713,18 @@ func (r *Runtime) reconcilePass(ctx context.Context) error {
 }
 
 func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record AttemptRecord, now time.Time) error {
+	// Durable command responsibility must survive observation/restart phase repair.
+	// stop itself yields to a registered collection so its completed result wins.
+	if hasCommandRequest(record, domain.WorkerCommandStop) && !record.StopConfirmed &&
+		record.Phase != PhaseCompleted && record.Phase != PhaseFailed {
+		if err := r.stop(ctx, id); err != nil {
+			if isJournalError(err) {
+				return err
+			}
+			r.log.Warn("stop outcome is unproven; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, err))
+		}
+		return nil
+	}
 	var err error
 	switch record.Phase {
 	case PhaseRunning:
@@ -799,7 +819,7 @@ func (r *Runtime) reconcileAttempt(ctx context.Context, id string, record Attemp
 		if stopErr := r.driver.StopThread(ctx, record.Package.Package); stopErr != nil {
 			r.log.Warn("stop outcome is unproven; retrying next reconcile", "assignment", id, "error", r.loggedError(ctx, id, stopErr))
 		} else {
-			err = r.confirmStop(id)
+			err = r.confirmStop(id, record)
 		}
 	case PhaseCollecting:
 		// A stop accepted while a collection was running was deferred, not
@@ -1121,13 +1141,6 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 		return nil
 	case PhaseClaimed, PhasePreparing, PhasePrepared:
 		return r.markFailed(ctx, id, "stopped by the coordinator before dispatch")
-	case PhaseStopped:
-		if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
-			return fmt.Errorf("stop settlement is unproven: %w", err)
-		}
-		return r.confirmStop(id)
-	case PhaseUnknown:
-		return r.recoverUnknown(ctx, id, record)
 	case PhaseCollecting:
 		// A collection started by an earlier pass is running or has already
 		// published its result. The stop yields to it, exactly as it did when
@@ -1138,6 +1151,13 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 			if err := r.collect(ctx, id); err != nil {
 				return fmt.Errorf("stop deferred: %w", err)
 			}
+			current, exists, err := r.currentRecord(id)
+			if err != nil {
+				return err
+			}
+			if exists && current.Phase != PhaseCompleted && current.Phase != PhaseFailed {
+				return errors.New("stop deferred: collection custody still active")
+			}
 			return nil
 		}
 	}
@@ -1147,14 +1167,19 @@ func (r *Runtime) stop(ctx context.Context, id string) error {
 	if err := r.driver.StopThread(ctx, record.Package.Package); err != nil {
 		return fmt.Errorf("stop outcome is unproven: %w", err)
 	}
-	return r.confirmStop(id)
+	return r.confirmStop(id, record)
 }
 
 // confirmStop records successful provider stop separately from a naturally
 // stopped thread or an accepted command whose provider effect is still unknown.
-func (r *Runtime) confirmStop(id string) error {
+func (r *Runtime) confirmStop(id string, stopped AttemptRecord) error {
 	return r.journal.update(func(state *journalState) error {
-		record := state.Attempts[id]
+		record, exists := state.Attempts[id]
+		if !exists || record.Phase != PhaseStopping || record.Assignment.Epoch != stopped.Assignment.Epoch ||
+			!reflect.DeepEqual(record.Package, stopped.Package) ||
+			record.WorkspacePath != stopped.WorkspacePath || record.ThreadID != stopped.ThreadID {
+			return errors.New("stop confirmation execution identity changed")
+		}
 		record.Phase = PhaseStopped
 		record.StopConfirmed = true
 		record.ThreadID = record.Package.Package.Identity.ThreadID
@@ -1472,6 +1497,10 @@ func (r *Runtime) validateCommand(command domain.WorkerCommand, state journalSta
 	if !ok || command.AssignmentEpoch != record.Assignment.Epoch {
 		return errors.New("unknown or stale assignment")
 	}
+	if (command.Kind == domain.WorkerCommandPrepare || command.Kind == domain.WorkerCommandDispatch) &&
+		hasCommandRequest(record, domain.WorkerCommandStop) {
+		return errors.New("execution has a durable stop request")
+	}
 	return nil
 }
 
@@ -1483,7 +1512,7 @@ func (r *Runtime) finishCommand(command domain.WorkerCommand, accepted bool, det
 	var result domain.WorkerAcknowledgement
 	err := r.journal.update(func(state *journalState) error {
 		record, ok := state.Attempts[command.AssignmentID]
-		if !ok {
+		if !ok || record.Assignment.Epoch != command.AssignmentEpoch {
 			result = domain.WorkerAcknowledgement{
 				CommandID: command.ID, WorkerID: r.config.WorkerID, WorkerEpoch: r.config.WorkerEpoch,
 				CoordinatorEpoch: r.config.CoordinatorEpoch, AssignmentID: command.AssignmentID,
@@ -1522,7 +1551,9 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 	var acknowledgement domain.ThrottleAcknowledgement
 	err := r.journal.update(func(state *journalState) error {
 		record, ok := state.Attempts[command.AssignmentID]
-		if !ok {
+		if !ok || record.Assignment.Epoch != command.AssignmentEpoch ||
+			command.AttemptID != record.Assignment.AttemptID || command.ThreadID != record.Package.Package.Identity.ThreadID ||
+			command.WorkspacePath != record.WorkspacePath || !reflect.DeepEqual(command.Route, record.Package.Package.Route) {
 			acknowledgement = domain.ThrottleAcknowledgement{CommandID: command.ID, AttemptID: command.AttemptID, Accepted: false, Error: detail, AcknowledgedAt: r.now()}
 			return nil
 		}
@@ -1556,6 +1587,7 @@ func (r *Runtime) finishThrottle(command domain.ThrottleCommand, accepted bool, 
 					record.ObservedThreadState = "stopped"
 				}
 			case domain.ThrottleCommandResume:
+				record.StopConfirmed = false
 				record.StopObservedSequence = 0
 				record.Phase = PhaseRunning
 			}
@@ -1704,6 +1736,7 @@ func (r *Runtime) writePhase(id string, phase Phase, failure, workspace, thread 
 			return fmt.Errorf("worker journal: unknown assignment %q", id)
 		}
 		if phase == PhaseRunning {
+			record.StopConfirmed = false
 			record.StopObservedSequence = 0
 		}
 		if phase != PhaseCollecting {
@@ -1760,8 +1793,11 @@ func isJournalError(err error) bool {
 }
 
 func hasCommandRequest(record AttemptRecord, kind domain.WorkerCommandKind) bool {
-	for _, command := range record.CommandRequests {
+	for id, command := range record.CommandRequests {
 		if command.Kind == kind {
+			if acknowledgement, exists := record.CommandResults[id]; exists && !acknowledgement.Accepted {
+				continue
+			}
 			return true
 		}
 	}

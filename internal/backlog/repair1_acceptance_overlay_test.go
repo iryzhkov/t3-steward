@@ -31,12 +31,12 @@ func TestIndependentRuntimeTerminalFencesParkCleanupBoundary(t *testing.T) {
 			if evidence == "old-epoch-absent" {
 				snapshot.WorkerEpoch = "new-session"
 			}
-			if evidence == "released" || evidence == "completed" {
+			if evidence == "released" || evidence == "completed" || evidence == "stop-accepted" {
 				state := domain.AssignmentReleased
 				if evidence == "completed" {
 					state = domain.AssignmentCompleted
 				}
-				snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: a.ID, AssignmentEpoch: a.Epoch, State: state, ObservedAt: now}}
+				snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: a.ID, AssignmentEpoch: a.Epoch, State: state, ThreadID: a.ThreadID, ObservedAt: now}}
 			}
 			sibling := original
 			sibling.ID = "sibling"
@@ -169,7 +169,7 @@ func TestIndependentRuntimeTerminalFencesMissingOldEvidenceMixed(t *testing.T) {
 			live.TaskID = "sibling-task"
 			live.AssignmentID = "0-live"
 			live.Progress = domain.ProgressActive
-			live.Control = domain.ControlResuming
+			live.Control = domain.ControlPreparing
 			live.CompletedAt = nil
 			la := a
 			la.ID = live.AssignmentID

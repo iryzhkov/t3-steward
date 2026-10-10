@@ -141,6 +141,15 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	if err != nil {
 		return nil, fmt.Errorf("worker service supervisor storage: %w", err)
 	}
+	// Create owned private storage before a claim can require a stop. An empty
+	// initialized root proves there are no durable verifier records; missing or
+	// corrupt storage after initialization still fails closed.
+	if err := ensureRealDirectory(supervisorRoot); err != nil {
+		return nil, fmt.Errorf("worker service supervisor storage: %w", err)
+	}
+	if info, err := os.Lstat(supervisorRoot); err != nil || info.Mode().Perm() != 0o700 {
+		return nil, fmt.Errorf("worker service supervisor storage must be private: %w", errors.Join(err, errors.New("expected mode 0700")))
+	}
 	scoped := ContainedT3{
 		Supervisor: providercontainment.Supervisor{Root: supervisorRoot, Executable: executable},
 		Timeout:    options.Settings.Transport.RequestTimeout.D(),

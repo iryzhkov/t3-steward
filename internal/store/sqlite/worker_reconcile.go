@@ -93,11 +93,70 @@ func (s *Store) CommitWorkerStateTransitions(
 			}
 		}
 
+		if transition.Assignment.State == domain.AssignmentClaimed &&
+			(currentAttempt.Control == domain.ControlDraining || currentAttempt.Control == domain.ControlPaused ||
+				currentAttempt.Control == domain.ControlPausedUncheckpointed || currentAttempt.Control == domain.ControlResuming) &&
+			(transition.Attempt.Control == domain.ControlPreparing || transition.Attempt.Control == domain.ControlRunning ||
+				transition.Attempt.Control == domain.ControlResuming && currentAttempt.Control != domain.ControlResuming) {
+			return nil, fmt.Errorf("%w: worker projection cannot resume coordinator intent", ErrStaleWorkerStateTransition)
+		}
+		if transition.Reason == "worker-observed-stopped" || transition.Reason == "stop-accepted" ||
+			transition.Assignment.State == domain.AssignmentReleased &&
+				(currentAttempt.Control == domain.ControlDraining || currentAttempt.Control == domain.ControlPaused ||
+					currentAttempt.Control == domain.ControlPausedUncheckpointed || currentAttempt.Control == domain.ControlResuming ||
+					currentAttempt.Progress == domain.ProgressCancelled) {
+			proven := false
+			for _, observation := range snapshot.Assignments {
+				if observation.AssignmentID == currentAssignment.ID && observation.AssignmentEpoch == currentAssignment.Epoch &&
+					observation.State == domain.AssignmentReleased && snapshot.WorkerEpoch == currentAssignment.WorkerEpoch &&
+					observation.ThreadID == currentAssignment.ThreadID {
+					proven = true
+				}
+			}
+			if !proven {
+				return nil, fmt.Errorf("%w: stopped observation execution identity changed", ErrStaleWorkerStateTransition)
+			}
+		}
+		// Attention-stop owns its exact cancelled revision until its stop observation.
+		// Normal worker custody updates must not invalidate that existing fence.
+		if currentAttempt.Progress == domain.ProgressCancelled && currentAttempt.Control == domain.ControlDraining {
+			records, err := loadThrottleAttemptRecordsTx(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			pendingAttentionStop := false
+			for _, record := range records {
+				binding := record.Command.AttentionStop
+				if binding != nil && record.AttemptID == currentAttempt.ID &&
+					binding.AppliedRevision == currentAttempt.Revision &&
+					binding.CoordinatorEpoch == transition.CoordinatorEpoch &&
+					binding.WorkflowRunID == currentAttempt.WorkflowRunID && binding.TaskID == currentAttempt.TaskID &&
+					record.Command.AttemptID == currentAttempt.ID &&
+					reflect.DeepEqual(record.Command.Route, currentAssignment.Route) &&
+					record.Command.AssignmentID == currentAssignment.ID &&
+					record.Command.AssignmentEpoch == currentAssignment.Epoch &&
+					record.Command.WorkerID == currentAssignment.WorkerID &&
+					record.Command.ThreadID == currentAssignment.ThreadID &&
+					binding.CommandDigest != "" && binding.CommandDigest == domain.AttentionStopCommandDigest(record.Command) {
+					pendingAttentionStop = true
+					break
+				}
+			}
+			if pendingAttentionStop {
+				applied = append(applied, currentAssignment)
+				continue
+			}
+		}
+
 		// Worker evidence may settle custody, but cannot rewrite a finished
 		// attempt or discard completion and artifact evidence.
 		if currentAttempt.Progress.Terminal() || currentAttempt.CompletedAt != nil {
 			next := transition.Attempt
-			if next.Progress != currentAttempt.Progress || next.Control != domain.ControlStopped ||
+			preservedStopIntent := transition.Assignment.State == domain.AssignmentClaimed &&
+				next.Control == currentAttempt.Control &&
+				(currentAttempt.Control == domain.ControlDraining || currentAttempt.Control == domain.ControlPaused ||
+					currentAttempt.Control == domain.ControlPausedUncheckpointed)
+			if next.Progress != currentAttempt.Progress || next.Control != domain.ControlStopped && !preservedStopIntent ||
 				!reflect.DeepEqual(next.CompletedAt, currentAttempt.CompletedAt) ||
 				next.Failure != currentAttempt.Failure ||
 				next.CheckpointArtifactID != currentAttempt.CheckpointArtifactID ||

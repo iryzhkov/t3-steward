@@ -156,6 +156,36 @@ func TestAttentionStopObservationIsProducedByRuntimeAndConsumedBySQLite(t *testi
 		t.Fatalf("throttle records=%+v err=%v", records, err)
 	}
 	command := records[0].Command
+	// A normal exchange between decision and effect must preserve the exact
+	// attention owner revision while still letting the existing stop settle it.
+	claimed, err := runtime.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SaveWorkerSnapshot(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	coordinatorRecords, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitions, err := backlog.PlanWorkerStateTransitions(coordinatorRecords, claimed, nil, now)
+	if err != nil || len(transitions) != 1 {
+		t.Fatalf("ordinary attention-stop reconciliation=%+v err=%v", transitions, err)
+	}
+	if _, err = store.CommitWorkerStateTransitions(ctx, transitions); err != nil {
+		t.Fatal(err)
+	}
+	coordinatorRecords, err = store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coordinatorRecords.Attempts) != 1 ||
+		coordinatorRecords.Attempts[0].Revision != command.AttentionStop.AppliedRevision ||
+		coordinatorRecords.Attempts[0].Control != domain.ControlDraining ||
+		coordinatorRecords.Attempts[0].Progress != domain.ProgressCancelled {
+		t.Fatalf("normal exchange lost attention stop fence: %+v", coordinatorRecords.Attempts)
+	}
 	acks, err := runtime.DeliverThrottle(ctx, []domain.ThrottleCommand{command})
 	if err != nil || len(acks) != 1 || !acks[0].Accepted || acks[0].Result != domain.ThrottleResultStopped {
 		t.Fatalf("deliver stop acks=%+v err=%v", acks, err)

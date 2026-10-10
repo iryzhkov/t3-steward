@@ -149,9 +149,15 @@ func planWorkerStateTransition(
 			nextAttempt.AssignmentID = assignment.ID
 			reason := workerStateObservedPresent
 			switch {
+			case workerOwnsStopIntent(attempt):
+				// Worker claims update custody, never authorize an operator resume.
+				nextAttempt.Control = attempt.Control
 			case attemptFinished:
 				nextAttempt.Control = domain.ControlStopped
 				reason = "terminal-attempt-stop-required"
+			case attempt.Control == domain.ControlResuming:
+				// A preparing/running claim may predate the authorized resume.
+				nextAttempt.Control = attempt.Control
 			case attempt.Progress == domain.ProgressWaitingExternal:
 				// The coordinator owns the park, and the worker's view of a parked
 				// attempt lags it by at least one exchange. Letting a stale
@@ -184,6 +190,9 @@ func planWorkerStateTransition(
 			nextAttempt.UpdatedAt = now
 			return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, reason)
 		case domain.AssignmentReleased:
+			if snapshot.WorkerEpoch != assignment.WorkerEpoch || observation.ThreadID != assignment.ThreadID {
+				return assignment, attempt, "", false, fmt.Errorf("released observation execution identity mismatch for %q", assignment.ID)
+			}
 			return releasedWorkerState(assignment, attempt, now, workerStateObservedStopped)
 		case domain.AssignmentCompleted:
 			if acceptedWorkerCommand(commands, assignment, domain.WorkerCommandCollect) {
@@ -200,7 +209,9 @@ func planWorkerStateTransition(
 			nextAssignment.ThreadID = observation.ThreadID
 			nextAssignment.UpdatedAt = now
 			nextAttempt := attempt
-			nextAttempt.Control = domain.ControlStopped
+			if attemptFinished || !workerOwnsStopIntent(attempt) {
+				nextAttempt.Control = domain.ControlStopped
+			}
 			nextAttempt.UpdatedAt = now
 			return finishWorkerStateTransition(assignment, attempt, nextAssignment, nextAttempt, workerStateObservedUnknown)
 		default:
@@ -209,10 +220,14 @@ func planWorkerStateTransition(
 	}
 
 	if acceptedWorkerCommand(commands, assignment, domain.WorkerCommandStop) {
-		return releasedWorkerState(assignment, attempt, now, workerStateStopAccepted)
+		// Accepted responsibility, including deferred effects, is not stop proof.
+		return assignment, attempt, "", false, nil
 	}
 	if acceptedWorkerCommand(commands, assignment, domain.WorkerCommandCollect) {
 		return completedWorkerState(assignment, attempt, assignment.WorkerEpoch, assignment.ThreadID, now, workerStateCollectAccepted)
+	}
+	if workerOwnsStopIntent(attempt) || attempt.Control == domain.ControlResuming {
+		return assignment, attempt, "", false, nil
 	}
 	if rejectedWorkerCommand(commands, assignment, domain.WorkerCommandPrepare) ||
 		rejectedWorkerCommand(commands, assignment, domain.WorkerCommandDispatch) {
@@ -391,6 +406,11 @@ func rejectedWorkerCommand(records map[string]domain.WorkerCommandRecord, assign
 func waitingExternal(attempt domain.Attempt) bool {
 	return attempt.Progress == domain.ProgressWaitingExternal ||
 		attempt.Control == domain.ControlWaitingExternal
+}
+
+func workerOwnsStopIntent(attempt domain.Attempt) bool {
+	return attempt.Control == domain.ControlDraining || attempt.Control == domain.ControlPaused ||
+		attempt.Control == domain.ControlPausedUncheckpointed
 }
 
 func workerAssignmentKey(assignmentID string, assignmentEpoch int64) string {

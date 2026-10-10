@@ -38,6 +38,16 @@ func (d *LocalDriver) StopPreparation(ctx context.Context, pkg workerproto.Execu
 	return nil
 }
 
+// stopContext bounds each durable owner's forced stop independently of the
+// caller's transport deadline. It grants no release authority on timeout.
+func (p ContainedT3) stopContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := p.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
 func (p ContainedT3) stopVerifications(ctx context.Context, pkg workerproto.ExecutionPackage) error {
 	path, err := p.recordPath(pkg)
 	if err != nil {
@@ -47,30 +57,39 @@ func (p ContainedT3) stopVerifications(ctx context.Context, pkg workerproto.Exec
 	if err != nil {
 		return err
 	}
+	var failures []error
 	for _, entry := range entries {
 		if !strings.HasPrefix(entry.Name(), filepath.Base(path)+".verify.") {
 			continue
 		}
 		raw, err := readBoundedRegularFile(filepath.Join(filepath.Dir(path), entry.Name()), 1<<20)
 		if err != nil {
-			return err
+			failures = append(failures, err)
+			continue
 		}
 		var plan containedPreparation
 		if err = json.Unmarshal(raw, &plan); err != nil {
-			return err
+			failures = append(failures, err)
+			continue
 		}
 		if plan.Identity != pkg.Identity || plan.WorkerID != pkg.WorkerID || !strings.HasPrefix(plan.Launch.ExecutionID, pkg.Identity.ThreadID+":verify-") {
-			return errors.New("verification custody identity mismatch")
+			failures = append(failures, errors.New("verification custody identity mismatch"))
+			continue
 		}
-		stopped, err := p.Supervisor.Stop(ctx, plan.Launch)
+		// Each validated owner gets its own bounded stop opportunity; an earlier
+		// timeout must not starve an independently stoppable process.
+		stopCtx, cancel := p.stopContext(ctx)
+		stopped, err := p.Supervisor.Stop(stopCtx, plan.Launch)
+		cancel()
 		if err != nil {
-			return err
+			failures = append(failures, err)
+			continue
 		}
 		if !stopped.Stopped {
-			return errors.New("verification process custody unproven")
+			failures = append(failures, errors.New("verification process custody unproven"))
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // Keep existing millisecond invocation bytes stable for durable replay, while

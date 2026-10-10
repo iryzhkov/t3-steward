@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,164 +82,315 @@ func TestExecutePendingCommandsSurvivesRestartAndReplaysRetry(t *testing.T) {
 }
 
 func TestExecutePendingPausePersistsDeliveryIntentAcrossRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.db")
-	store, err := sqlitetest.OpenMigrated(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := adminTestNow
-	route := domain.ProviderRoute{
-		WorkerID: "normandy", ProviderInstanceID: "codex", Model: "model", QuotaPoolID: "pool",
-	}
-	records := sqlite.CoordinatorRecords{
-		Workflows:    []domain.Workflow{{ID: "workflow-1", Version: 2, Name: "workflow", Class: domain.TaskClassRequired, TaskIDs: []string{"task-1"}}},
-		WorkflowRuns: []domain.WorkflowRun{{ID: "run-1", WorkflowID: "workflow-1", Progress: domain.ProgressActive, Revision: 1}},
-		Tasks:        []domain.Task{{ID: "task-1", WorkflowID: "workflow-1", Name: "task", Class: domain.TaskClassRequired}},
-		Attempts: []domain.Attempt{{
-			ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1,
-			Progress: domain.ProgressActive, Control: domain.ControlRunning, Revision: 3,
-			AssignmentID: "assignment-1",
-		}},
-		Assignments: []domain.Assignment{{
-			ID: "assignment-1", AttemptID: "attempt-1", WorkerID: "normandy", WorkerEpoch: "worker-epoch",
-			Route: route, State: domain.AssignmentClaimed, Epoch: 1, ThreadID: "thread-1",
-		}},
-	}
-	if err := store.SaveCoordinatorRecords(context.Background(), records); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveWorkerSnapshot(context.Background(), domain.WorkerSnapshot{
-		WorkerID: "normandy", WorkerEpoch: "worker-epoch", CoordinatorEpoch: 1, Sequence: 1,
-		Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Minute),
-		Inventory: domain.WorkerInventory{ID: "normandy"},
-		Assignments: []domain.WorkerAssignmentObservation{{
-			AssignmentID: "assignment-1", AssignmentEpoch: 1, State: domain.AssignmentClaimed,
-			ThreadID: "thread-1", WorkspacePath: "/runs/run-1/task-1/attempt-1/workspace",
-		}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	service, err := New(store, &allowAuthorizer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service.SetClock(func() time.Time { return now })
-	request := Mutation{
-		Version: Version, Principal: Principal{ID: "operator"}, ID: "pause-1",
-		Kind: domain.AdminCommandPause, WorkflowRunID: "run-1", TaskID: "task-1",
-		ExpectedRevision: 3, Reason: "operator pause", Payload: json.RawMessage(`{"now":true}`),
-	}
-	if _, err := service.Mutate(context.Background(), request); err != nil {
-		t.Fatal(err)
-	}
-	plannedRecords, err := store.LoadCoordinatorRecords(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	workers, err := store.LoadWorkerSnapshots(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	application, _, err := planAdminCommand(plannedRecords, workers, nil, plannedRecords.AdminCommands[0], now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, tamper := range map[string]func(*domain.ThrottleAttemptTransition){
-		"workspace": func(intent *domain.ThrottleAttemptTransition) {
-			intent.Record.Command.WorkspacePath = "/different/workspace"
-		},
-		"route": func(intent *domain.ThrottleAttemptTransition) {
-			intent.Record.Command.Route.Model = "different-model"
-		},
-	} {
-		t.Run("rejects tampered "+name, func(t *testing.T) {
-			tampered := application
-			intent := *application.PauseIntent
-			tamper(&intent)
-			tampered.PauseIntent = &intent
-			if _, err := store.ApplyAdminCommand(context.Background(), tampered); !errors.Is(err, sqlite.ErrInvalidAdminCommandOutcome) {
-				t.Fatalf("tampered pause application error = %v", err)
-			}
-		})
-	}
-	unchanged, err := store.LoadCoordinatorRecords(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	unchangedIntents, err := store.LoadThrottleAttemptRecords(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unchanged.AdminCommands[0].State != domain.AdminCommandPending ||
-		unchanged.Attempts[0].Control != domain.ControlRunning || len(unchangedIntents) != 0 {
-		t.Fatalf("tampered pause application mutated state: records = %#v, intents = %#v", unchanged, unchangedIntents)
-	}
-	report, err := service.ExecutePendingCommands(context.Background())
-	if err != nil || len(report.Decisions) != 1 || report.Decisions[0].Command.State != domain.AdminCommandApplied {
-		t.Fatalf("pause execution = %#v, err = %v", report, err)
-	}
-	loaded, err := store.LoadCoordinatorRecords(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	intents, err := store.LoadThrottleAttemptRecords(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Attempts[0].Control != domain.ControlDraining || loaded.Attempts[0].Revision != 4 ||
-		len(intents) != 1 || intents[0].Delivery != domain.ThrottleDeliveryPending ||
-		intents[0].Command.Kind != domain.ThrottleCommandHardStop ||
-		intents[0].Command.AssignmentID != "assignment-1" ||
-		intents[0].Command.ThreadID != "thread-1" ||
-		intents[0].Command.WorkspacePath != "/runs/run-1/task-1/attempt-1/workspace" ||
-		intents[0].Command.Route.QuotaPoolID != "pool" {
-		t.Fatalf("pause state = %#v, intents = %#v", loaded.Attempts, intents)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = sqlitetest.OpenMigrated(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	service, err = New(store, &allowAuthorizer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if replay, err := service.Mutate(context.Background(), request); err != nil || replay.Command.State != domain.AdminCommandApplied {
-		t.Fatalf("pause replay = %#v, err = %v", replay, err)
-	}
-	if again, err := service.ExecutePendingCommands(context.Background()); err != nil || len(again.Decisions) != 0 {
-		t.Fatalf("pause re-execution = %#v, err = %v", again, err)
-	}
-	intents, err = store.LoadThrottleAttemptRecords(context.Background())
-	if err != nil || len(intents) != 1 {
-		t.Fatalf("restart intents = %#v, err = %v", intents, err)
-	}
-	acknowledged, err := backlog.PlanThrottleAcknowledgements(
-		intents,
-		[]domain.ThrottleAcknowledgement{{
-			CommandID: intents[0].Command.ID, AttemptID: "attempt-1", Accepted: true,
-			Result: domain.ThrottleResultStopped, AcknowledgedAt: now.Add(time.Minute),
-		}},
-		now.Add(time.Minute),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CommitThrottleAttemptTransitions(context.Background(), acknowledged); err != nil {
-		t.Fatal(err)
-	}
-	loaded, err = store.LoadCoordinatorRecords(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Attempts[0].Control != domain.ControlPausedUncheckpointed ||
-		loaded.Attempts[0].AssignmentID != "assignment-1" ||
-		loaded.Assignments[0].ThreadID != "thread-1" ||
-		loaded.Assignments[0].Route.QuotaPoolID != "pool" {
-		t.Fatalf("acknowledged pause lost execution identity: %#v", loaded)
+	for _, initial := range []domain.ControlState{domain.ControlPreparing, domain.ControlRunning} {
+		for _, hard := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/immediate=%t", initial, hard), func(t *testing.T) {
+				wantResult := domain.ThrottleResultCheckpointed
+				wantControl := domain.ControlPaused
+				wantKind := domain.ThrottleCommandDrain
+				if hard {
+					wantKind = domain.ThrottleCommandHardStop
+					wantResult = domain.ThrottleResultStopped
+					wantControl = domain.ControlPausedUncheckpointed
+				}
+				path := filepath.Join(t.TempDir(), "state.db")
+				store, err := sqlitetest.OpenMigrated(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := adminTestNow
+				route := domain.ProviderRoute{
+					WorkerID: "normandy", ProviderInstanceID: "codex", Model: "model", QuotaPoolID: "pool",
+				}
+				records := sqlite.CoordinatorRecords{
+					Workflows:    []domain.Workflow{{ID: "workflow-1", Version: 2, Name: "workflow", Class: domain.TaskClassRequired, TaskIDs: []string{"task-1"}}},
+					WorkflowRuns: []domain.WorkflowRun{{ID: "run-1", WorkflowID: "workflow-1", Progress: domain.ProgressActive, Revision: 1}},
+					Tasks:        []domain.Task{{ID: "task-1", WorkflowID: "workflow-1", Name: "task", Class: domain.TaskClassRequired}},
+					Attempts: []domain.Attempt{{
+						ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1,
+						Progress: domain.ProgressActive, Control: initial, Revision: 3,
+						AssignmentID: "assignment-1",
+					}},
+					Assignments: []domain.Assignment{{
+						ID: "assignment-1", AttemptID: "attempt-1", WorkerID: "normandy", WorkerEpoch: "worker-epoch",
+						Route: route, State: domain.AssignmentClaimed, Epoch: 1, ThreadID: "thread-1",
+					}},
+				}
+				if err := store.SaveCoordinatorRecords(context.Background(), records); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.SaveWorkerSnapshot(context.Background(), domain.WorkerSnapshot{
+					WorkerID: "normandy", WorkerEpoch: "worker-epoch", CoordinatorEpoch: 1, Sequence: 1,
+					Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Minute),
+					Inventory: domain.WorkerInventory{ID: "normandy"},
+					Assignments: []domain.WorkerAssignmentObservation{{
+						AssignmentID: "assignment-1", AssignmentEpoch: 1, State: domain.AssignmentClaimed, Control: initial,
+						ThreadID: "thread-1", WorkspacePath: "/runs/run-1/task-1/attempt-1/workspace",
+					}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				service, err := New(store, &allowAuthorizer{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				service.SetClock(func() time.Time { return now })
+				request := Mutation{
+					Version: Version, Principal: Principal{ID: "operator"}, ID: "pause-1",
+					Kind: domain.AdminCommandPause, WorkflowRunID: "run-1", TaskID: "task-1",
+					ExpectedRevision: 3, Reason: "operator pause", Payload: json.RawMessage(fmt.Sprintf(`{"now":%t}`, hard)),
+				}
+				if _, err := service.Mutate(context.Background(), request); err != nil {
+					t.Fatal(err)
+				}
+				plannedRecords, err := store.LoadCoordinatorRecords(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				workers, err := store.LoadWorkerSnapshots(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				application, _, err := planAdminCommand(plannedRecords, workers, nil, plannedRecords.AdminCommands[0], now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for name, tamper := range map[string]func(*domain.ThrottleAttemptTransition){
+					"workspace": func(intent *domain.ThrottleAttemptTransition) {
+						intent.Record.Command.WorkspacePath = "/different/workspace"
+					},
+					"route": func(intent *domain.ThrottleAttemptTransition) {
+						intent.Record.Command.Route.Model = "different-model"
+					},
+				} {
+					t.Run("rejects tampered "+name, func(t *testing.T) {
+						tampered := application
+						intent := *application.PauseIntent
+						tamper(&intent)
+						tampered.PauseIntent = &intent
+						if _, err := store.ApplyAdminCommand(context.Background(), tampered); !errors.Is(err, sqlite.ErrInvalidAdminCommandOutcome) {
+							t.Fatalf("tampered pause application error = %v", err)
+						}
+					})
+				}
+				unchanged, err := store.LoadCoordinatorRecords(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				unchangedIntents, err := store.LoadThrottleAttemptRecords(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if unchanged.AdminCommands[0].State != domain.AdminCommandPending ||
+					unchanged.Attempts[0].Control != initial || len(unchangedIntents) != 0 {
+					t.Fatalf("tampered pause application mutated state: records = %#v, intents = %#v", unchanged, unchangedIntents)
+				}
+				report, err := service.ExecutePendingCommands(context.Background())
+				if err != nil || len(report.Decisions) != 1 || report.Decisions[0].Command.State != domain.AdminCommandApplied {
+					t.Fatalf("pause execution = %#v, err = %v", report, err)
+				}
+				loaded, err := store.LoadCoordinatorRecords(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				intents, err := store.LoadThrottleAttemptRecords(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if loaded.Attempts[0].Control != domain.ControlDraining || loaded.Attempts[0].Revision != 4 ||
+					len(intents) != 1 || intents[0].Delivery != domain.ThrottleDeliveryPending ||
+					intents[0].Command.Kind != wantKind ||
+					intents[0].Command.AssignmentID != "assignment-1" ||
+					intents[0].Command.ThreadID != "thread-1" ||
+					intents[0].Command.WorkspacePath != "/runs/run-1/task-1/attempt-1/workspace" ||
+					intents[0].Command.Route.QuotaPoolID != "pool" {
+					t.Fatalf("pause state = %#v, intents = %#v", loaded.Attempts, intents)
+				}
+
+				for _, control := range []domain.ControlState{domain.ControlPreparing, domain.ControlStopped, domain.ControlRunning} {
+					now = now.Add(time.Second)
+					workers, err := store.LoadWorkerSnapshots(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					snapshot := workers[0]
+					snapshot.Sequence++
+					snapshot.Assignments[0].Control = control
+					snapshot.Assignments[0].State = domain.AssignmentClaimed
+					if control == domain.ControlStopped {
+						snapshot.Assignments[0].State = domain.AssignmentUnknown
+					}
+					snapshot.Assignments[0].ObservedAt = now
+					snapshot.ObservedAt = now
+					snapshot.ValidUntil = now.Add(time.Hour)
+					if err := store.SaveWorkerSnapshot(context.Background(), snapshot); err != nil {
+						t.Fatal(err)
+					}
+					records, err := store.LoadCoordinatorRecords(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					transitions, err := backlog.PlanWorkerStateTransitions(records, snapshot, nil, now)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := store.CommitWorkerStateTransitions(context.Background(), transitions); err != nil {
+						t.Fatal(err)
+					}
+					records, err = store.LoadCoordinatorRecords(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if records.Attempts[0].Control != domain.ControlDraining || records.Attempts[0].AssignmentID != "assignment-1" {
+						t.Fatalf("worker %s overwrote operator pause: %#v", control, records.Attempts[0])
+					}
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+				store, err = sqlitetest.OpenMigrated(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer store.Close()
+				service, err = New(store, &allowAuthorizer{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if replay, err := service.Mutate(context.Background(), request); err != nil || replay.Command.State != domain.AdminCommandApplied {
+					t.Fatalf("pause replay = %#v, err = %v", replay, err)
+				}
+				if again, err := service.ExecutePendingCommands(context.Background()); err != nil || len(again.Decisions) != 0 {
+					t.Fatalf("pause re-execution = %#v, err = %v", again, err)
+				}
+				intents, err = store.LoadThrottleAttemptRecords(context.Background())
+				if err != nil || len(intents) != 1 {
+					t.Fatalf("restart intents = %#v, err = %v", intents, err)
+				}
+				acknowledged, err := backlog.PlanThrottleAcknowledgements(
+					intents,
+					[]domain.ThrottleAcknowledgement{{
+						CommandID: intents[0].Command.ID, AttemptID: "attempt-1", Accepted: true,
+						Result: wantResult, AcknowledgedAt: now.Add(time.Minute),
+						Checkpoint: &domain.CheckpointMetadata{ArtifactID: "checkpoint", Path: ".t3/checkpoint.md", SHA256: strings.Repeat("a", 64), Size: 1, CapturedAt: now},
+					}},
+					now.Add(time.Minute),
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.CommitThrottleAttemptTransitions(context.Background(), acknowledged); err != nil {
+					t.Fatal(err)
+				}
+				loaded, err = store.LoadCoordinatorRecords(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if loaded.Attempts[0].Control != wantControl ||
+					loaded.Attempts[0].AssignmentID != "assignment-1" ||
+					loaded.Assignments[0].ThreadID != "thread-1" ||
+					loaded.Assignments[0].Route.QuotaPoolID != "pool" {
+					t.Fatalf("acknowledged pause lost execution identity: %#v", loaded)
+				}
+
+				// A healthy assigned route permits an explicit resume. A stale paused
+				// observation cannot reverse it; the accepted resume result advances it.
+				if err := store.SaveCoordinatorRecords(context.Background(), sqlite.CoordinatorRecords{
+					QuotaPools: []domain.QuotaPool{{ID: "pool", Admission: domain.AdmissionOpen}},
+				}); err != nil {
+					t.Fatal(err)
+				}
+				workers, err = store.LoadWorkerSnapshots(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				snapshot := workers[0]
+				snapshot.Sequence++
+				now = now.Add(2 * time.Minute)
+				snapshot.ObservedAt = now
+				snapshot.ValidUntil = now.Add(time.Hour)
+				snapshot.Inventory.AcceptBacklog = true
+				snapshot.Inventory.Health = domain.WorkerHealthReady
+				snapshot.Assignments[0].State = domain.AssignmentClaimed
+				snapshot.Assignments[0].Control = domain.ControlPaused
+				snapshot.Assignments[0].ObservedAt = now
+				if err := store.SaveWorkerSnapshot(context.Background(), snapshot); err != nil {
+					t.Fatal(err)
+				}
+				service.SetClock(func() time.Time { return now })
+				store.SetClock(func() time.Time { return now })
+				if _, err := service.Mutate(context.Background(), Mutation{
+					Version: Version, Principal: Principal{ID: "operator"}, ID: "resume-1",
+					Kind: domain.AdminCommandResume, WorkflowRunID: "run-1", TaskID: "task-1",
+					ExpectedRevision: loaded.Attempts[0].Revision, Reason: "authorized resume",
+				}); err != nil {
+					t.Fatal(err)
+				}
+				report, err = service.ExecutePendingCommands(context.Background())
+				if err != nil || len(report.Decisions) != 1 || report.Decisions[0].Command.State != domain.AdminCommandApplied {
+					t.Fatalf("resume: %#v %v", report, err)
+				}
+				for _, control := range []domain.ControlState{domain.ControlPaused, domain.ControlPreparing, domain.ControlRunning} {
+					now = now.Add(time.Second)
+					snapshot.Sequence++
+					snapshot.ObservedAt = now
+					snapshot.Assignments[0].ObservedAt = now
+					snapshot.Assignments[0].Control = control
+					if err := store.SaveWorkerSnapshot(context.Background(), snapshot); err != nil {
+						t.Fatal(err)
+					}
+					current, err := store.LoadCoordinatorRecords(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					transitions, err := backlog.PlanWorkerStateTransitions(current, snapshot, nil, now)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := store.CommitWorkerStateTransitions(context.Background(), transitions); err != nil {
+						t.Fatal(err)
+					}
+					current, err = store.LoadCoordinatorRecords(context.Background())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if current.Attempts[0].Control != domain.ControlResuming {
+						t.Fatalf("resume overwritten by %s: %#v", control, current.Attempts[0])
+					}
+				}
+				intents, err = store.LoadThrottleAttemptRecords(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				resumes, commands, err := backlog.PlanThrottleResumes(intents,
+					[]domain.QuotaAdmissionRecord{{QuotaPoolID: "pool", Admission: domain.AdmissionOpen}},
+					[]domain.QuotaPool{{ID: "pool", MaxConcurrent: 1}}, now)
+				if err != nil || len(resumes) != 1 || len(commands) != 1 || commands[0].Kind != domain.ThrottleCommandResume {
+					t.Fatalf("resume delivery: %#v %#v %v", resumes, commands, err)
+				}
+				if err := store.CommitThrottleAttemptTransitions(context.Background(), resumes); err != nil {
+					t.Fatal(err)
+				}
+				resumed, err := backlog.PlanThrottleAcknowledgements([]domain.ThrottleAttemptRecord{resumes[0].Record},
+					[]domain.ThrottleAcknowledgement{{CommandID: commands[0].ID, AttemptID: "attempt-1",
+						Accepted: true, Result: domain.ThrottleResultResumed, AcknowledgedAt: now}}, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.CommitThrottleAttemptTransitions(context.Background(), resumed); err != nil {
+					t.Fatal(err)
+				}
+				loaded, err = store.LoadCoordinatorRecords(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if loaded.Attempts[0].Control != domain.ControlRunning ||
+					loaded.Attempts[0].AssignmentID != "assignment-1" ||
+					loaded.Assignments[0].ThreadID != "thread-1" {
+					t.Fatalf("acknowledged explicit resume: %#v", loaded)
+				}
+			})
+		}
 	}
 }
 

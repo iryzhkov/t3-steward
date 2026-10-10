@@ -35,6 +35,7 @@ func TestIndependentRuntimeTerminalFencesSkippedAndEpoch(t *testing.T) {
 				snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: a.ID, AssignmentEpoch: 1, State: state, Control: domain.ControlRunning, ObservedAt: now}}
 			case "stop":
 				commands = append(commands, workerCommandRecord(snapshot, a, domain.WorkerCommandStop, true))
+				snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: a.ID, AssignmentEpoch: a.Epoch, State: domain.AssignmentReleased, ThreadID: a.ThreadID, ObservedAt: now}}
 			case "collect":
 				commands = append(commands, workerCommandRecord(snapshot, a, domain.WorkerCommandCollect, true))
 			}

@@ -11,7 +11,7 @@ import (
 // LockWorkerSocket holds exclusive runtime custody for the socket's lifetime.
 // Kernel locks disappear after a crash; only the next owner removes its stale socket.
 func LockWorkerSocket(path string) (*os.File, error) {
-	fd, err := syscall.Open(path+".lock", syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
+	fd, err := syscall.Open(path+".lock", syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0600)
 	if err != nil {
 		return nil, err
 	}

@@ -305,80 +305,92 @@ func (p ContainedT3) Quiesce(ctx context.Context, pkg workerproto.ExecutionPacka
 	if err != nil {
 		return err
 	}
-	if _, err = p.captured(pkg); errors.Is(err, os.ErrNotExist) {
-		capture := containedCapture{Identity: pkg.Identity, WorkerID: pkg.WorkerID, Archive: []byte("{}")}
-		record, e := p.load(pkg)
-		if ended := p.endedRun(ctx, record, e, force); ended != nil {
-			// The provider is gone with its unit, so there is no outcome to
-			// capture; keep why it ended, then stop the unit below.
-			capture.Message = ended.Failure
-		} else if e == nil {
-			client, e := p.client(ctx, record)
+	captureErr := func() error {
+		if _, err = p.captured(pkg); errors.Is(err, os.ErrNotExist) {
+			capture := containedCapture{Identity: pkg.Identity, WorkerID: pkg.WorkerID, Archive: []byte("{}")}
+			record, e := p.load(pkg)
+			if ended := p.endedRun(ctx, record, e, force); ended != nil {
+				// The provider is gone with its unit, so there is no outcome to
+				// capture; keep why it ended, then stop the unit below.
+				capture.Message = ended.Failure
+			} else if e == nil {
+				client, e := p.client(ctx, record)
+				if e != nil {
+					return e
+				}
+				control := t3control.New(client, nil, false)
+				thread, e := control.GetThread(ctx, pkg.Identity.ThreadID)
+				if e != nil {
+					return e
+				}
+				terminal := true
+				if thread != nil {
+					if terminal, _, e = threadTerminal(ctx, control.ExportThread, *thread); e != nil {
+						return e
+					}
+				}
+				if !terminal {
+					if !force {
+						return errors.New("contained provider turn still active")
+					}
+					if e = control.StopThread(ctx, *thread, t3control.StopSession); e != nil {
+						return e
+					}
+					var stopped bool
+					thread, stopped, e = control.WaitStopped(ctx, pkg.Identity.ThreadID, p.Timeout)
+					if e != nil {
+						return e
+					}
+					if !stopped {
+						return errors.New("contained provider stop not confirmed")
+					}
+				}
+				capture.Thread = thread
+				if thread != nil {
+					capture.Message, e = control.LastAssistantMessage(ctx, pkg.Identity.ThreadID)
+					if e != nil {
+						return e
+					}
+					capture.Archive, e = control.ExportThread(ctx, pkg.Identity.ThreadID)
+					if e != nil {
+						return e
+					}
+				}
+			} else if !force || !errors.Is(e, os.ErrNotExist) {
+				return e
+			}
+			path, e := p.recordPath(pkg)
 			if e != nil {
 				return e
 			}
-			control := t3control.New(client, nil, false)
-			thread, e := control.GetThread(ctx, pkg.Identity.ThreadID)
-			if e != nil {
+			if e = privateJSON(path+".capture", capture); e != nil {
 				return e
 			}
-			terminal := true
-			if thread != nil {
-				if terminal, _, e = threadTerminal(ctx, control.ExportThread, *thread); e != nil {
-					return e
-				}
-			}
-			if !terminal {
-				if !force {
-					return errors.New("contained provider turn still active")
-				}
-				if e = control.StopThread(ctx, *thread, t3control.StopSession); e != nil {
-					return e
-				}
-				var stopped bool
-				thread, stopped, e = control.WaitStopped(ctx, pkg.Identity.ThreadID, p.Timeout)
-				if e != nil {
-					return e
-				}
-				if !stopped {
-					return errors.New("contained provider stop not confirmed")
-				}
-			}
-			capture.Thread = thread
-			if thread != nil {
-				capture.Message, e = control.LastAssistantMessage(ctx, pkg.Identity.ThreadID)
-				if e != nil {
-					return e
-				}
-				capture.Archive, e = control.ExportThread(ctx, pkg.Identity.ThreadID)
-				if e != nil {
-					return e
-				}
-			}
-		} else if !force || !errors.Is(e, os.ErrNotExist) {
-			return e
+		} else if err != nil {
+			return err
 		}
-		path, e := p.recordPath(pkg)
-		if e != nil {
-			return e
-		}
-		if e = privateJSON(path+".capture", capture); e != nil {
-			return e
-		}
-	} else if err != nil {
-		return err
+		return nil
+	}()
+	if captureErr != nil && !force {
+		return captureErr
 	}
-	stopped, err := p.Supervisor.Stop(ctx, plan.Launch)
-	if err != nil {
-		return err
+	stopCtx := ctx
+	if force {
+		var cancel context.CancelFunc
+		stopCtx, cancel = p.stopContext(ctx)
+		defer cancel()
 	}
-	if !stopped.Stopped {
-		return errors.New("contained process custody unproven")
+	// Forced containment must not depend on a healthy transport or capture sink.
+	// Its durable stop responsibility survives a capture request deadline.
+	// Keep capture errors pending, but stop every validated process owner now.
+	stopped, err := p.Supervisor.Stop(stopCtx, plan.Launch)
+	if err == nil && !stopped.Stopped {
+		err = errors.New("contained process custody unproven")
 	}
 	if force {
-		return p.stopVerifications(ctx, pkg)
+		return errors.Join(captureErr, err, p.stopVerifications(ctx, pkg))
 	}
-	return nil
+	return err
 }
 
 func (p ContainedT3) stoppedControl(ctx context.Context, pkg workerproto.ExecutionPackage) (T3Control, error) {
