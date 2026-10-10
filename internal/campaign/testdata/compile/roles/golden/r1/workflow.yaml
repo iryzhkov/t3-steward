@@ -1,33 +1,38 @@
 version: 2
-name: b1
+name: r1
 class: required
 environment:
   project: t3-steward-github
   ref: d2e827681336e76413fdab34392f029a3e131cf4
+placement:
+  requires: [go]
+ledger:
+  jocasta_project: t3-steward
+  plan: jocasta:31a0e0feedfe0d77f39ef05be31085e5@4
+  risk: medium
+  acceptance:
+    - Golden files pin the compiled workflow
 inputs:
   - inputs/plan.md
   - inputs/unit.md
+  - inputs/design/notes.md
 tasks:
   implement:
-    routes:
-      - instance: claudeAgent
-        model: claude-opus-5-5
-        quota_pool: claude-main
-        options: {effort: medium}
+    role: execute
+    options: {effort: medium}
     prompt_file: prompts/implement.md
     outputs: [continuation.md, handoff.md]
     commits:
       - name: implementation
         revision: HEAD
     verify:
-      - go test ./...
-      - git diff --check
+      - make test
+    resources:
+      preset: build
+    max_turns: 5
   review:
-    routes:
-      - instance: codex
-        model: gpt-6.1-sol
-        quota_pool: codex-main
-        options: {effort: high}
+    role: review
+    options: {effort: high}
     prompt_file: prompts/review.md
     needs: [implement]
     inputs_from:
@@ -37,3 +42,6 @@ tasks:
     outputs: [continuation.md, review.md]
     review_output:
       verdict_line: review.md
+    resources:
+      preset: light
+    max_turns: 5

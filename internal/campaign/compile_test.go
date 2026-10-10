@@ -40,20 +40,37 @@ func compiledFile(t *testing.T, unit CompiledUnit, path string) string {
 // contract the coordinator ingests, and the prompts are what the executor and
 // the reviewer read first, so an unnoticed change to either is a change to
 // every campaign compiled afterwards.
+// The compile v1 plan of the first release (explicit routes) and a plan that
+// uses every key added since (roles, ledger, placement, resources, max_turns
+// and extra inputs) are both pinned.
 func TestCompilePlanMatchesTheGoldens(t *testing.T) {
-	plan, err := ParseCompilePlan("plan.md", readCompileFixture(t))
-	if err != nil {
-		t.Fatal(err)
+	for _, fixture := range []struct {
+		plan, golden string
+		units        []string
+	}{
+		{compilePlanFixture, filepath.Join("testdata", "compile", "golden"), []string{"c1", "b1"}},
+		{compileRolesPlanFixture, filepath.Join("testdata", "compile", "roles", "golden"), []string{"r1"}},
+	} {
+		plan := parseCompileFixture(t, fixture.plan)
+		var ids []string
+		for _, unit := range plan.Units {
+			ids = append(ids, unit.ID)
+		}
+		if strings.Join(ids, ",") != strings.Join(fixture.units, ",") {
+			t.Fatalf("%s: units = %v, want %v in plan order", fixture.plan, ids, fixture.units)
+		}
+		assertCompiledFilesMatchGoldens(t, plan, fixture.golden)
 	}
-	if len(plan.Units) != 2 || plan.Units[0].ID != "c1" || plan.Units[1].ID != "b1" {
-		t.Fatalf("units = %+v, want c1 then b1 in plan order", plan.Units)
-	}
+}
+
+func assertCompiledFilesMatchGoldens(t *testing.T, plan CompilePlan, goldenDir string) {
+	t.Helper()
 	for _, unit := range plan.Units {
 		for _, file := range unit.Files {
 			if strings.HasPrefix(file.Path, "inputs/") {
 				continue
 			}
-			golden := filepath.Join("testdata", "compile", "golden", unit.ID, filepath.FromSlash(file.Path))
+			golden := filepath.Join(goldenDir, unit.ID, filepath.FromSlash(file.Path))
 			if *updateCompileGoldens {
 				if err := os.MkdirAll(filepath.Dir(golden), 0o755); err != nil {
 					t.Fatal(err)

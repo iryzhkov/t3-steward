@@ -275,6 +275,22 @@ or rc.115 coordinator.
 
 ### Added
 
+- S1 roles and complete manifests in `campaign compile`: a compile/v1 plan's
+  front matter accepts `roles: {execute: {effort}, review: {effort}}`, and
+  role routing is now the default. The implement task takes role `execute`
+  and the review task role `review`, so the coordinator's route policy
+  chooses each route, with the usual review diversity, and `campaign check`
+  on a compiled unit shows the role selection. `routes.execute` and
+  `routes.review` remain genuine pins; the same task in both `roles` and
+  `routes` is refused as a conflict, and a plan that declares `routes` must
+  still pin every task `roles` does not route, so existing plans compile as
+  before. The front matter also accepts `ledger`, `placement`, `resources`
+  (per template task: `implement`, `review`), `max_turns` and `inputs`,
+  extra files relative to the plan that are bundled into every unit at
+  `inputs/<path>` and named in both prompts; an input outside the plan's
+  directory, a non-regular file, or a name that would replace `plan.md` or
+  `unit.md` is refused at its plan line before anything is written.
+
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first
@@ -342,6 +358,14 @@ upgraded workers.
 
 ### Changed
 
+- `campaign compile` writes a minimal `workflow.yaml`: only the fields that
+  differ from the workflow defaults, with two-space indentation, in a fixed
+  order (version, name, class, environment, placement, ledger, inputs, then
+  the implement and review tasks in the order they run). A two-task unit
+  shrinks from about 120 lines to about 40. The workflow a compile v1 plan
+  compiles to is equivalent to the one earlier releases wrote, which a test
+  holds against the earlier output kept under
+  `internal/campaign/testdata/compile/legacy`.
 - Migration runner: the coordinator now applies every missing registered
   schema migration in ascending order, including versions below the highest
   one already applied, so a database that took V42 before V39 (or V39
