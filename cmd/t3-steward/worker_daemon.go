@@ -274,7 +274,7 @@ func persistentWorkerOptions(
 		RuntimeIdentity:     &domain.WorkerRuntimeIdentity{Release: version, Commit: commit, BootstrapDigest: digest},
 		Usage:               workerUsageSource(usage, logger),
 		ProtocolCredentials: credentials, ProjectCredentials: workerruntime.EnvironmentCredentialChecker{},
-		ObserveInventory: observeHostInventory(control, dataDir),
+		ObserveInventory: observeHostInventory(cfg, control, dataDir),
 		Quota:            quota,
 		// A local quota stop sends the drain notice first and escalates to the
 		// stop after the window the watchdog itself gives a stop to take effect.

@@ -3,22 +3,30 @@ package main
 import (
 	"context"
 	"os/exec"
+	"slices"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
 
-func observeHostInventory(control *t3control.Control, dataDir string) func(context.Context, config.BacklogV2, domain.WorkerInventory) (domain.WorkerInventory, error) {
+func observeHostInventory(cfg config.Config, control *t3control.Control, dataDir string) func(context.Context, config.BacklogV2, domain.WorkerInventory) (domain.WorkerInventory, error) {
+	host := newHostCapabilityProbe(cfg)
 	return func(ctx context.Context, settings config.BacklogV2, wanted domain.WorkerInventory) (domain.WorkerInventory, error) {
 		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		projects, projectErr := control.ListProjects(ctx)
+		hostCapabilities := host.Observe(ctx, settings, wanted.Projects)
 		probe := workerruntime.HostInventoryProbe{
-			DataDir: dataDir,
+			DataDir:  dataDir,
+			Observed: hostCapabilities,
 			Capability: func(ctx context.Context, name string) bool {
+				if workerproto.HostObservedCapability(name) {
+					return slices.Contains(hostCapabilities, name)
+				}
 				switch name {
 				case "git":
 					_, err := exec.LookPath("git")

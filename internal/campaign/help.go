@@ -432,8 +432,9 @@ Outcomes:
 Permanent reason codes. Waiting cannot change any of them, so submit refuses:
   unknown-project, workspace-type-mismatch, unknown-setup-profile,
   unknown-provider-instance, unknown-model, unknown-quota-pool,
-  worker-not-eligible, capability-missing, cpu-class-impossible,
-  resources-impossible, directory-impossible, credential-missing,
+  worker-not-eligible, capability-missing (except a host capability, below),
+  cpu-class-impossible, resources-impossible, directory-impossible,
+  credential-missing,
   repository-syntax-invalid, repository-authentication-failed,
   repository-not-found, ref-not-found, no-route, no-configured-route,
   supervisor-client-missing, unknown-node, timing-window-closed,
@@ -453,6 +454,20 @@ Temporary reason codes. Waiting is what fixes them, so submit proceeds:
   quota-closed, worker-at-capacity, worker-offline, worker-stale,
   network-unavailable, dns-failure, probe-timeout, snapshot-stale, lock-held,
   timing-window-not-open, catalog-digest-mismatch.
+
+capability-missing is permanent for a capability a worker's build or its
+configuration supplies, and temporary for a host capability, which the host
+observes on every snapshot and can gain without a release. Declare one with
+placement.requires; placement then picks a worker that reports it, and when
+none does the run is accepted and waits with capability-missing named:
+  coordinator-client-v1  tasks here reach the coordinator's admin API
+  ask-relay-v1           "t3-steward ask" parks the task and the answer is
+                         delivered (a coordinator client and a worker identity)
+  git-push-<project>     push credentials for the project's repository are
+                         present on the host (presence, not remote permission)
+  huyang-trusted-v1      Huyang's trust roots cover the task workspace root
+A task that may ask, push or rely on Huyang verification declares the matching
+capability, so it never starts on a worker that would fail it late.
 
 catalog-digest-mismatch is drift and is never reported as a missing worker. It
 carries the catalog digest the coordinator requires, the digest the worker
@@ -474,6 +489,7 @@ Recovery:
   no-route                   declare routes: [{instance, model}] in workflow.yaml (t3-steward models lists them)
   no-configured-route        add the instance and model to an eligible worker
   catalog-digest-mismatch    t3-steward worker enroll <worker> --current-catalog --reason TEXT   (on the coordinator host)
+  capability-missing         a host capability: give a worker's host what it names (docs/worker-operations.md); otherwise drop the requirement
 
 After submission, campaign explain says why a ready task has not started.
 executor-capacity and quota-pool-concurrency mean its worker or pool is full. A

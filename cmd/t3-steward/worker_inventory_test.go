@@ -48,7 +48,7 @@ func TestHostInventoryManagedProjectReadiness(t *testing.T) {
 			for _, name := range names {
 				wanted.Projects = append(wanted.Projects, domain.WorkerProjectInventory{Name: name})
 			}
-			result, err := observeHostInventory(control, t.TempDir())(context.Background(), settings, wanted)
+			result, err := observeHostInventory(config.Default(), control, t.TempDir())(context.Background(), settings, wanted)
 			if err != nil {
 				t.Fatal(err)
 			}

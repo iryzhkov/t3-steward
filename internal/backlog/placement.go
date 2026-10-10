@@ -87,6 +87,10 @@ type WorkerPlacementRequest struct {
 type WorkerExclusion struct {
 	Code   string `json:"code"`
 	Detail string `json:"detail"`
+	// Capability names the missing capability of a missing-capability
+	// exclusion, so a reader can tell a host capability that may still be
+	// supplied from a build capability that never will be.
+	Capability string `json:"capability,omitempty"`
 }
 
 // WorkerEvaluation records the complete placement decision for one worker.
@@ -183,8 +187,9 @@ func evaluateWorker(request WorkerPlacementRequest, worker domain.WorkerInventor
 	for _, capability := range required {
 		if _, available := capabilities[capability]; !available {
 			exclusions = append(exclusions, WorkerExclusion{
-				Code:   ExclusionMissingCapability,
-				Detail: fmt.Sprintf("worker %q lacks capability %q", worker.ID, capability),
+				Code:       ExclusionMissingCapability,
+				Detail:     fmt.Sprintf("worker %q lacks capability %q", worker.ID, capability),
+				Capability: capability,
 			})
 		}
 	}

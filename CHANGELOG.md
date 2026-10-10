@@ -406,6 +406,28 @@ or rc.115 coordinator.
   settled and reports each. Output changes: task wait JSON gains
   `conditionDigest`; a mixed-side all set refusal now suggests `--any`.
 
+- Ask registration checks coordinator routing without the three-second snapshot
+  status probe, preserving the client timeout and transient transport errors.
+  SSH capability probes retain both user and system SSH configuration.
+
+- Dispatch host probes require bounded, cached authenticated coordinator status,
+  preserve HTTPS credential path and username, and inspect SSH identities selected
+  for the project destination rather than unrelated default keys.
+
+- Capability check before dispatch (W1). Workers advertise host
+  capabilities observed on every snapshot: `coordinator-client-v1`,
+  `ask-relay-v1`, `git-push-<project>` and `huyang-trusted-v1`. A task
+  requires one with `placement.requires`; placement picks a worker that
+  reports it, and `campaign check` and submission report a missing one as a
+  temporary `capability-missing` naming worker and capability, so the run
+  waits instead of starting where it would fail late. A missing build or
+  configured capability stays permanent. Placement exclusions gain a
+  `capability` field naming the missing capability. `t3-steward ask` on a
+  worker without a route to the coordinator is refused as
+  `ask-relay-unavailable` (exit 3) and says the task is not parked; relaying
+  asks over the worker channel is a follow-up. See "Host capabilities" in
+  docs/worker-operations.md and `t3-steward campaign help readiness`.
+
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first
