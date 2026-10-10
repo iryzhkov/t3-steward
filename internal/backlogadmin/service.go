@@ -305,6 +305,10 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 		if err := projectRC116ExtendedResponse(&response); err != nil {
 			return Response{}, fmt.Errorf("project the rc.116 extended %s response: %w", query.Kind, err)
 		}
+	case RC120ReadVersion:
+		if err := projectRC120ExtendedResponse(&response); err != nil {
+			return Response{}, fmt.Errorf("project the rc.120 extended %s response: %w", query.Kind, err)
+		}
 	case RC119ReadVersion:
 		if err := projectRC119ExtendedResponse(&response); err != nil {
 			return Response{}, fmt.Errorf("project the rc.119 extended %s response: %w", query.Kind, err)
@@ -323,7 +327,7 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 
 func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
-	extendedRead := (query.Version == ExtendedReadVersion || query.Version == RC117ReadVersion || query.Version == RC118ReadVersion || query.Version == RC119ReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
+	extendedRead := (query.Version == ExtendedReadVersion || query.Version == RC117ReadVersion || query.Version == RC118ReadVersion || query.Version == RC119ReadVersion || query.Version == RC120ReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
 	if query.Version != Version && !intakeStatus && !extendedRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}

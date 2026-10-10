@@ -4,6 +4,180 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0-rc.122]
+
+The coordinator schema remains 42; no new migration is registered.
+Drain changes are deferred to the next integration task.
+
+### Added and changed
+
+- S1 roles and complete manifests in `campaign compile`: a compile/v1 plan's
+  front matter accepts `roles: {execute: {effort}, review: {effort}}`, and
+  role routing is now the default. The implement task takes role `execute`
+  and the review task role `review`, so the coordinator's route policy
+  chooses each route, with the usual review diversity, and `campaign check`
+  on a compiled unit shows the role selection. `routes.execute` and
+  `routes.review` remain genuine pins; the same task in both `roles` and
+  `routes` is refused as a conflict, and a plan that declares `routes` must
+  still pin every task `roles` does not route, so existing plans compile as
+  before. The front matter also accepts `ledger`, `placement`, `resources`
+  (per template task: `implement`, `review`), `max_turns` and `inputs`,
+  extra files relative to the plan that are bundled into every unit at
+  `inputs/<path>` and named in both prompts; an input outside the plan's
+  directory, a non-regular file, or a name that would replace `plan.md` or
+  `unit.md` is refused at its plan line before anything is written.
+
+- Failure classification and bounded automatic infrastructure retries.
+  Every failed or cancelled attempt now carries a typed failure class
+  (`infrastructure`, `protocol`, `code`, `policy`, `cancelled`, `unknown`)
+  and a machine-readable reason code, recorded by the coordinator on the
+  attempt as `failureClass` and `failureReason` and printed as
+  `failure class: class/code` by `task result`, `campaign show` and
+  `task show`, and after the failure in the wake summary (JSON
+  `failureClass`). The table that maps today's failure reasons to classes
+  is documented in `docs/failure-classification.md` and tested against the
+  code. Infrastructure failures of unsupervised runs are retried
+  automatically through an audited admin `retry` command
+  (`auto-retry-<attempt>`, principal `steward-coordinator/automatic-retry`)
+  after a backoff, within a budget declared by a new `retry` block at
+  workflow or task level (`infrastructure`, default 2, at most 5;
+  `backoff`, default 2m, doubled per retry, at most 1h) and capped by the
+  coordinator setting `backlog_v2.coordinator.automatic_retries.max_infrastructure`
+  (default 3, 0 disables). Code, protocol, policy, cancelled and unknown
+  failures are never retried automatically. The retry attempt carries an
+  `automaticRetry` receipt and still goes through quota admission and
+  verification; while a retry is due, the run's sink does not settle.
+- Preserved results for collection retries. When a collection captures a
+  finished turn's result, the worker records the digest of the declared
+  outputs and commits beside the workspace (`preserved-result.json`). A
+  collection retried after a failed publication reuses the workspace only
+  when the digest still matches; a changed workspace fails the attempt as
+  `preserved result digest mismatch` and a removed one as `workspace is
+  missing`, both infrastructure failures, instead of collecting work that
+  cannot be proven to be the turn's.
+- Coordinator maintenance: operator-only `coordinator backup --out DIR` takes an
+  online SQLite snapshot with a digest manifest of its retained artifacts;
+  `coordinator backup verify DIR --restore-drill` checks a scratch restore using
+  the backup's own identity without production configuration. Paths accept
+  relative directories and `~/`. `coordinator health --wait-ready --timeout D
+  --json` waits through reconnect windows for healthy status and expected workers.
+  Coordinator shutdown checkpoints before releasing ownership, workers sharing
+  coordinator configuration leave its database unopened, and worker exchanges
+  after startup or failure retry exchanges only at one/two/four/five-second delays,
+  then return to the configured scheduling interval. One-shot worker exchanges
+  also leave coordinator-marked databases unopened. Blocked shutdown checkpoints
+  name the reader-close and checkpoint remedy. See
+  docs/coordinator-maintenance.md for authority, artifact custody and restore limits.
+- Verdict-conditioned campaign dependencies: `needs_verdict` requires a recorded
+  `accept` or `changes-requested` verdict from a direct review dependency. Bounded
+  `fix_loops` expand implementation and fresh independent review tasks into a
+  finite graph with an integer `max_rounds` from 1 through 20. Acceptance skips
+  unused rounds; exhaustion fails the sink with `fix-loop-exhausted`. Campaign
+  show and wake summaries report rounds and the final verdict. Loop recovery
+  requires `campaign rerun` rather than in-place retry, preserving the remaining
+  round bound and refreshing stopped descendants. See docs/fix-loops.md and
+  `campaign help fix-loops`.
+
+- S5 one-command result: `t3-steward campaign result <run> [--json]
+  [--wait [--timeout D]]` prints one short block with the run state, one
+  line per task (state, failure class, recorded review verdict and the
+  commits it is about, review gate, declared commit, verification) and the
+  line "review ACCEPT and verification passed on the same commit: yes/no".
+  The acceptance fact is computed only from recorded facts that name one
+  commit: a recorded ACCEPT on a commit output the review consumed, whose
+  producing attempt succeeded with every declared verification command
+  reported at exit 0 and its `accepted-head` review gate binding verification
+  to that declared commit, or a review-declared task's `accepted-head` gate whose
+  reviewed head is its declared commit and whose own verification passed. A
+  recorded CHANGES_REQUESTED on the same commit makes it no; exit codes and
+  task success alone never make it yes. `--json` prints the versioned
+  `t3-steward.campaign-result/v1` document. Exit codes follow `task result`:
+  0 succeeded, 2 failed or cancelled, 1 not terminal. Client-only; it reads
+  the run document and retained artifacts any release's coordinator serves.
+  See docs/campaign-result.md.
+- PR-checks wait: `t3-steward wait add [--task current] --github-checks
+  owner/name@<sha>` (also a commit URL, a bare sha with `--repo`, or a pull
+  request as `owner/name#<n>`, its URL or `<n>`) waits until every check run
+  and commit status of the commit, or of the pull request's head, has
+  finished. It is met when none failed and failed when one did, with one
+  reason line such as "checks failed: 6 checks, 1 failure (lint), 5
+  success". It is a `github` wait in the new state `checks-completed`, which
+  `--github pr <n> --state checks-completed` also accepts; a commit target is
+  read with one `gh api graphql` call and reports `target=commit:<sha>`, and
+  every `checks-completed` wake carries `checks=<conclusion>=<n>,...`. The
+  wait runs on the registering host; a worker or session of an older release
+  refuses the flag.
+- Task-bound shell waits resolve relative directories before probing and saving,
+  and bind the exact argv and directory into the coordinator condition digest.
+  Replays after a lost local save cannot replace the original condition. Older
+  relative local directories and shell registrations without complete identity
+  are refused on replay. The new `shell` registration field requires a matching
+  coordinator; older strict coordinators clearly refuse it. Deploy the matching
+  coordinator before updating workers that use task-bound shell waits; the
+  admin-read fallback above does not apply to wait registration.
+- Task-bound GitHub waits bind the resolved repository into the coordinator
+  condition before parking, preventing a retry from another checkout after a
+  lost local save from replacing the condition. If the repository cannot be
+  resolved, registration asks for `--repo owner/name` and refuses to park.
+  Derived request ids also distinguish resolved repositories.
+
+- Several conditions per task-bound wait (W2). A second `wait add --task
+  current` in the same park used to print the first wait's id and
+  "registered" and keep only the first condition, so a task waiting for runs
+  A and B woke after A alone. The default request id is now
+  `park-<attempt>-<revision>-<digest of the arguments>`, so each condition is
+  its own wait and a retry of the same command still replays. Task-bound
+  waits default to `--wake all`, spelled `--all`, and `--any` (`--wake each`)
+  wakes on one condition; `--all` and `--any` are refused on interactive
+  waits and in combination with `--wake`. Every registration prints "Wake:
+  all" or "Wake: any". The coordinator records a condition digest on each
+  task wait and refuses a reused request id for a different condition
+  instead of replaying the earlier wait; a record written before the digest
+  is compared on its stored condition and refused when it cannot be shown to
+  match. A reused request id whose shell check runs in another directory or
+  splits its arguments differently is refused by the registering host. The
+  default request id also covers a shell check's directory, and a retry of
+  `--for DURATION` keeps the instant of its first registration. A grouped task wake adds
+  `waits=<id>:<outcome>,...` to its trailer, and its prose says the waits
+  settled and reports each. Output changes: task wait JSON gains
+  `conditionDigest`; a mixed-side all set refusal now suggests `--any`.
+
+- Ask registration checks coordinator routing without the three-second snapshot
+  status probe, preserving the client timeout and transient transport errors.
+  SSH capability probes retain both user and system SSH configuration.
+
+- Dispatch host probes require bounded, cached authenticated coordinator status,
+  preserve HTTPS credential path and username, and inspect SSH identities selected
+  for the project destination rather than unrelated default keys.
+
+- Capability check before dispatch (W1). Workers advertise host
+  capabilities observed on every snapshot: `coordinator-client-v1`,
+  `ask-relay-v1`, `git-push-<project>` and `huyang-trusted-v1`. A task
+  requires one with `placement.requires`; placement picks a worker that
+  reports it, and `campaign check` and submission report a missing one as a
+  temporary `capability-missing` naming worker and capability, so the run
+  waits instead of starting where it would fail late. A missing build or
+  configured capability stays permanent. Placement exclusions gain a
+  `capability` field naming the missing capability. `t3-steward ask` on a
+  worker without a route to the coordinator is refused as
+  `ask-relay-unavailable` (exit 3) and says the task is not parked; relaying
+  asks over the worker channel is a follow-up. See "Host capabilities" in
+  docs/worker-operations.md and `t3-steward campaign help readiness`.
+
+- `campaign compile` writes a minimal `workflow.yaml`: only the fields that
+  differ from the workflow defaults, with two-space indentation, in a fixed
+  order (version, name, class, environment, placement, ledger, inputs, then
+  the implement and review tasks in the order they run). A two-task unit
+  shrinks from about 120 lines to about 40. The workflow a compile v1 plan
+  compiles to is equivalent to the one earlier releases wrote, which a test
+  holds against the earlier output kept under
+  `internal/campaign/testdata/compile/legacy`.
+- `config validate --file PATH --json` validates private staged configuration
+  and effective owned projections without runtime side effects, fails closed
+  on route/model policy, and refuses credential-dependent Discord validation.
+- Freeze the rc120 admin read shape for rc121 clients and negotiate an rc122
+  read version for failure, retry, fix-loop and task-wait metadata.
+
 ## [Unreleased]
 
 ### Fixed
@@ -275,159 +449,6 @@ or rc.115 coordinator.
 
 ### Added
 
-- S1 roles and complete manifests in `campaign compile`: a compile/v1 plan's
-  front matter accepts `roles: {execute: {effort}, review: {effort}}`, and
-  role routing is now the default. The implement task takes role `execute`
-  and the review task role `review`, so the coordinator's route policy
-  chooses each route, with the usual review diversity, and `campaign check`
-  on a compiled unit shows the role selection. `routes.execute` and
-  `routes.review` remain genuine pins; the same task in both `roles` and
-  `routes` is refused as a conflict, and a plan that declares `routes` must
-  still pin every task `roles` does not route, so existing plans compile as
-  before. The front matter also accepts `ledger`, `placement`, `resources`
-  (per template task: `implement`, `review`), `max_turns` and `inputs`,
-  extra files relative to the plan that are bundled into every unit at
-  `inputs/<path>` and named in both prompts; an input outside the plan's
-  directory, a non-regular file, or a name that would replace `plan.md` or
-  `unit.md` is refused at its plan line before anything is written.
-
-- Failure classification and bounded automatic infrastructure retries.
-  Every failed or cancelled attempt now carries a typed failure class
-  (`infrastructure`, `protocol`, `code`, `policy`, `cancelled`, `unknown`)
-  and a machine-readable reason code, recorded by the coordinator on the
-  attempt as `failureClass` and `failureReason` and printed as
-  `failure class: class/code` by `task result`, `campaign show` and
-  `task show`, and after the failure in the wake summary (JSON
-  `failureClass`). The table that maps today's failure reasons to classes
-  is documented in `docs/failure-classification.md` and tested against the
-  code. Infrastructure failures of unsupervised runs are retried
-  automatically through an audited admin `retry` command
-  (`auto-retry-<attempt>`, principal `steward-coordinator/automatic-retry`)
-  after a backoff, within a budget declared by a new `retry` block at
-  workflow or task level (`infrastructure`, default 2, at most 5;
-  `backoff`, default 2m, doubled per retry, at most 1h) and capped by the
-  coordinator setting `backlog_v2.coordinator.automatic_retries.max_infrastructure`
-  (default 3, 0 disables). Code, protocol, policy, cancelled and unknown
-  failures are never retried automatically. The retry attempt carries an
-  `automaticRetry` receipt and still goes through quota admission and
-  verification; while a retry is due, the run's sink does not settle.
-- Preserved results for collection retries. When a collection captures a
-  finished turn's result, the worker records the digest of the declared
-  outputs and commits beside the workspace (`preserved-result.json`). A
-  collection retried after a failed publication reuses the workspace only
-  when the digest still matches; a changed workspace fails the attempt as
-  `preserved result digest mismatch` and a removed one as `workspace is
-  missing`, both infrastructure failures, instead of collecting work that
-  cannot be proven to be the turn's.
-- Coordinator maintenance: operator-only `coordinator backup --out DIR` takes an
-  online SQLite snapshot with a digest manifest of its retained artifacts;
-  `coordinator backup verify DIR --restore-drill` checks a scratch restore using
-  the backup's own identity without production configuration. Paths accept
-  relative directories and `~/`. `coordinator health --wait-ready --timeout D
-  --json` waits through reconnect windows for healthy status and expected workers.
-  Coordinator shutdown checkpoints before releasing ownership, workers sharing
-  coordinator configuration leave its database unopened, and worker exchanges
-  after startup or failure retry exchanges only at one/two/four/five-second delays,
-  then return to the configured scheduling interval. One-shot worker exchanges
-  also leave coordinator-marked databases unopened. Blocked shutdown checkpoints
-  name the reader-close and checkpoint remedy. See
-  docs/coordinator-maintenance.md for authority, artifact custody and restore limits.
-- Verdict-conditioned campaign dependencies: `needs_verdict` requires a recorded
-  `accept` or `changes-requested` verdict from a direct review dependency. Bounded
-  `fix_loops` expand implementation and fresh independent review tasks into a
-  finite graph with an integer `max_rounds` from 1 through 20. Acceptance skips
-  unused rounds; exhaustion fails the sink with `fix-loop-exhausted`. Campaign
-  show and wake summaries report rounds and the final verdict. Loop recovery
-  requires `campaign rerun` rather than in-place retry, preserving the remaining
-  round bound and refreshing stopped descendants. See docs/fix-loops.md and
-  `campaign help fix-loops`.
-
-- S5 one-command result: `t3-steward campaign result <run> [--json]
-  [--wait [--timeout D]]` prints one short block with the run state, one
-  line per task (state, failure class, recorded review verdict and the
-  commits it is about, review gate, declared commit, verification) and the
-  line "review ACCEPT and verification passed on the same commit: yes/no".
-  The acceptance fact is computed only from recorded facts that name one
-  commit: a recorded ACCEPT on a commit output the review consumed, whose
-  producing attempt succeeded with every declared verification command
-  reported at exit 0 and its `accepted-head` review gate binding verification
-  to that declared commit, or a review-declared task's `accepted-head` gate whose
-  reviewed head is its declared commit and whose own verification passed. A
-  recorded CHANGES_REQUESTED on the same commit makes it no; exit codes and
-  task success alone never make it yes. `--json` prints the versioned
-  `t3-steward.campaign-result/v1` document. Exit codes follow `task result`:
-  0 succeeded, 2 failed or cancelled, 1 not terminal. Client-only; it reads
-  the run document and retained artifacts any release's coordinator serves.
-  See docs/campaign-result.md.
-- PR-checks wait: `t3-steward wait add [--task current] --github-checks
-  owner/name@<sha>` (also a commit URL, a bare sha with `--repo`, or a pull
-  request as `owner/name#<n>`, its URL or `<n>`) waits until every check run
-  and commit status of the commit, or of the pull request's head, has
-  finished. It is met when none failed and failed when one did, with one
-  reason line such as "checks failed: 6 checks, 1 failure (lint), 5
-  success". It is a `github` wait in the new state `checks-completed`, which
-  `--github pr <n> --state checks-completed` also accepts; a commit target is
-  read with one `gh api graphql` call and reports `target=commit:<sha>`, and
-  every `checks-completed` wake carries `checks=<conclusion>=<n>,...`. The
-  wait runs on the registering host; a worker or session of an older release
-  refuses the flag.
-- Task-bound shell waits resolve relative directories before probing and saving,
-  and bind the exact argv and directory into the coordinator condition digest.
-  Replays after a lost local save cannot replace the original condition. Older
-  relative local directories and shell registrations without complete identity
-  are refused on replay. The new `shell` registration field requires a matching
-  coordinator; older strict coordinators clearly refuse it. Deploy the matching
-  coordinator before updating workers that use task-bound shell waits; the
-  admin-read fallback above does not apply to wait registration.
-- Task-bound GitHub waits bind the resolved repository into the coordinator
-  condition before parking, preventing a retry from another checkout after a
-  lost local save from replacing the condition. If the repository cannot be
-  resolved, registration asks for `--repo owner/name` and refuses to park.
-  Derived request ids also distinguish resolved repositories.
-
-- Several conditions per task-bound wait (W2). A second `wait add --task
-  current` in the same park used to print the first wait's id and
-  "registered" and keep only the first condition, so a task waiting for runs
-  A and B woke after A alone. The default request id is now
-  `park-<attempt>-<revision>-<digest of the arguments>`, so each condition is
-  its own wait and a retry of the same command still replays. Task-bound
-  waits default to `--wake all`, spelled `--all`, and `--any` (`--wake each`)
-  wakes on one condition; `--all` and `--any` are refused on interactive
-  waits and in combination with `--wake`. Every registration prints "Wake:
-  all" or "Wake: any". The coordinator records a condition digest on each
-  task wait and refuses a reused request id for a different condition
-  instead of replaying the earlier wait; a record written before the digest
-  is compared on its stored condition and refused when it cannot be shown to
-  match. A reused request id whose shell check runs in another directory or
-  splits its arguments differently is refused by the registering host. The
-  default request id also covers a shell check's directory, and a retry of
-  `--for DURATION` keeps the instant of its first registration. A grouped task wake adds
-  `waits=<id>:<outcome>,...` to its trailer, and its prose says the waits
-  settled and reports each. Output changes: task wait JSON gains
-  `conditionDigest`; a mixed-side all set refusal now suggests `--any`.
-
-- Ask registration checks coordinator routing without the three-second snapshot
-  status probe, preserving the client timeout and transient transport errors.
-  SSH capability probes retain both user and system SSH configuration.
-
-- Dispatch host probes require bounded, cached authenticated coordinator status,
-  preserve HTTPS credential path and username, and inspect SSH identities selected
-  for the project destination rather than unrelated default keys.
-
-- Capability check before dispatch (W1). Workers advertise host
-  capabilities observed on every snapshot: `coordinator-client-v1`,
-  `ask-relay-v1`, `git-push-<project>` and `huyang-trusted-v1`. A task
-  requires one with `placement.requires`; placement picks a worker that
-  reports it, and `campaign check` and submission report a missing one as a
-  temporary `capability-missing` naming worker and capability, so the run
-  waits instead of starting where it would fail late. A missing build or
-  configured capability stays permanent. Placement exclusions gain a
-  `capability` field naming the missing capability. `t3-steward ask` on a
-  worker without a route to the coordinator is refused as
-  `ask-relay-unavailable` (exit 3) and says the task is not parked; relaying
-  asks over the worker channel is a follow-up. See "Host capabilities" in
-  docs/worker-operations.md and `t3-steward campaign help readiness`.
-
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first
@@ -495,14 +516,6 @@ upgraded workers.
 
 ### Changed
 
-- `campaign compile` writes a minimal `workflow.yaml`: only the fields that
-  differ from the workflow defaults, with two-space indentation, in a fixed
-  order (version, name, class, environment, placement, ledger, inputs, then
-  the implement and review tasks in the order they run). A two-task unit
-  shrinks from about 120 lines to about 40. The workflow a compile v1 plan
-  compiles to is equivalent to the one earlier releases wrote, which a test
-  holds against the earlier output kept under
-  `internal/campaign/testdata/compile/legacy`.
 - Migration runner: the coordinator now applies every missing registered
   schema migration in ascending order, including versions below the highest
   one already applied, so a database that took V42 before V39 (or V39

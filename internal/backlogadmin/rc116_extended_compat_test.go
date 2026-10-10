@@ -176,11 +176,12 @@ func TestReadsNegotiateWithCurrentRC116AndRC115Coordinators(t *testing.T) {
 		calls       int32
 	}{
 		{coordinator: "current", calls: 1},
-		{coordinator: "rc.119", knows: map[string]bool{Version: true, rc116Version: true, RC117ReadVersion: true, RC118ReadVersion: true, RC119ReadVersion: true}, calls: 2},
-		{coordinator: "rc.118", knows: map[string]bool{Version: true, rc116Version: true, RC117ReadVersion: true, RC118ReadVersion: true}, calls: 3},
-		{coordinator: "rc.117", knows: map[string]bool{Version: true, rc116Version: true, RC117ReadVersion: true}, calls: 4},
-		{coordinator: "rc.116", knows: map[string]bool{Version: true, rc116Version: true}, calls: 5},
-		{coordinator: "rc.115", knows: map[string]bool{Version: true}, calls: 6},
+		{coordinator: "rc.121", knows: map[string]bool{Version: true, rc116Version: true, RC117ReadVersion: true, RC118ReadVersion: true, RC119ReadVersion: true, RC120ReadVersion: true}, calls: 2},
+		{coordinator: "rc.119", knows: map[string]bool{Version: true, rc116Version: true, RC117ReadVersion: true, RC118ReadVersion: true, RC119ReadVersion: true}, calls: 3},
+		{coordinator: "rc.118", knows: map[string]bool{Version: true, rc116Version: true, RC117ReadVersion: true, RC118ReadVersion: true}, calls: 4},
+		{coordinator: "rc.117", knows: map[string]bool{Version: true, rc116Version: true, RC117ReadVersion: true}, calls: 5},
+		{coordinator: "rc.116", knows: map[string]bool{Version: true, rc116Version: true}, calls: 6},
+		{coordinator: "rc.115", knows: map[string]bool{Version: true}, calls: 7},
 	} {
 		t.Run(tc.coordinator, func(t *testing.T) {
 			service := rc116ExtendedService(t)
@@ -210,7 +211,7 @@ func TestReadsNegotiateWithCurrentRC116AndRC115Coordinators(t *testing.T) {
 			}
 			// Only a coordinator of rc.117 or later sends the review gate; an
 			// rc.116 or rc.115 one cannot, and the older shapes leave it out.
-			if (got.Task.Attempt.ReviewGate != nil) != (tc.coordinator == "current" || tc.coordinator == "rc.119" || tc.coordinator == "rc.118" || tc.coordinator == "rc.117") {
+			if (got.Task.Attempt.ReviewGate != nil) != (tc.coordinator == "current" || tc.coordinator == "rc.121" || tc.coordinator == "rc.119" || tc.coordinator == "rc.118" || tc.coordinator == "rc.117") {
 				t.Fatalf("%s: review gate %+v", tc.coordinator, got.Task.Attempt.ReviewGate)
 			}
 		})

@@ -14,7 +14,7 @@ func extendedQueryVersions(kind QueryKind) []string {
 	if kind == QueryStatus {
 		return []string{StatusIntakeVersion}
 	}
-	return []string{CurrentReadVersion, RC119ReadVersion, RC118ReadVersion, RC117ReadVersion, ExtendedReadVersion}
+	return []string{CurrentReadVersion, RC120ReadVersion, RC119ReadVersion, RC118ReadVersion, RC117ReadVersion, ExtendedReadVersion}
 }
 
 // queryExtended negotiates a v1 read. Each retry is bounded, read-only, and

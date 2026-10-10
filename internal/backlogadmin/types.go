@@ -34,9 +34,12 @@ const RC118ReadVersion = "backlog.admin/v1-extended-read-rc118"
 // RC119ReadVersion freezes ranked role receipts and the complete rc.119 read shape.
 const RC119ReadVersion = "backlog.admin/v1-extended-read-m17-2b"
 
-// CurrentReadVersion adds lineage, capacity deferrals and provider error evidence.
+// RC120ReadVersion freezes the read shape used by rc.120 and rc.121.
+const RC120ReadVersion = "backlog.admin/v1-extended-read-rc120"
+
+// CurrentReadVersion adds failure classification, retry and fix-loop metadata.
 // Future additive changes must freeze this shape and negotiate a new version.
-const CurrentReadVersion = "backlog.admin/v1-extended-read-rc120"
+const CurrentReadVersion = "backlog.admin/v1-extended-read-rc122"
 
 type QueryKind string
 

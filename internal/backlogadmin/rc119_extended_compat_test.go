@@ -115,16 +115,16 @@ func TestRC119ReadVersionFreezesNewFieldsAndCurrentKeepsThem(t *testing.T) {
 	}
 }
 
-func TestRC120ClientNegotiatesRC119ReadVersion(t *testing.T) {
+func TestRC122ClientNegotiatesRC119ReadVersion(t *testing.T) {
 	var versions []string
 	got, err := queryExtended(context.Background(), Query{Version: Version, Kind: QueryTask}, func(_ context.Context, q Query) (Response, error) {
 		versions = append(versions, q.Version)
-		if q.Version == CurrentReadVersion {
+		if q.Version == CurrentReadVersion || q.Version == RC120ReadVersion {
 			return Response{}, &TransportError{Class: ClassRejected, Err: fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, q.Version, Version)}
 		}
 		return Response{Version: q.Version}, nil
 	})
-	if err != nil || got.Version != RC119ReadVersion || !reflect.DeepEqual(versions, []string{CurrentReadVersion, RC119ReadVersion}) {
+	if err != nil || got.Version != RC119ReadVersion || !reflect.DeepEqual(versions, []string{CurrentReadVersion, RC120ReadVersion, RC119ReadVersion}) {
 		t.Fatalf("negotiated %+v, %v through %v", got, err, versions)
 	}
 }

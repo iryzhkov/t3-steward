@@ -1,0 +1,125 @@
+# rc122 / rc121 compatibility evidence
+
+## Scope and rerun
+
+Base: `c382eea6a91319ab72246066b5ed4bdfc75bec26` (rc121).
+Run `scripts/rc122-downgrade-compat.sh` from the candidate checkout on Linux.
+It creates a disposable detached rc121 worktree, builds the actual rc121 CLI
+and a small reader against rc121's own config/store/protocol packages, and runs
+the candidate's `rc122compat` tagged test. It removes the worktree and fixtures
+on exit. No live coordinator, worker, provider, remote repository or operator
+control is used. All build/test invocations use GOMAXPROCS=4, GOFLAGS=-p=4,
+MAKEFLAGS=-j4 and CARGO_BUILD_JOBS=4.
+
+The reader is intentionally compiled inside the rc121 worktree; compiling
+candidate types would not prove downgrade compatibility. The original CLI
+executes real backlog reads through a disposable candidate Unix admin server.
+Fixtures are written with SaveCoordinatorRecords, RecordAttemptFailureClassifications,
+RegisterTaskWait, SaveWait and SaveWorkerSnapshot, not SQL injection of JSON.
+
+## Persisted differences
+
+| Difference | rc121 tolerance / check |
+| --- | --- |
+| Attempt `failureClass`, `failureReason` | Candidate stamps a failed attempt through RecordAttemptFailureClassifications. rc121 LoadCoordinatorRecords decodes it and retains the original failure string. |
+| Attempt `automaticRetry` receipt | Candidate persists a receipt on a second attempt. rc121 loads both attempts. Receipt includes sourceAttemptId, class, code, ordinal, budget, notBefore and commandId. |
+| Automatic retry command payload and principal | Existing retry command kind and raw JSON payload hold the new receipt. rc121 loads the command and the actual CLI reads commands successfully. No new SQL column/table is used. |
+| Task `needsVerdict`, `fixLoop`, `retry` | Populated together in the candidate fixture; rc121 loads the immutable task without a decode error. Existing Task/Graph containers are retained. |
+| SinkResult `fixLoops` | Candidate run contains a populated summary; rc121 reads its run/sink and actual CLI workflow/list reads pass. |
+| TaskWait `conditionDigest` | RegisterTaskWait writes a nonempty digest. rc121 ListTaskWaits loads the candidate's parked wait. The `shell` identity is folded into this digest, not a new persisted TaskWait field. |
+| Local Wait `for` | SaveWait writes a time wait with For=1m. rc121 ListWaits reads it. |
+| GitHub wait `kind=commit`, `state=checks-completed` | Values extend existing string fields. Candidate SaveWait writes them; rc121 ListWaits decodes the record. Polling semantics on rc121 are unsupported; see limitations. |
+| Worker inventory host capabilities | New strings in the existing capabilities array. Both binaries strictly decode observations; both versions' store code saves/loads the mixed snapshot. |
+| `preserved-result.json` beside the worker attempt workspace | New optional side file, not a schema/table/journal/package change. The harness computes a real candidate preserved-result digest and writes the sidecar, then runs rc121 LocalDriver.Collect with its real AttemptFinalizer. rc121 captures/publishes the exact declared output and leaves the sidecar unchanged. Candidate preserved-result tests verify retry digests. Downgrade loses this added protection; it does not acquire a new required file. |
+| Result artifacts / campaign result | One-command result is client-only. Existing artifact records still hold declared result files; the rc121 store reader and CLI read the fixture's output artifact references. No new artifact format is required. |
+| Compiled workflow manifests | New plan front matter/minimal YAML affect compile input and output, not SQL schema or worker execution-package structure. Existing role fields predate rc121; compile tests compare minimal manifests with legacy equivalents. New verdict/retry declarations require the candidate manifest decoder. |
+| Online backup manifest | Separate operator-created backup artifact, not a mandatory coordinator-store format. It is outside this task's downgrade store fixture and no backup is taken here. |
+
+SQLite migration registry is unchanged from c382: the only diff in
+`internal/store/sqlite/store.go` is coordinator Close/checkpoint handling.
+`currentSchemaVersion` remains 42. Existing
+`TestRC117RegistryUpgradesEveryPredecessorDatabase` asserts 42 and the exact
+post-contiguous registered versions [39, 42]; `TestLeaseMigrationV42FromBaseAndFresh`
+asserts a fresh/migrated DB reaches 42. No V43–V46 code was imported.
+
+## Wire differences and repair
+
+The accepted units originally left CurrentReadVersion at rc120 while adding
+nested Task/Attempt/SinkResult/TaskWait fields. rc121 strictly decodes admin
+responses, so SQLite's permissive JSON reads alone were insufficient.
+
+The candidate now uses `backlog.admin/v1-extended-read-rc122` for new reads,
+retains `backlog.admin/v1-extended-read-rc120` for rc121's frozen shape, and
+falls back rc122 -> rc120 -> rc119 -> earlier versions. The frozen schema was
+generated by the existing TestWriteV1ResponseSchema on c382, SHA256
+`64d69290aa9598280bc4387a17c330df0d65fb2ab23813ea6dd44a65b55037a8`.
+Recursive projection clones the response, so it does not discard stored metadata.
+
+The actual rc121 CLI must pass task show, workflow show with sink, list with
+sink, diagnose and commands reads against the candidate fixture. Current reads
+must retain all new metadata. Admin tests additionally populate every nested
+response key and compare the exact frozen shape. Unversioned admin replies
+already pass the rc119 local-response projection.
+
+Workerproto protocol and execution-package structs are unchanged from c382.
+The downgrade test uses both versions' strict Codec for snapshots and snapshot
+requests, including candidate host-capability strings. Existing full protocol
+tests cover signed envelopes, authentication, exchange and collection.
+
+New task-bound shell registration adds `shell` to its admin request. rc121's
+strict coordinator rejects that request. This is intentionally a clear refusal,
+not a silent downgrade of identity binding: upgrade coordinator before workers
+or clients that register candidate shell waits. Node/GitHub registration uses
+existing fields; digest response metadata is removed by old-response projection.
+
+## Configuration keys
+
+The only new runtime YAML key is
+`backlog_v2.coordinator.automatic_retries`, containing
+`max_infrastructure` (absent default 3; 0 disables; range 0..5).
+rc121 rejects the parent block whenever present, including an explicit default
+or disabling value, because it uses KnownFields(true). The harness verifies
+candidate acceptance and rc121's explicit-key rejection. A candidate-accepted
+configuration with the block absent is accepted by rc121. Keep the block absent
+in rollback configuration; do not substitute candidate's fully marshalled config.
+
+No validator-only runtime config keys were added. Validator digest/document
+schema_version=1 is not the SQLite schema version. The two pinned validator
+commits cherry-picked without source conflicts and use rc121's existing LoadFile,
+projection and Validate APIs; no c43 adaptation or migration import was needed.
+Original tests retain route/model/config fail-closed checks, immutable/private input
+checks, effects guards, credential-read refusal and standalone-help restrictions.
+
+## Practical limits
+
+Read/decode compatibility does not promise identical scheduling semantics.
+rc121 ignores verdict/fix-loop metadata, automatic-retry receipts and condition
+digests; it cannot enforce new verdict branches or reconstruct retry budgets.
+Do not resume active candidate fix-loop runs or pending automatic retry commands
+under rc121 expecting candidate semantics. Settle/cancel affected runs and
+commands before rollback, or treat their presence as an operator blocker.
+rc121 can read new GitHub checks-completed waits but cannot poll them correctly;
+settle/remove such waits before downgrading their owning host. Preserved-result
+retry protection is also absent on an old worker.
+
+Drain repair and exact-SHA independent campaign review are later tasks.
+This task establishes schema/read compatibility and the local integration gate,
+not release approval or fleet deployment.
+
+## Verification
+
+All required gates passed (exit 0): gofmt list gate, go build ./..., make lint,
+and make test (ordinary tests, full -race with checkptr enabled, then go vet).
+The pinned downgrade script passed (exit 0), including rc121 store/local-wait reads,
+actual rc121 CLI task/workflow/list/diagnose/commands reads, default-absent config
+acceptance and explicit-key refusal, and both versions' snapshot persistence/strict codecs.
+The final race pass included backlog (286.013s), backlogadmin (64.676s),
+SQLite (233.016s), command package (198.779s), and workerruntime (158.461s).
+Initial make test exited 2 while the compatibility projection was being assembled;
+its subprocess builds saw intermediate missing projection symbols/schema. The complete
+final tree passed the full gate, without exclusions or weakened assertions.
+Full-gate commands used the four-CPU wrapper listed above; make lint retained its
+pinned Go 1.25.0/staticcheck v0.7.0 toolchain. No RACE_GCFLAGS override was used.
+The final script also passed direct rc121 LocalDriver collection with a real candidate
+preserved-result sidecar present: output bytes were captured/published unchanged and
+the sidecar was not modified (exit 0).
