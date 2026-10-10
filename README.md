@@ -792,6 +792,31 @@ wake waits for the window to recover. `--group NAME --wake all` wakes once when 
 group has settled. The check is run once at registration and refused if it
 cannot run, already succeeds, or gives up. Parked threads cost nothing.
 
+Inside a task, `wait add --task current` parks the task instead, and one park
+can hold several conditions: register each one before ending the turn. Each
+registration prints its own wait id and says how the park wakes. By default
+(`--all`) the task resumes once every condition has settled, and the one wake
+reports every condition's outcome, in the trailer as `count=<n>
+waits=<id>:<outcome>,...` and in the prose. `--any` on a condition wakes the
+task as soon as that condition settles. An all set is all local kinds or all
+coordinator kinds; a registration that would mix the two is refused and names
+`--any` as the way to add it. A reused `--request-id` for a different condition,
+including the same command in another `--dir`, is refused rather than answered
+with the earlier wait. Relative shell directories are resolved before probing;
+the coordinator digest binds that path and the exact argv even if the local
+save is lost. Older shell records with incomplete identity are refused on
+replay. Shell registrations require an identity-aware coordinator; older
+strict coordinators reject the new `shell` field. Deploy the matching coordinator
+before updating workers that use task-bound shell waits; admin-read fallback does
+not cover wait registration. Task-bound GitHub waits bind the resolved repository
+into the coordinator condition before parking, including when `--repo` was omitted.
+If resolution fails, give `--repo owner/name`; an unbound wait is refused.
+
+```sh
+t3-steward wait add --task current --node <run-a>
+t3-steward wait add --task current --node <run-b>   # resumes when both have ended
+```
+
 ## Cold storage for finished threads
 
 T3 keeps every thread's messages in its database and the provider logs and
@@ -890,7 +915,7 @@ t3-steward backlog projects [--project NAME] [--verbose] [--json]
 t3-steward backlog list [--all]|new ID|check FILE|show ID|retry ID|cancel ID|receive ID|path
 t3-steward campaign cancel RUN[/TASK] --reason TEXT [--command-id ID] [--json]
 t3-steward campaign result RUN [--json] [--wait [--timeout D]]
-t3-steward wait add [--task current] [--name TEXT] [--timeout 24h] [--or-timeout] [--group G --wake all] -- CMD...
+t3-steward wait add [--task current [--all|--any]] [--name TEXT] [--timeout 24h] [--or-timeout] [--group G --wake all] -- CMD...
 t3-steward wait add [--task current] --at RFC3339 | --for DURATION
 t3-steward wait add [--task current] --github run ID | pr N [--state completed|merged|reviewed|checks-passed|checks-completed] [--repo owner/name]
 t3-steward wait add [--task current] --github-checks OWNER/NAME@SHA | OWNER/NAME#N [--repo owner/name]

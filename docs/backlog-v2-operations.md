@@ -1400,6 +1400,52 @@ record) and no local row on any host; registration is refused when the target
 or pool is unknown, when the condition already holds, and when a task names
 its own run's sink (the run cannot settle while the attempt is parked).
 
+One park can hold several conditions. Each `wait add --task current` before
+the turn ends registers its own task wait: the default request id is
+`park-<attempt>-<revision>-<digest>`, where the digest covers the command's
+arguments (`--json` aside) and, for a shell check, its working directory, so
+a retry of the same command replays the same wait and every other condition
+gets a new one. A retry of `--for DURATION` keeps the instant its first
+registration resolved, read from the local check, rather than naming a later
+one. Before this, the id was
+`park-<attempt>-<revision>` alone, and a second condition in the same park
+replayed the first wait: the task was told it was parked on run B while only
+run A was watched. The coordinator also records a digest of each
+registration's condition and refuses a replayed request id whose condition
+differs (`the request ID already registered a different condition`), naming
+the wait the id already is. A record written before the digest existed is
+compared on the condition it stored (a node target after resolving the
+replayed one); when they differ, or cannot be shown to match, the replay is
+refused the same way. Shell directories are resolved to absolute paths before
+probing and saving. The coordinator digest includes that directory and the
+exact argument vector, so a crash before the local check is saved cannot let
+a replay adopt a different shell condition. An older saved relative directory
+cannot identify its original working directory and is refused. Older shell
+registrations lacking complete identity are also refused on replay; use a new
+request id. Shell registrations now require an identity-aware coordinator:
+older strict coordinators reject the new `shell` field. Deploy the matching
+coordinator before updating workers that use task-bound shell waits. The admin-read
+fallback applies to reads, not wait registration; no shell fallback drops replay
+identity. Task-bound GitHub waits resolve the repository before registration and
+bind it into the coordinator condition, even with an explicit display name.
+If resolution fails, registration is refused with a request for `--repo owner/name`.
+A retry from another repository after a lost local save is therefore refused;
+a complete identical retry restores the check. Without an explicit request id,
+the resolved repository also distinguishes conditions from different checkouts.
+A time wait's instant and a GitHub target's repository are also compared against
+the saved local check, and a change is refused before anything is sent.
+
+A task-bound wait takes `--wake all` unless told otherwise (`--all` is the
+same; `--any` is `--wake each`), and the registration says which: "Wake: all"
+or "Wake: any". Under all, the attempt stays parked until every live all wait
+has settled, and one wake carries every settled condition. Under any, the
+condition wakes the attempt when it settles, and all waits still live then
+are carried into the resumed turn unsettled. A single condition wakes the same
+way under either mode. A task's all set is all local kinds or all coordinator
+kinds, as before; the refusal names both members and suggests `--any`. An
+older coordinator decodes and honours `wake: all`, so the new default needs no
+coordinator upgrade; the condition-digest refusal does.
+
 Outcomes are `met`, `failed`, `gave-up`, `cancelled` and `timed-out`.
 `--state terminal` (the default, and what a campaign notification waits for)
 is `met` on any terminal progress except cancelled, which is `cancelled`; read
@@ -1419,7 +1465,8 @@ t3-steward-wait kind=<kind> outcome=<outcome> wait=<id> <key>=<value> ...
 The three leading pairs come first; the rest are in no promised order. A value
 with a space is quoted; unknown keys are to be ignored; a wake that carries
 several waits (a `--wake all` group, a task's all set) names the earliest one
-and adds `count=`. A blank line and the prose follow. `wait list --json` and
+and adds `count=`; a task's wake also adds `waits=<id>:<outcome>,...`, one
+entry per condition it reports, and the prose reports each with its evidence. A blank line and the prose follow. `wait list --json` and
 the task wake context carry `kind` and `outcome` too.
 
 `wait list` answers from both places a wait lives: this host's local checks and

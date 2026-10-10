@@ -58,6 +58,10 @@ type Wait struct {
 	Dir     string          `json:"dir"`
 	// At is the instant a time wait is met.
 	At *time.Time `json:"at,omitempty"`
+	// For is the duration a time wait was registered with by --for, so a retry
+	// of the same command keeps this wait's instant instead of naming a later
+	// one. It is zero for --at and for every other kind.
+	For time.Duration `json:"for,omitempty"`
 	// GitHub is the target of a github wait.
 	GitHub *GitHubTarget `json:"github,omitempty"`
 	// Errors counts consecutive failures to read a github target.

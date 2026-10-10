@@ -172,7 +172,7 @@ func (s *Store) WaitReviewParent(ctx context.Context, expected review.FrozenAuth
 		// graph, and the wait exists for the collection that follows it.
 		request.Condition, request.Name = node.String(), node.String()
 	}
-	w, err := parkTaskWaitTx(ctx, tx, request, attempt, now)
+	w, err := parkTaskWaitTx(ctx, tx, request, "", attempt, now)
 	if err != nil {
 		return zero, err
 	}

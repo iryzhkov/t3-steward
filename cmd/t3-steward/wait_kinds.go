@@ -263,6 +263,8 @@ type localWaitSpec struct {
 	Command []string
 	// At is the instant of a time wait.
 	At *time.Time
+	// For is the duration of a time wait given by --for rather than --at.
+	For time.Duration
 	// GitHub is the target of a github wait.
 	GitHub *wait.GitHubTarget
 	// Name is the name to use when --name was not given.
@@ -305,6 +307,8 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 	fs.StringVar(&spec.Dir, "dir", "", "working directory")
 	fs.StringVar(&spec.Group, "group", "", "group name")
 	fs.StringVar(&spec.WakeMode, "wake", "each", "each or all")
+	wakeAll := fs.Bool("all", false, "task-bound: wake once every condition of this park has settled (default)")
+	wakeAny := fs.Bool("any", false, "task-bound: wake when this condition settles")
 	fs.StringVar(&spec.RequestID, "request-id", "", "stable registration ID")
 	fs.BoolVar(&spec.JSON, "json", false, "print the registered wait as JSON")
 	fs.BoolVar(&spec.OrTimeout, "or-timeout", false, "treat the deadline as a normal outcome")
@@ -393,9 +397,10 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 			return spec, err
 		}
 		spec.Kind = domain.WaitKindTime
-		spec.At = &instant
-		spec.Condition = "time at " + instant.UTC().Format(time.RFC3339)
-		spec.Name = spec.Condition
+		if *after != "" {
+			spec.For, _ = time.ParseDuration(*after)
+		}
+		spec.setTimeInstant(instant)
 	default:
 		spec.Kind = domain.WaitKindShell
 		spec.Condition = strings.Join(spec.Command, " ")
@@ -414,9 +419,11 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 	if spec.MaxEvery < spec.Every {
 		return spec, errors.New("--max-every must not be shorter than --every")
 	}
-	if spec.WakeMode != "each" && spec.WakeMode != "all" {
-		return spec, errors.New("--wake must be each or all")
+	mode, err := taskWakeModeFlags(fs, spec.WakeMode, *wakeAll, *wakeAny, *task == "current")
+	if err != nil {
+		return spec, err
 	}
+	spec.WakeMode = mode
 	if spec.At != nil {
 		remaining := spec.At.Sub(now)
 		switch {
@@ -434,6 +441,15 @@ func parseLocalWaitSpec(args []string, now time.Time) (localWaitSpec, error) {
 		return spec, errors.New("--timeout must be longer than --every")
 	}
 	return spec, nil
+}
+
+// setTimeInstant makes instant the instant of a time wait, with the condition
+// text and default name that name it.
+func (spec *localWaitSpec) setTimeInstant(instant time.Time) {
+	instant = instant.UTC()
+	spec.At = &instant
+	spec.Condition = "time at " + instant.Format(time.RFC3339)
+	spec.Name = spec.Condition
 }
 
 // parseTimeWaitInstant reads --at or --for into an instant in the future.

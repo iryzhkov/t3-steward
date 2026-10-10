@@ -371,6 +371,41 @@ or rc.115 coordinator.
   every `checks-completed` wake carries `checks=<conclusion>=<n>,...`. The
   wait runs on the registering host; a worker or session of an older release
   refuses the flag.
+- Task-bound shell waits resolve relative directories before probing and saving,
+  and bind the exact argv and directory into the coordinator condition digest.
+  Replays after a lost local save cannot replace the original condition. Older
+  relative local directories and shell registrations without complete identity
+  are refused on replay. The new `shell` registration field requires a matching
+  coordinator; older strict coordinators clearly refuse it. Deploy the matching
+  coordinator before updating workers that use task-bound shell waits; the
+  admin-read fallback above does not apply to wait registration.
+- Task-bound GitHub waits bind the resolved repository into the coordinator
+  condition before parking, preventing a retry from another checkout after a
+  lost local save from replacing the condition. If the repository cannot be
+  resolved, registration asks for `--repo owner/name` and refuses to park.
+  Derived request ids also distinguish resolved repositories.
+
+- Several conditions per task-bound wait (W2). A second `wait add --task
+  current` in the same park used to print the first wait's id and
+  "registered" and keep only the first condition, so a task waiting for runs
+  A and B woke after A alone. The default request id is now
+  `park-<attempt>-<revision>-<digest of the arguments>`, so each condition is
+  its own wait and a retry of the same command still replays. Task-bound
+  waits default to `--wake all`, spelled `--all`, and `--any` (`--wake each`)
+  wakes on one condition; `--all` and `--any` are refused on interactive
+  waits and in combination with `--wake`. Every registration prints "Wake:
+  all" or "Wake: any". The coordinator records a condition digest on each
+  task wait and refuses a reused request id for a different condition
+  instead of replaying the earlier wait; a record written before the digest
+  is compared on its stored condition and refused when it cannot be shown to
+  match. A reused request id whose shell check runs in another directory or
+  splits its arguments differently is refused by the registering host. The
+  default request id also covers a shell check's directory, and a retry of
+  `--for DURATION` keeps the instant of its first registration. A grouped task wake adds
+  `waits=<id>:<outcome>,...` to its trailer, and its prose says the waits
+  settled and reports each. Output changes: task wait JSON gains
+  `conditionDigest`; a mixed-side all set refusal now suggests `--any`.
+
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first

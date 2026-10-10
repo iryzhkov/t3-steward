@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -143,45 +146,142 @@ func readTaskIdentityFileFrom(directory string) (map[string]string, error) {
 }
 
 // taskWaitRequestID settles the registration id of a task-bound wait. With no
-// --request-id it is derived from the resolved identity, "park-<attempt>-
-// <revision>", which is stable for a retry of the same park and different for
-// every later park of the same task; the random id remains only for an
-// identity with no attempt, which registration refuses anyway. An explicit id
-// that ends in "-" is almost always a shell variable that was empty when the
-// command line was built, so it is warned about, but still used: a repeated
-// registration must keep returning the same wait.
-func taskWaitRequestID(explicit string, identity taskIdentity, warnings io.Writer) string {
+// --request-id it is derived from the resolved identity and the command's own
+// arguments, "park-<attempt>-<revision>-<digest>". The identity part is stable
+// for a retry of the same park and different for every later park of the same
+// task; the digest part is stable for a retry of the same command and different
+// for every other condition registered in the same park. Without it the second
+// condition of a park reused the first one's id and was answered with the first
+// one's wait, so a task waiting for runs A and B woke after A alone. The random
+// id remains only for an identity with no attempt, which registration refuses
+// anyway. An explicit id that ends in "-" is almost always a shell variable
+// that was empty when the command line was built, so it is warned about, but
+// still used: a repeated registration must keep returning the same wait.
+//
+// dir is the working directory a shell check runs in, and empty for every
+// other kind: the same command in another directory is another condition, and
+// it is usually not on the command line.
+func taskWaitRequestID(explicit string, identity taskIdentity, args []string, dir string, warnings io.Writer) string {
 	if explicit == "" {
 		if identity.AttemptID == "" {
 			return strings.TrimPrefix(newWaitID(), "w-")
 		}
-		return fmt.Sprintf("park-%s-%d", identity.AttemptID, identity.AttemptRevision)
+		return fmt.Sprintf("park-%s-%d-%s", identity.AttemptID, identity.AttemptRevision, taskWaitArgsDigest(args, dir))
 	}
 	if strings.HasSuffix(explicit, "-") {
 		fmt.Fprintf(warnings, "warning: --request-id %q ends in \"-\", which usually means an empty shell variable was interpolated into it; "+
-			"the identity is in .t3-steward/task.env, not the environment (unless t3.send_thread_environment is on), so use $(t3-steward task env --get revision) or omit --request-id to derive park-%s-%d\n",
+			"the identity is in .t3-steward/task.env, not the environment (unless t3.send_thread_environment is on), so use $(t3-steward task env --get revision) or omit --request-id to derive park-%s-%d-<digest>\n",
 			explicit, identity.AttemptID, identity.AttemptRevision)
 	}
 	return explicit
 }
 
-// localTaskWaitRegistration is the coordinator registration of a task-bound
-// wait of a local kind. The kind is sent only when it is not shell: the
-// coordinator decodes the request strictly and treats an absent kind as
-// shell, so a plain shell registration stays byte-compatible with a
-// coordinator that predates kinds, while time, github and --or-timeout carry
-// the fields such a coordinator cannot settle and are refused by it with an
-// unknown-field error rather than parked on a wait it does not understand.
+// taskWaitArgsDigest is the condition part of a derived request id: the first
+// twelve hex digits of a hash of the `wait add` arguments. --json is left out
+// because it changes only how the answer is printed, so a retry that adds it
+// still replays the same wait. The arguments are hashed rather than the parsed
+// condition because a relative condition such as --for 30m resolves to a
+// different instant on every run, and a retry must not become a new wait. A
+// shell check's directory is hashed first, made absolute, when there is one.
+func taskWaitArgsDigest(args []string, dir string) string {
+	hash := sha256.New()
+	if dir != "" {
+		if absolute, err := filepath.Abs(dir); err == nil {
+			dir = absolute
+		}
+		hash.Write([]byte("\x01dir=" + dir + "\x00"))
+	}
+	for index, arg := range args {
+		if arg == "--" {
+			for _, rest := range args[index:] {
+				hash.Write([]byte(rest))
+				hash.Write([]byte{0})
+			}
+			break
+		}
+		switch arg {
+		case "--json", "-json", "--json=true", "-json=true", "--json=false", "-json=false":
+			continue
+		}
+		hash.Write([]byte(arg))
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))[:12]
+}
+
+// taskWakeModeFlags settles the wake mode of a `wait add` from --wake, --all
+// and --any. A task-bound wait takes all unless told otherwise: the several
+// conditions of one park are a set the task wants complete, and a single
+// condition wakes the same way under either mode. An interactive wait keeps
+// each, and composes with --group NAME --wake all as before.
+func taskWakeModeFlags(fs *flag.FlagSet, wake string, all, any, taskBound bool) (string, error) {
+	wakeGiven := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "wake" {
+			wakeGiven = true
+		}
+	})
+	given := 0
+	for _, set := range []bool{wakeGiven, all, any} {
+		if set {
+			given++
+		}
+	}
+	switch {
+	case given > 1:
+		return "", errors.New("--all, --any and --wake are three spellings of one choice; give one")
+	case (all || any) && !taskBound:
+		return "", errors.New("--all and --any apply to --task current; an interactive wait chooses with --group NAME --wake each|all")
+	case all:
+		return "all", nil
+	case any:
+		return "each", nil
+	case wakeGiven:
+		if wake != "each" && wake != "all" {
+			return "", errors.New("--wake must be each or all")
+		}
+		return wake, nil
+	case taskBound:
+		return "all", nil
+	default:
+		return "each", nil
+	}
+}
+
+// parkWakeSentence tells the agent how the conditions of its park combine, so
+// a second registration is never a guess about whether it was kept.
+func parkWakeSentence(mode string) string {
+	if mode == "each" {
+		return "Wake: any. This task resumes as soon as this condition settles, whatever else this park holds."
+	}
+	return "Wake: all. This task resumes once every --all condition of this park has settled, each reported with its own outcome. " +
+		"To add another condition, run `t3-steward wait add --task current` again before ending the turn."
+}
+
+// localTaskWaitRegistration records complete shell identity at the coordinator
+// boundary. Older strict coordinators refuse the new shell field rather than
+// accepting a registration whose replay identity they cannot protect.
 func localTaskWaitRegistration(spec localWaitSpec, identity taskIdentity) domain.TaskWaitRegistration {
 	kind := spec.Kind
 	if kind == domain.WaitKindShell {
 		kind = ""
 	}
+	var shell *domain.ShellWaitCondition
+	if spec.Kind == domain.WaitKindShell {
+		shell = &domain.ShellWaitCondition{Dir: spec.Dir, Command: spec.Command}
+	}
+	condition := spec.Condition
+	if spec.Kind == domain.WaitKindGitHub && spec.GitHub != nil && spec.GitHub.Repo != "" {
+		// Bind the resolved repository even when the display name was supplied
+		// explicitly. The coordinator must protect identity without a local save.
+		condition = "github " + spec.GitHub.Ref() + " " + spec.GitHub.State + " in " + spec.GitHub.Repo
+	}
 	return domain.TaskWaitRegistration{
+		Shell:     shell,
 		RequestID: spec.RequestID, WorkflowRunID: identity.WorkflowRunID, TaskID: identity.TaskID,
 		AttemptID: identity.AttemptID, IssuedRevision: identity.AttemptRevision,
 		ThreadID: identity.ThreadID, Wake: domain.WakeMode(spec.WakeMode), MaxDuration: spec.Timeout,
-		Name: spec.Name, Condition: spec.Condition, Kind: kind, OrTimeout: spec.OrTimeout,
+		Name: spec.Name, Condition: condition, Kind: kind, OrTimeout: spec.OrTimeout,
 	}
 }
 
@@ -202,13 +302,57 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return err
 	}
 	if spec.Dir == "" {
-		spec.Dir, _ = os.Getwd()
+		spec.Dir = "."
 	}
-	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, os.Stderr)
+	spec.Dir, err = filepath.Abs(spec.Dir)
+	if err != nil {
+		return fmt.Errorf("resolve wait directory: %w", err)
+	}
+	checkDir := ""
+	if spec.Kind == domain.WaitKindShell {
+		checkDir = spec.Dir
+	}
+	if spec.Kind == domain.WaitKindGitHub {
+		if spec.GitHub.Repo == "" {
+			runner := wait.New(nil, nil, nil)
+			runner.GitHub = gitHubCommand
+			spec.GitHub.Repo = gitHubRepository(ctx, runner, spec.Dir)
+			if spec.GitHub.Repo == "" {
+				return errors.New("cannot resolve the GitHub repository for this task-bound wait; give --repo owner/name so its condition can be recorded before parking")
+			}
+		}
+		// Identical arguments in different checkouts must name distinct waits.
+		checkDir = spec.GitHub.Repo
+	}
+	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, args, checkDir, os.Stderr)
+
+	statePath, err := cfg.ResolveStatePath()
+	if err != nil {
+		return err
+	}
+	store, err := sqlite.Open(statePath)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	checks, err := store.ListWaits(ctx, "")
+	if err != nil {
+		return err
+	}
+	saved, retry := registeredTaskCheck(checks, sqlite.TaskWaitID(spec.RequestID))
+	if retry && spec.Kind == domain.WaitKindTime && spec.For > 0 && saved.For == spec.For && saved.At != nil {
+		// A retry of --for DURATION keeps the instant its first registration
+		// resolved. Resolving it again names a later instant, which is another
+		// condition, and the retry would be refused for it.
+		spec.setTimeInstant(*saved.At)
+		if spec.ExplicitName != "" {
+			spec.Name = spec.ExplicitName
+		}
+	}
 
 	local := wait.Wait{
 		ID: newWaitID(), ThreadID: identity.ThreadID, Name: spec.Name, Kind: spec.Kind, Command: spec.Command, Dir: spec.Dir,
-		At: spec.At, GitHub: spec.GitHub, OrTimeout: spec.OrTimeout,
+		At: spec.At, For: spec.For, GitHub: spec.GitHub, OrTimeout: spec.OrTimeout,
 		Every: spec.Every, MaxEvery: spec.MaxEvery, Timeout: spec.Timeout, RunTimeout: spec.RunTimeout,
 		Wake: wait.WakeMode(spec.WakeMode), Status: wait.StatusWaiting, CreatedAt: now,
 	}
@@ -219,6 +363,16 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	code, firstLine, err := probeLocalWait(ctx, spec, &local, "so there is nothing to park for")
 	if err != nil {
 		return err
+	}
+	// A retry is refused before it reaches the coordinator when it changes
+	// part of the condition the coordinator record does not hold, such as a
+	// shell check's directory. Answering it with the saved wait would report
+	// the new condition registered while only the old one is watched.
+	if retry {
+		local.TaskWaitID = saved.TaskWaitID
+		if err := refuseChangedTaskCheck(spec.RequestID, saved, local); err != nil {
+			return err
+		}
 	}
 
 	transport, err := newCoordinatorTransport(cfg)
@@ -247,19 +401,12 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 		return fmt.Errorf("task-bound wait %s is already settled, so this task is not parked; register a new wait with a different --request-id", registered.ID)
 	}
 
-	statePath, err := cfg.ResolveStatePath()
-	if err != nil {
-		return err
-	}
-	store, err := sqlite.Open(statePath)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
 	local.TaskWaitID = registered.ID
 	// A registration retry must never create a second poll or reset a settled one.
 	local.ID = "w-" + registered.ID
-	if err := saveRegisteredTaskCheck(ctx, store, local); err != nil {
+	if err := saveRegisteredTaskCheck(ctx, store, spec.RequestID, local); errors.Is(err, errTaskCheckConditionChanged) {
+		return err
+	} else if err != nil {
 		// The attempt is parked and the coordinator owns its maximum duration,
 		// so an unpolled wait expires with a structured timeout rather than
 		// stranding the task. Report the failure honestly instead of implying
@@ -286,6 +433,7 @@ func cmdTaskWaitAdd(ctx context.Context, cfg config.Config, args []string) error
 	}
 	fmt.Printf("task-bound wait %s (%s) registered for attempt %s on thread %s: %s.\n",
 		registered.ID, spec.Kind, registered.AttemptID, registered.ThreadID, spec.registrationSummary(code, firstLine))
+	fmt.Println(parkWakeSentence(string(registered.Wake)))
 	fmt.Println("This task is now parked. End this turn now: nothing is collected and nothing is verified")
 	fmt.Println("until the steward resumes this same thread with the outcome.")
 	return nil

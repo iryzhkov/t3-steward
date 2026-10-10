@@ -67,6 +67,8 @@ func parseCoordinatorWaitSpec(args []string) (coordinatorWaitSpec, error) {
 	fs.DurationVar(&spec.Timeout, "timeout", 24*time.Hour, "deadline")
 	fs.BoolVar(&spec.OrTimeout, "or-timeout", false, "treat the deadline as a normal outcome")
 	fs.StringVar(&spec.WakeMode, "wake", "each", "each or all")
+	wakeAll := fs.Bool("all", false, "task-bound: wake once every condition of this park has settled (default)")
+	wakeAny := fs.Bool("any", false, "task-bound: wake when this condition settles")
 	fs.StringVar(&spec.Thread, "thread", "", "thread id")
 	fs.StringVar(&spec.Group, "group", "", "group name")
 	fs.StringVar(&spec.RequestID, "request-id", "", "stable registration ID")
@@ -90,9 +92,11 @@ func parseCoordinatorWaitSpec(args []string) (coordinatorWaitSpec, error) {
 	if *at != "" || *after != "" || *github != "" || fs.NArg() != 0 {
 		return spec, errors.New("one wait has one kind; --node and --quota take no command, --at, --for or --github")
 	}
-	if spec.WakeMode != "each" && spec.WakeMode != "all" {
-		return spec, errors.New("--wake must be each or all")
+	mode, err := taskWakeModeFlags(fs, spec.WakeMode, *wakeAll, *wakeAny, spec.Task == "current")
+	if err != nil {
+		return spec, err
 	}
+	spec.WakeMode = mode
 	if spec.Timeout <= 0 || spec.Timeout > domain.MaxTaskWaitDuration {
 		return spec, fmt.Errorf("--timeout must be above zero and at most %s", domain.MaxTaskWaitDuration)
 	}
@@ -329,7 +333,7 @@ func cmdTaskCoordinatorWaitAdd(ctx context.Context, cfg config.Config, args []st
 	if err != nil {
 		return err
 	}
-	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, os.Stderr)
+	spec.RequestID = taskWaitRequestID(spec.RequestID, identity, args, "", os.Stderr)
 	if spec.Attention != nil {
 		spec.Attention.AssignmentID = identity.AssignmentID
 	}
@@ -368,7 +372,8 @@ func cmdTaskCoordinatorWaitAdd(ctx context.Context, cfg config.Config, args []st
 		return nil
 	}
 	fmt.Printf("task-bound wait %s (%s) registered for attempt %s on thread %s: %s; settled by the coordinator from its own records, giving up after %s.\n",
-		registered.ID, spec.Kind, registered.AttemptID, registered.ThreadID, spec.Condition, spec.Timeout)
+		registered.ID, spec.Kind, registered.AttemptID, registered.ThreadID, registered.Condition, spec.Timeout)
+	fmt.Println(parkWakeSentence(string(registered.Wake)))
 	fmt.Println("This task is now parked. End this turn now: nothing is collected and nothing is verified")
 	fmt.Println("until the steward resumes this same thread with the outcome.")
 	return nil

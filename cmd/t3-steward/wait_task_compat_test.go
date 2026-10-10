@@ -38,11 +38,9 @@ func decodeRC69(t *testing.T, registration domain.TaskWaitRegistration) error {
 	return decoder.Decode(&decoded)
 }
 
-// A plain shell `--task current` registration marshals to exactly the rc.69
-// field set, so an updated host keeps parking tasks against an rc.69
-// coordinator. The new kinds and --or-timeout carry their fields and are
-// refused by that coordinator's strict decode, which is the honest answer.
-func TestShellTaskWaitRegistrationIsByteCompatibleWithRC69(t *testing.T) {
+// Complete shell identity requires a newer coordinator. Strict older
+// coordinators must refuse it, including ordinary shell registrations.
+func TestShellTaskWaitRegistrationRequiresIdentityAwareCoordinator(t *testing.T) {
 	now := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
 	identity := taskIdentity{WorkflowRunID: "run-1", TaskID: "task-1", AttemptID: "attempt-1", AttemptRevision: 7, ThreadID: "thread-1"}
 	spec, err := parseLocalWaitSpec([]string{"--task", "current", "--request-id", "ci", "--name", "ci", "--", "gh", "run", "view"}, now)
@@ -50,10 +48,10 @@ func TestShellTaskWaitRegistrationIsByteCompatibleWithRC69(t *testing.T) {
 		t.Fatal(err)
 	}
 	registration := localTaskWaitRegistration(spec, identity)
-	if err := decodeRC69(t, registration); err != nil {
-		t.Fatalf("a shell registration carries a field rc.69 refuses: %v", err)
+	if err := decodeRC69(t, registration); err == nil {
+		t.Fatal("a shell registration hid its execution identity from rc.69")
 	}
-	if registration.RequestID != "ci" || registration.AttemptID != "attempt-1" || registration.IssuedRevision != 7 || registration.Wake != domain.WakeEach || registration.Condition == "" {
+	if registration.RequestID != "ci" || registration.AttemptID != "attempt-1" || registration.IssuedRevision != 7 || registration.Wake != domain.WakeAll || registration.Condition == "" {
 		t.Fatalf("registration = %+v", registration)
 	}
 

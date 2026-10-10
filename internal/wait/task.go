@@ -3,6 +3,7 @@ package wait
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -256,12 +257,30 @@ func taskWakeMessage(wake domain.TaskWaitWakeContext, wait domain.TaskWait) stri
 		}
 	}
 	// The trailer names the wait this delivery is for; a grouped delivery
-	// lists the other members in the prose and says how many there are.
+	// says how many there are and lists every member's outcome, in the
+	// trailer as id:outcome pairs and in the prose with its evidence.
 	line := taskTrailer(wait)
 	if len(group.Waits) > 1 {
-		line += " count=" + fmt.Sprint(len(group.Waits))
+		line += " count=" + fmt.Sprint(len(group.Waits)) + " waits=" + quoteTrailerValue(taskWakeMembers(group.Waits))
 	}
 	return line + "\n\n" + group.Prompt()
+}
+
+// taskWakeMembers renders the waits= trailer value of a grouped task wake:
+// every member as <id>:<outcome>, comma-separated, in the order the prose
+// lists them. A member with no outcome yet is pending. The caller quotes the
+// value like any other trailer value, since a custom request id may hold a
+// space.
+func taskWakeMembers(waits []domain.TaskWait) string {
+	members := make([]string, 0, len(waits))
+	for _, member := range waits {
+		outcome := "pending"
+		if member.Result != nil {
+			outcome = string(member.Result.Outcome)
+		}
+		members = append(members, member.ID+":"+outcome)
+	}
+	return strings.Join(members, ",")
 }
 
 // taskWaitResult translates a settled check into the structured evidence the
