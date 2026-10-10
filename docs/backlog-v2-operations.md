@@ -1796,6 +1796,10 @@ release needs the database backup taken before the upgrade (see Backup).
 
 ## Recovery procedures
 
+For online snapshots, configuration-independent scratch restore drills and
+readiness checks after restart, see [Coordinator maintenance](coordinator-maintenance.md).
+The stopped rollback procedure below remains available.
+
 ### Coordinator restart or lost response
 
 1. Stop new admission.

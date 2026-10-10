@@ -16,6 +16,10 @@ import (
 const coordinatorUsage = `Usage: t3-steward coordinator <command> [flags]
 
 Commands:
+  backup --out DIR   Online operator backup; backup verify DIR --restore-drill
+                      verifies and restores scratch state without production config.
+  health [--wait-ready] [--timeout D] [--json]
+                      Report readiness; wait for healthy status and expected workers.
   identity [--json]   Show which coordinator this host administers and how it
                       reaches it. Read-only; it runs one status query.
   reload [--json] [--wait DURATION]
@@ -65,8 +69,13 @@ func cmdCoordinator(g globalFlags, args []string) error {
 	if answered, err := admitFamilyHelp(os.Stdout, []string{"coordinator"}, args); answered || err != nil {
 		return err
 	}
-	if args[0] == "reload" {
+	switch args[0] {
+	case "reload":
 		return cmdCoordinatorReload(g, args[1:])
+	case "health":
+		return cmdCoordinatorHealth(g, args[1:])
+	case "backup":
+		return cmdCoordinatorBackup(g, args[1:])
 	}
 	if args[0] != "identity" {
 		return fmt.Errorf("unknown coordinator command %q (try \"t3-steward coordinator help\")", args[0])

@@ -306,9 +306,20 @@ func (g storeQuotaGuard) Close() error { return g.store.Close() }
 // run's usage read zero attributed samples (S8). Without the database there
 // is nothing to forward, which is logged once.
 func hostUsageStore(cfg config.Config, logger *slog.Logger) *sqlite.Store {
+	// On the coordinator host this path belongs to the coordinator, not a
+	// worker-local watchdog. Even a drained worker must leave it unopened.
+	if cfg.BacklogV2.Mode == "coordinator" {
+		return nil
+	}
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
 		logger.Warn("watchdog state path unavailable; this worker forwards no usage", "err", err)
+		return nil
+	}
+	// Coordinator ownership leaves a persistent marker. A separately configured
+	// worker may still resolve the same state path, including while the
+	// coordinator is stopped; it must not open that database either.
+	if _, err := os.Lstat(statePath + ".coordinator.lock"); err == nil || !errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	store, err := sqlite.Open(statePath)
@@ -351,9 +362,18 @@ func (u tolerantUsage) WorkerUsageBatch(ctx context.Context, acknowledged []stri
 // the worker's T3 control client, which the probe rule asks whether anything
 // on the host is running that would produce a reading.
 func hostQuotaGuard(cfg config.Config, logger *slog.Logger, threads workerruntime.ThreadLister) workerruntime.QuotaGuard {
+	if cfg.BacklogV2.Mode == "coordinator" {
+		return nil
+	}
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
 		logger.Warn("quota watchdog state path unavailable; owned attempts are not paused locally", "err", err)
+		return nil
+	}
+	// Coordinator ownership leaves a persistent marker. A separately configured
+	// worker may still resolve the same state path, including while the
+	// coordinator is stopped; it must not open that database either.
+	if _, err := os.Lstat(statePath + ".coordinator.lock"); err == nil || !errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	store, err := sqlite.Open(statePath)

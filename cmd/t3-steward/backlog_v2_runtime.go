@@ -677,15 +677,15 @@ type coordinatorBoundaryCycle struct {
 	logger  *slog.Logger
 }
 
-func (c coordinatorBoundaryCycle) Tick(ctx context.Context) {
-	c.tick(ctx, false)
+func (c coordinatorBoundaryCycle) Tick(ctx context.Context) backlog.QuotaBridgeReport {
+	return c.tick(ctx, false)
 }
 
 // TickWithWorkers is used only after the startup-local pass. Worker observation
 // remains available when quota reconciliation fails, but the empty admission
 // report makes every new-work transport boundary fail closed.
-func (c coordinatorBoundaryCycle) TickWithWorkers(ctx context.Context) {
-	c.tick(ctx, true)
+func (c coordinatorBoundaryCycle) TickWithWorkers(ctx context.Context) backlog.QuotaBridgeReport {
+	return c.tick(ctx, true)
 }
 
 // logTickFailure reports one failed step of a boundary cycle. A step that
@@ -706,14 +706,14 @@ func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err er
 	logger.Error(msg, append(attrs, "error", err)...)
 }
 
-func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) {
+func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) backlog.QuotaBridgeReport {
 	if c.supervision != nil && c.supervision.settings.CoordinatorEpoch > 0 {
 		ctx = sqlite.WithCoordinatorEpochFence(ctx, c.supervision.settings.CoordinatorEpoch)
 	}
 	if store, ok := c.projection.(interface{ ReconcileMaterializedReviewChildren(context.Context) error }); ok {
 		if err := store.ReconcileMaterializedReviewChildren(ctx); err != nil {
 			logTickFailure(ctx, c.logger, "automatic review cancellation failed; boundary stopped", err)
-			return
+			return backlog.QuotaBridgeReport{}
 		}
 	}
 	if c.reviews != nil {
@@ -831,7 +831,19 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	} else {
 		c.logger.Warn("backlog-v2 planning and admin command execution deferred until quota reconciliation succeeds")
 	}
-	if exchangeWorkers && c.workers != nil {
+	if exchangeWorkers {
+		c.tickWorkersOnly(ctx, quotaReport)
+	}
+	return quotaReport
+}
+
+// Retries reuse the last boundary's admission report. Transport still checks
+// current fences and assignment authority; retries do not create scheduler work.
+func (c coordinatorBoundaryCycle) tickWorkersOnly(ctx context.Context, quotaReport backlog.QuotaBridgeReport) {
+	if c.supervision != nil && c.supervision.settings.CoordinatorEpoch > 0 {
+		ctx = sqlite.WithCoordinatorEpochFence(ctx, c.supervision.settings.CoordinatorEpoch)
+	}
+	if c.workers != nil {
 		workerReport := c.workers.Tick(ctx, quotaReport)
 		for _, result := range workerReport.Results {
 			if result.Err != nil {
@@ -845,7 +857,7 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	}
 }
 
-func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slog.Logger) (result error) {
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
 		return err
@@ -854,7 +866,7 @@ func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slo
 	if err != nil {
 		return err
 	}
-	defer store.Close()
+	defer func() { result = errors.Join(result, store.Close()) }()
 	// Quota waits count a reading fresh by the same threshold models marks
 	// readings stale at.
 	store.SetQuotaStaleAfter(modelsStaleAfter(cfg))
@@ -1223,7 +1235,7 @@ func serveCoordinatorBoundaries(
 	go func() {
 		serverDone <- server.Serve(ctx)
 	}()
-	cycle.Tick(ctx)
+	lastQuotaReport := cycle.Tick(ctx)
 	// Readiness is reported only while the server is still serving: a server
 	// that stopped during the startup pass returns its error instead.
 	select {
@@ -1239,6 +1251,16 @@ func serveCoordinatorBoundaries(
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	reconnect := &coordinatorReconnect{workers: cycle.workers, pending: cycle.workers != nil}
+	if cycle.workers != nil {
+		cycle.workers = reconnect
+	}
+	retry := time.NewTimer(reconnect.nextDelay())
+	defer retry.Stop()
+	var retryC <-chan time.Time
+	if reconnect.pending {
+		retryC = retry.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -1248,8 +1270,24 @@ func serveCoordinatorBoundaries(
 			return nil
 		case err := <-serverDone:
 			return err
+		case <-retryC:
+			cycle.tickWorkersOnly(ctx, lastQuotaReport)
+			if reconnect.pending && reconnect.delay < coordinatorReconnectMaxDelay {
+				retry.Reset(reconnect.nextDelay())
+			} else {
+				retryC = nil
+				reconnect.delay = 0
+			}
 		case <-ticker.C:
-			cycle.TickWithWorkers(ctx)
+			lastQuotaReport = cycle.TickWithWorkers(ctx)
+			if reconnect.pending && retryC == nil {
+				retry.Reset(reconnect.nextDelay())
+				retryC = retry.C
+			} else if !reconnect.pending {
+				retry.Stop()
+				retryC = nil
+				reconnect.delay = 0
+			}
 		}
 	}
 }

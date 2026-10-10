@@ -50,6 +50,10 @@ type Manifest struct {
 type Manager struct {
 	Limits Limits
 	Now    func() time.Time
+	// SubmissionRoot optionally selects the separate live submission object store
+	// for CreateOnline. Online snapshots consolidate all retained objects under
+	// artifacts; a restore drill never depends on production storage configuration.
+	SubmissionRoot string
 }
 
 // Create copies a stopped database and its complete artifact tree into a new,

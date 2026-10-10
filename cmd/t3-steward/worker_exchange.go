@@ -18,6 +18,17 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerruntime"
 )
 
+// workerExchangeUsageStore must not migrate or open coordinator-owned state,
+// including when a worker-mode configuration shares its path after shutdown.
+func workerExchangeUsageStore(statePath string) (*sqlite.Store, error) {
+	if _, err := os.Lstat(statePath + ".coordinator.lock"); err == nil {
+		return nil, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect coordinator ownership marker: %w", err)
+	}
+	return sqlite.OpenMigrated(statePath)
+}
+
 // The operation words, taken from the runtime that defines what each one does,
 // so the endpoint and the dispatch cannot drift apart.
 const (
@@ -65,11 +76,13 @@ func cmdWorkerExchange(g globalFlags, pinned string) error {
 	if err != nil {
 		return err
 	}
-	usageStore, err := sqlite.OpenMigrated(statePath)
+	usageStore, err := workerExchangeUsageStore(statePath)
 	if err != nil {
 		return err
 	}
-	defer usageStore.Close()
+	if usageStore != nil {
+		defer usageStore.Close()
+	}
 	// The worker runs as a short-lived SSH command whose stderr reaches the
 	// coordinator only when the process fails, so it also appends to a durable
 	// log beside its journal for later diagnosis.
@@ -91,7 +104,7 @@ func cmdWorkerExchange(g globalFlags, pinned string) error {
 		CoordinatorEpoch:      local.CoordinatorEpoch,
 		ProtocolCredentials:   workerruntime.ProtocolResolver{},
 		ProjectCredentials:    workerruntime.EnvironmentCredentialChecker{},
-		Usage:                 usageStore,
+		Usage:                 workerUsageSource(usageStore, logger),
 		ProviderResumeBackoff: cfg.BacklogV2.ProviderResume.Schedule(),
 		DryRun:                cfg.Policy.DryRun,
 		Logger:                logger,

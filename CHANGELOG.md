@@ -319,6 +319,20 @@ or rc.115 coordinator.
   `preserved result digest mismatch` and a removed one as `workspace is
   missing`, both infrastructure failures, instead of collecting work that
   cannot be proven to be the turn's.
+- Coordinator maintenance: operator-only `coordinator backup --out DIR` takes an
+  online SQLite snapshot with a digest manifest of its retained artifacts;
+  `coordinator backup verify DIR --restore-drill` checks a scratch restore using
+  the backup's own identity without production configuration. Paths accept
+  relative directories and `~/`. `coordinator health --wait-ready --timeout D
+  --json` waits through reconnect windows for healthy status and expected workers.
+  Coordinator shutdown checkpoints before releasing ownership, workers sharing
+  coordinator configuration leave its database unopened, and worker exchanges
+  after startup or failure retry exchanges only at one/two/four/five-second delays,
+  then return to the configured scheduling interval. One-shot worker exchanges
+  also leave coordinator-marked databases unopened. Blocked shutdown checkpoints
+  name the reader-close and checkpoint remedy. See
+  docs/coordinator-maintenance.md for authority, artifact custody and restore limits.
+
 - M16-4 review round budgets and escalation: a task's `review.round_limit`
   defaults to 2 for routine work and 3 for risky work, which is also its
   maximum, and is frozen with the review authority at the first
