@@ -56,6 +56,7 @@ Commands:
   forecast           Interactive-demand map by weekday and hour, and current backlog headroom.
   campaign           Author, inspect and submit a workflow from a campaign directory.
   review             result <round>: collect a durable review round and its evidence.
+  config             Pure staged validate --file PATH --json; no runtime effects or env overrides.
   policy             Read-only show/validate for route-policy/v1.
   models             Every provider route the fleet can run now, with its quota state.
   triage             Everything waiting for an operator, each with a ready-to-run command.
@@ -125,7 +126,7 @@ func invoke(args []string, stderr io.Writer) int {
 	// New help exports have a special instrumentation exemption, including
 	// export refusals. This pure argv guard is not an execution bypass;
 	// ordinary help and runtime commands retain their existing instrumentation.
-	if !isHelpExportInvocation(args) {
+	if !isHelpExportInvocation(args) && !isConfigValidateInvocation(args) {
 		spoolInvocation(args, code, err, time.Since(started))
 	}
 	if err != nil {
@@ -180,6 +181,15 @@ var (
 )
 
 func dispatch(args []string) error {
+	// Pure staged validation precedes runtime globals, default paths and help
+	// admission, so even malformed validator arguments cannot reach them.
+	if len(args) > 0 {
+		cmd := args[0]
+		switch cmd {
+		case "config":
+			return cmdConfig(args[1:])
+		}
+	}
 	// A manifest refusal names the release that refused it, so the version
 	// the linker set is handed to the manifest parser before any command runs.
 	backlog.SetReleaseVersion(version)
@@ -462,7 +472,7 @@ var dispatchedVerbs = []string{
 // topLevelFamilies are the command families dispatch routes by name, in the
 // order a did-you-mean suggestion prefers them.
 var topLevelFamilies = []string{
-	"campaign", "task", "review", "policy", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "lease", "models", "triage",
+	"config", "campaign", "task", "review", "policy", "wait", "ask", "backlog", "worker", "coordinator", "schedules", "lease", "models", "triage",
 	"quota", "diagnose", "thread", "bucket", "archive", "ui-archive", "version", "help",
 }
 

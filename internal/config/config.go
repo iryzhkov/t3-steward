@@ -8,7 +8,6 @@ package config
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -988,18 +987,7 @@ func loadFile(path string) (Config, error) {
 		data, err := os.ReadFile(path)
 		switch {
 		case err == nil:
-			decoder := yaml.NewDecoder(strings.NewReader(string(data)))
-			decoder.KnownFields(true)
-			if err := decoder.Decode(&c); err != nil {
-				return c, fmt.Errorf("parse %s: %w", path, err)
-			}
-			var extra any
-			if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-				if err == nil {
-					err = errors.New("multiple YAML documents are not allowed")
-				}
-				return c, fmt.Errorf("parse %s: %w", path, err)
-			}
+			return decodeFile(path, data)
 		case errors.Is(err, os.ErrNotExist):
 			// Defaults apply.
 		default:

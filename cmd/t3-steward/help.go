@@ -298,7 +298,7 @@ func helpPagePaths() []string {
 // the dispatcher would have left every page of that family documenting an
 // option nothing accepted, with the suite green.
 func (p helpPage) renderedFlags() []helpFlag {
-	if family, _, isFamilyVerb := strings.Cut(p.Path, " "); isFamilyVerb {
+	if family, _, isFamilyVerb := strings.Cut(p.Path, " "); isFamilyVerb && family != "config" {
 		return append(append([]helpFlag{}, p.Flags...), familyConfigFlag(family))
 	}
 	return p.Flags

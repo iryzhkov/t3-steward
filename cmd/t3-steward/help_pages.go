@@ -15,6 +15,7 @@ var helpPages = map[string]helpPage{}
 func init() {
 	for _, list := range [][]helpPage{
 		topLevelHelpPages(),
+		configHelpPages(),
 		familyHelpPages(),
 		backlogHelpPages(),
 		campaignHelpPages(),
