@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 )
 
 func TestConfigValidateStandaloneHelpAndFileData(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "t3-steward")
+	binary := filepath.Join(testutil.RealTempDir(t), "t3-steward")
 	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)
 	}

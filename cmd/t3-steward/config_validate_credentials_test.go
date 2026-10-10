@@ -17,6 +17,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/testtiming"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 )
@@ -46,7 +47,7 @@ func configCredentialEvents(t *testing.T, fd int) map[int]uint32 {
 }
 
 func TestConfigValidateCredentialReadBoundary(t *testing.T) {
-	buildBinary := filepath.Join(t.TempDir(), "t3-steward")
+	buildBinary := filepath.Join(testutil.RealTempDir(t), "t3-steward")
 	build := exec.Command("go", "build", "-o", buildBinary, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)

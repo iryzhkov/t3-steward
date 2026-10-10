@@ -123,3 +123,50 @@ pinned Go 1.25.0/staticcheck v0.7.0 toolchain. No RACE_GCFLAGS override was used
 The final script also passed direct rc121 LocalDriver collection with a real candidate
 preserved-result sidecar present: output bytes were captured/published unchanged and
 the sidecar was not modified (exit 0).
+
+## Repair round 2 rerun (2026-10-10)
+
+Base candidate: 50b9c196f2f1444cb855780c9a6231459b3fb5c0.
+The repair changes only tests: staged validator fixtures use the existing
+testutil.RealTempDir helper, and the campaign result-binding test injects a
+portable ProcessRunner through the existing AttemptFinalizer.Processes seam.
+Production validation, drain, schema 42, persisted records and wire formats
+are unchanged. A new positive-control test validates a canonical config and
+then asserts refusal of that same file through a symlinked ancestor; the
+internal O_DIRECTORY|O_NOFOLLOW walk returns ENOTDIR and the public API
+retains its sanitized ErrStagedConfig refusal.
+
+All commands below passed (exit 0), with GOMAXPROCS=4, GOFLAGS=-p=4,
+MAKEFLAGS=-j4 and CARGO_BUILD_JOBS=4:
+
+- TMPDIR="$PWD/.ci-tmp/tmp-link" go test -timeout 10m ./...
+- TMPDIR="$PWD/.ci-tmp/tmp-link" go test -race -timeout 20m ./...
+- test -z "$(gofmt -l .)"
+- go build ./...
+- go vet ./...
+- make lint (pinned Go 1.25.0 / staticcheck v0.7.0)
+- make test (go test -timeout 10m, go test -race -timeout 25m, go vet)
+- go test ./internal/config -count=20
+- GOOS=darwin go vet ./...
+- GOOS=darwin go test -c -o /dev/null ./cmd/t3-steward
+- CI cross-build loop: linux/amd64, linux/arm64, darwin/amd64,
+  darwin/arm64, each CGO_ENABLED=0 go build -o /dev/null ./cmd/t3-steward
+- bash scripts/rc122-downgrade-compat.sh
+
+The test and race commands used the requested mkdir/ln setup. Verification
+ran in a disposable short checkout (/tmp/rc122-r2) with an identical source
+diff; .ci-tmp pointed to an external scratch directory (/tmp/rc122-ci-r2).
+This matches GitHub RUNNER_TEMP being outside the checkout. The original
+Steward path is too long for Unix sockets, and an in-checkout temporary
+directory also triggers intentional review-output repository refusals.
+Those layout trials were interrupted (143); the final entire script exited 0.
+The CI workflow uses symlinked TMPDIR only in the plain Linux test job;
+its ordinary race layout was covered by make test. Checkptr remained enabled.
+
+The downgrade harness again built rc121 from c382eea6a91319ab72246066b5ed4bdfc75bec26
+and passed actual old CLI reads, old store/wait/attempt receipt reads,
+absent-new-key config acceptance and explicit automatic_retries refusal,
+preserved-result collection, and mixed-version strict worker snapshot/request
+decoding in both directions (exit 0). Existing downgrade limitations above
+remain applicable. Real macOS execution and exact GitHub CI await parent
+publication; this task did not push, publish or deploy.

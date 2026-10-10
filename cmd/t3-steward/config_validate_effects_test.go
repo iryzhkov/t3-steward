@@ -15,6 +15,7 @@ import (
 	"unsafe"
 
 	"github.com/iryzhkov/t3-steward/internal/testtiming"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 	"golang.org/x/sys/unix"
 )
 
@@ -77,7 +78,7 @@ func TestConfigValidateEffectsGuardHelper(t *testing.T) {
 }
 
 func TestConfigValidateActualBinaryEffectsGuard(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "t3-steward")
+	binary := filepath.Join(testutil.RealTempDir(t), "t3-steward")
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build %v %s", err, out)

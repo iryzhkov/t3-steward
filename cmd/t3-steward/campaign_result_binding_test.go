@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,24 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 )
+
+// Use the same portable Processes seam as c382's backlog testFinalizer.
+// Production worker finalization still defaults to Linux systemd scopes.
+type campaignResultProcessRunner struct{}
+
+func (campaignResultProcessRunner) Run(ctx context.Context, request backlog.ProcessRequest) (backlog.ProcessResult, error) {
+	cmd := exec.CommandContext(ctx, request.Program, request.Args...)
+	cmd.Dir = request.Dir
+	cmd.Env = append(os.Environ(), request.Environment...)
+	output, err := cmd.CombinedOutput()
+	result := backlog.ProcessResult{Output: string(output)}
+	var exitError *exec.ExitError
+	if errors.As(err, &exitError) {
+		result.ExitCode = exitError.ExitCode()
+		return result, &backlog.ProcessExitError{ExitCode: result.ExitCode, Err: err}
+	}
+	return result, err
+}
 
 // Reconstructs the review reproduction using production finalization. Both a
 // different workspace HEAD and dirty tracked content can pass verification
@@ -60,7 +79,7 @@ func TestReviewVerificationMustBindDeclaredCommit(t *testing.T) {
 			p.Attempt.ReviewGate = nil
 			p.Task.Outputs[0].Commit.Revision = "candidate"
 			p.Task.Verification = []string{"grep -qx good source.txt"}
-			finalizer := backlog.AttemptFinalizer{StorageRoot: storage, CampaignRefs: backlog.CampaignRefStore{Root: t.TempDir()}}
+			finalizer := backlog.AttemptFinalizer{Processes: campaignResultProcessRunner{}, StorageRoot: storage, CampaignRefs: backlog.CampaignRefStore{Root: t.TempDir()}}
 			result, err := finalizer.Finalize(ctx, backlog.AttemptFinalization{Task: p.Task, Attempt: *p.Attempt, WorkspaceDir: dir, ExplicitSuccess: true, Repository: "test-repository", BaseCommit: base})
 			defer filepath.Walk(storage, func(path string, info os.FileInfo, err error) error {
 				if err == nil && info.IsDir() {

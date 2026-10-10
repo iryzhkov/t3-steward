@@ -11,13 +11,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 )
 
 func stagedTestHome(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	home := testutil.RealTempDir(t)
 	t.Setenv("HOME", home)
 	return home
 }
@@ -38,7 +39,7 @@ func stagedConfig(t *testing.T, c Config) (string, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), "staged.yaml")
+	path := filepath.Join(testutil.RealTempDir(t), "staged.yaml")
 	stagedWrite(t, path, raw)
 	return path, raw
 }
@@ -70,7 +71,7 @@ func TestStagedConfigExactBytesAndRuntimeSemantics(t *testing.T) {
 func TestStagedConfigSizeBoundary(t *testing.T) {
 	stagedTestHome(t)
 	raw := []byte("{}\n#" + strings.Repeat("x", (4<<20)-4))
-	path := filepath.Join(t.TempDir(), "boundary.yaml")
+	path := filepath.Join(testutil.RealTempDir(t), "boundary.yaml")
 	stagedWrite(t, path, raw)
 	digest, err := ValidateStagedFile(path)
 	want := sha256.Sum256(raw)
@@ -111,20 +112,20 @@ func TestStagedConfigValidationRefusals(t *testing.T) {
 		"empty":     "",
 	} {
 		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "SECRET_PATH.yaml")
+			path := filepath.Join(testutil.RealTempDir(t), "SECRET_PATH.yaml")
 			stagedWrite(t, path, []byte(raw))
 			stagedRefused(t, path)
 		})
 	}
 	stagedRefused(t, "")
-	stagedRefused(t, filepath.Join(t.TempDir(), "missing"))
+	stagedRefused(t, filepath.Join(testutil.RealTempDir(t), "missing"))
 }
 
 func TestStagedConfigUnsafeInputs(t *testing.T) {
 	stagedTestHome(t)
 	for _, kind := range []string{"mode", "symlink", "ancestor symlink", "unclean traversal", "hardlink", "directory", "fifo", "oversize", "unsafe ancestor"} {
 		t.Run(kind, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "staged.yaml")
+			path := filepath.Join(testutil.RealTempDir(t), "staged.yaml")
 			stagedWrite(t, path, []byte("{}\n"))
 			switch kind {
 			case "mode":
@@ -138,7 +139,7 @@ func TestStagedConfigUnsafeInputs(t *testing.T) {
 				}
 				path = link
 			case "ancestor symlink":
-				link := filepath.Join(t.TempDir(), "link")
+				link := filepath.Join(testutil.RealTempDir(t), "link")
 				if err := os.Symlink(filepath.Dir(path), link); err != nil {
 					t.Fatal(err)
 				}
@@ -168,13 +169,35 @@ func TestStagedConfigUnsafeInputs(t *testing.T) {
 	}
 	stagedRefused(t, "/dev/null")
 	t.Run("foreign owner", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "foreign")
+		path := filepath.Join(testutil.RealTempDir(t), "foreign")
 		stagedWrite(t, path, []byte("{}\n"))
 		if err := os.Chown(path, os.Getuid()+1, -1); err != nil {
 			t.Skip("foreign ownership requires chown privilege")
 		}
 		stagedRefused(t, path)
 	})
+}
+
+// Valid bytes and a canonical HOME do not authorize traversing a symlinked
+// config ancestor, including a symlink introduced by the caller's TMPDIR.
+func TestStagedConfigRefusesSymlinkedAncestor(t *testing.T) {
+	stagedTestHome(t)
+	path, _ := stagedConfig(t, Default())
+	if _, err := ValidateStagedFile(path); err != nil {
+		t.Fatalf("canonical config must be valid: %v", err)
+	}
+	link := filepath.Join(testutil.RealTempDir(t), "linked-config-directory")
+	if err := os.Symlink(filepath.Dir(path), link); err != nil {
+		t.Fatal(err)
+	}
+	linkedPath := filepath.Join(link, filepath.Base(path))
+	stagedRefused(t, linkedPath)
+	// O_DIRECTORY|O_NOFOLLOW reports ENOTDIR for a symlinked ancestor.
+	// The public validator deliberately sanitizes this to ErrStagedConfig.
+	input, err := observeStagedInput(linkedPath, 4<<20, false)
+	if input != nil || !errors.Is(err, unix.ENOTDIR) {
+		t.Fatalf("symlinked config ancestor must be refused without following it: input=%v err=%v", input, err)
+	}
 }
 
 func TestStagedConfigChangeRefusals(t *testing.T) {

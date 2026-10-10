@@ -21,12 +21,13 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/testtiming"
+	"github.com/iryzhkov/t3-steward/internal/testutil"
 	"gopkg.in/yaml.v3"
 )
 
 func configValidationFixture(t *testing.T) (string, string, []byte) {
 	t.Helper()
-	root := t.TempDir()
+	root := testutil.RealTempDir(t)
 	for _, dir := range []string{"home", "state", "feedback", "tools"} {
 		if err := os.Mkdir(filepath.Join(root, dir), 0700); err != nil {
 			t.Fatal(err)
@@ -217,7 +218,7 @@ func configValidationProjectionRefusal(t *testing.T, root, path string, raw []by
 }
 
 func TestConfigValidateActualBinaryNoEffects(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "t3-steward")
+	binary := filepath.Join(testutil.RealTempDir(t), "t3-steward")
 	build := exec.Command("go", "build", "-o", binary, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build %v %s", err, out)
