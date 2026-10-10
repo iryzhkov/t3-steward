@@ -45,7 +45,7 @@ func TestIndependentRepair1TerminalOnlyRollbackAndAudit(t *testing.T) {
 			live.TaskID = "live-task"
 			live.AssignmentID = "live-assignment"
 			live.Progress = domain.ProgressActive
-			live.Control = domain.ControlResuming
+			live.Control = domain.ControlPreparing
 			la := as
 			la.ID = live.AssignmentID
 			la.AttemptID = live.ID
@@ -139,7 +139,7 @@ func TestIndependentRepair1MixedPendingDelivery(t *testing.T) {
 				live.TaskID = "live-task"
 				live.AssignmentID = "live-assignment"
 				live.Progress = domain.ProgressActive
-				live.Control = domain.ControlResuming
+				live.Control = domain.ControlPreparing
 				live.CompletedAt = nil
 				la := records.Assignments[0]
 				la.ID = live.AssignmentID

@@ -357,6 +357,18 @@ func TestReviewRuntimeAutomaticWorkerCustodyIntegration(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if !completion {
+					retained, retainErr := PlanWorkerStateTransitions(records, snapshot, pending, now)
+					if retainErr != nil || len(retained) != 0 {
+						t.Fatalf("stop acknowledgement released without observation: %+v %v", retained, retainErr)
+					}
+					snapshot.Sequence++
+					snapshot.ObservedAt = snapshot.ObservedAt.Add(time.Millisecond)
+					snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, State: domain.AssignmentReleased, ThreadID: assignment.ThreadID, ObservedAt: now}}
+					if err = f.parent.store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+						t.Fatal(err)
+					}
+				}
 				transitions, err = PlanWorkerStateTransitions(records, snapshot, pending, now)
 				if err != nil || len(transitions) != 1 {
 					t.Fatalf("ack transition %+v %v", transitions, err)

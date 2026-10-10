@@ -87,6 +87,18 @@ func TestM5SupportedIsolatedUpgradeDrainsSettlesAndResumes(t *testing.T) {
 	}
 	assignment := fixture.retainAssignment(t, workerID)
 	runtime := m5ClaimedRuntime(t, fixture.cfg, assignment, epoch)
+	// Publish the actual claimed execution identity before testing an exact
+	// released observation; a stop receipt cannot supply a missing thread binding.
+	claimed, err := runtime.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.SaveWorkerSnapshot(ctx, claimed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (backlog.FleetCoordinator{Store: fixture.store, Now: time.Now}).ReconcileWorkerCommands(ctx, claimed, m5NoopTransport{}); err != nil {
+		t.Fatal(err)
+	}
 
 	reloads := make(chan os.Signal, 1)
 	activated := make(chan config.Config, 8)
@@ -157,8 +169,21 @@ func TestM5SupportedIsolatedUpgradeDrainsSettlesAndResumes(t *testing.T) {
 		commands[index].AssignmentEpoch = assignment.Epoch
 		commands[index].CreatedAt = time.Now().UTC()
 	}
-	if acks, err := runtime.DeliverCommands(ctx, workerproto.CommandDelivery{Commands: commands}); err != nil || len(acks.Acknowledgements) != len(commands) {
-		t.Fatalf("worker lifecycle acknowledgements=%+v err=%v", acks, err)
+	if acks, err := runtime.DeliverCommands(ctx, workerproto.CommandDelivery{Commands: commands[:2]}); err != nil || len(acks.Acknowledgements) != 2 {
+		t.Fatalf("worker startup acknowledgements=%+v err=%v", acks, err)
+	}
+	running, err := runtime.Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.store.SaveWorkerSnapshot(ctx, running); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (backlog.FleetCoordinator{Store: fixture.store, Now: time.Now}).ReconcileWorkerCommands(ctx, running, m5NoopTransport{}); err != nil {
+		t.Fatal(err)
+	}
+	if acks, err := runtime.DeliverCommands(ctx, workerproto.CommandDelivery{Commands: commands[2:]}); err != nil || len(acks.Acknowledgements) != 1 {
+		t.Fatalf("worker stop acknowledgements=%+v err=%v", acks, err)
 	}
 	snapshot, err := runtime.Snapshot(ctx)
 	if err != nil {

@@ -73,9 +73,10 @@ func TestIndependentRepair2RegisteredHistoricalRelease(t *testing.T) {
 				t.Fatal(err)
 			}
 			if strings.HasPrefix(evidence, "released") {
-				snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID: original.AssignmentID, AssignmentEpoch: 2, State: domain.AssignmentReleased, ObservedAt: now})
+				snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID: original.AssignmentID, AssignmentEpoch: 2, State: domain.AssignmentReleased, ThreadID: records.Assignments[0].ThreadID, ObservedAt: now})
 			} else {
 				repair1Ack(t, s, domain.WorkerCommand{ID: "real-stop", Kind: domain.WorkerCommandStop, WorkerID: snapshot.WorkerID, WorkerEpoch: snapshot.WorkerEpoch, CoordinatorEpoch: 1, AssignmentID: original.AssignmentID, AssignmentEpoch: 2, ExpectedWorkerSequence: 1, CreatedAt: now}, now)
+				snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID: original.AssignmentID, AssignmentEpoch: 2, State: domain.AssignmentReleased, ThreadID: records.Assignments[0].ThreadID, ObservedAt: now})
 			}
 			snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID: la.ID, AssignmentEpoch: 2, State: domain.AssignmentClaimed, Control: domain.ControlRunning, ObservedAt: now})
 			if strings.Contains(evidence, "-old-") {
@@ -109,6 +110,37 @@ func TestIndependentRepair2RegisteredHistoricalRelease(t *testing.T) {
 				t.Fatalf("native release replay: %v", err)
 			}
 			got := repair1Records(t, s)
+			if strings.Contains(evidence, "-old-") {
+				if !reflect.DeepEqual(repair1Assignment(t, got, original.AssignmentID), records.Assignments[0]) || !reflect.DeepEqual(repair1Attempt(t, got, original.ID), parked) {
+					t.Fatal("historical stop receipt or foreign-epoch release altered custody")
+				}
+				if repair1Attempt(t, got, live.ID).Control != domain.ControlRunning {
+					t.Fatal("historical stop custody blocked healthy sibling")
+				}
+				// The original execution owner later supplies exact stop evidence.
+				snapshot.WorkerEpoch = records.Assignments[0].WorkerEpoch
+				snapshot.Sequence++
+				snapshot.ObservedAt = now.Add(2 * time.Second)
+				la.WorkerEpoch = snapshot.WorkerEpoch
+				if err = s.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{Assignments: []domain.Assignment{la}}); err != nil {
+					t.Fatal(err)
+				}
+				snapshot.Assignments = []domain.WorkerAssignmentObservation{
+					{AssignmentID: original.AssignmentID, AssignmentEpoch: 2, State: domain.AssignmentReleased, ThreadID: records.Assignments[0].ThreadID, ObservedAt: snapshot.ObservedAt},
+					{AssignmentID: la.ID, AssignmentEpoch: la.Epoch, State: domain.AssignmentClaimed, Control: domain.ControlRunning, ObservedAt: snapshot.ObservedAt},
+				}
+				if err = s.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+					t.Fatal(err)
+				}
+				projections, err = PlanWorkerStateTransitions(repair1Records(t, s), snapshot, receipts, now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = c.ReconcileWorkerCommands(ctx, snapshot, transport); err != nil {
+					t.Fatal(err)
+				}
+				got = repair1Records(t, s)
+			}
 			at := repair1Attempt(t, got, original.ID)
 			expected := parked
 			expected.Revision = at.Revision

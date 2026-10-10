@@ -88,7 +88,7 @@ func TestIndependentRepair1EpochReceiptBoundary(t *testing.T) {
 				before := repair1RawCustody(t, path)
 				c := FleetCoordinator{Store: s, Now: func() time.Time { return now.Add(time.Second) }}
 				transport := &terminalFenceTransport{}
-				settled := evidence == "accepted-stop" || evidence == "accepted-collect"
+				settled := evidence == "accepted-collect" // A historical stop receipt alone retains custody.
 				for tick := 0; tick < 3; tick++ {
 					if _, err = c.ReconcileWorkerCommands(ctx, snapshot, transport); err != nil {
 						t.Fatal(err)
@@ -174,7 +174,7 @@ func TestIndependentRepair1ParkCleanupMixedBatch(t *testing.T) {
 				la.DispatchToken = "live-token"
 				la.LeaseToken = "live-lease"
 				snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: la.ID, AssignmentEpoch: 1, State: domain.AssignmentClaimed, Control: domain.ControlRunning, ObservedAt: now}}
-				if evidence == "released" || evidence == "observed-completed" {
+				if evidence == "released" || evidence == "observed-completed" || evidence == "accepted-stop" {
 					state := domain.AssignmentReleased
 					if evidence == "observed-completed" {
 						state = domain.AssignmentCompleted

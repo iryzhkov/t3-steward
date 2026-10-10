@@ -104,7 +104,7 @@ func TestRuntimeTerminalFencesRepair1FinishedParkCleanup(t *testing.T) {
 				attempt.Progress = shape.progress
 				attempt.Control = shape.control
 				attempt.CompletedAt = shape.completed
-				if evidence == "released" {
+				if evidence == "released" || evidence == "stop" {
 					snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: a.ID, AssignmentEpoch: a.Epoch, State: domain.AssignmentReleased, ObservedAt: now}}
 				}
 				if evidence == "observed-completed" || evidence == "collect-observed" {
@@ -320,7 +320,7 @@ func TestRuntimeTerminalFencesRepair1OldEpochSafeOmission(t *testing.T) {
 					repair1Ack(t, s, cmd, now)
 					snapshot.Sequence++
 					snapshot.ObservedAt = now.Add(2 * time.Second)
-					snapshot.Assignments = nil
+					snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: a.ID, AssignmentEpoch: a.Epoch, State: domain.AssignmentReleased, ThreadID: recovered.ThreadID, ObservedAt: snapshot.ObservedAt}}
 					if err = s.SaveWorkerSnapshot(ctx, snapshot); err != nil {
 						t.Fatal(err)
 					}

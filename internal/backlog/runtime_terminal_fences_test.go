@@ -50,6 +50,7 @@ func TestRuntimeTerminalFencesEvidenceAndCleanup(t *testing.T) {
 					snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: "a", AssignmentEpoch: 1, State: state, Control: domain.ControlRunning, ObservedAt: now}}
 				case "stop-ack":
 					commands = append(commands, workerCommandRecord(snapshot, assignment, domain.WorkerCommandStop, true))
+					snapshot.Assignments = []domain.WorkerAssignmentObservation{{AssignmentID: assignment.ID, AssignmentEpoch: assignment.Epoch, State: domain.AssignmentReleased, ThreadID: assignment.ThreadID, ObservedAt: now}}
 				case "collect-ack":
 					commands = append(commands, workerCommandRecord(snapshot, assignment, domain.WorkerCommandCollect, true))
 				}

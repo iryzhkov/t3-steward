@@ -69,9 +69,10 @@ func TestRuntimeTerminalFencesRegisteredParkReleaseAbandonment(t *testing.T) {
 				t.Fatal(err)
 			}
 			if evidence == "released" {
-				snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID: original.AssignmentID, AssignmentEpoch: 2, State: domain.AssignmentReleased, ObservedAt: now})
+				snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID: original.AssignmentID, AssignmentEpoch: 2, State: domain.AssignmentReleased, ThreadID: records.Assignments[0].ThreadID, ObservedAt: now})
 			} else {
 				repair1Ack(t, s, domain.WorkerCommand{ID: "real-stop", Kind: domain.WorkerCommandStop, WorkerID: snapshot.WorkerID, WorkerEpoch: snapshot.WorkerEpoch, CoordinatorEpoch: 1, AssignmentID: original.AssignmentID, AssignmentEpoch: 2, ExpectedWorkerSequence: 1, CreatedAt: now}, now)
+				snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID: original.AssignmentID, AssignmentEpoch: 2, State: domain.AssignmentReleased, ThreadID: records.Assignments[0].ThreadID, ObservedAt: now})
 			}
 			snapshot.Assignments = append(snapshot.Assignments, domain.WorkerAssignmentObservation{AssignmentID: la.ID, AssignmentEpoch: 2, State: domain.AssignmentClaimed, Control: domain.ControlRunning, ObservedAt: now})
 			// Save a later snapshot sequence, so both receipt and observed paths are real.

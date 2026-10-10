@@ -115,7 +115,7 @@ func TestAttentionStopObservationIsProducedByRuntimeAndConsumedBySQLite(t *testi
 		ID: pkg.Identity.AssignmentID, AttemptID: attempt.ID, WorkerID: pkg.WorkerID, WorkerEpoch: pkg.WorkerEpoch,
 		Route: pkg.Route, State: domain.AssignmentClaimed, Epoch: pkg.Identity.AssignmentEpoch,
 		LeaseToken: "lease-1", DispatchToken: pkg.Identity.DispatchToken, ThreadID: pkg.Identity.ThreadID,
-		ExecutorDemand: &domain.ResourceDemand{}, LeaseExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
+		ExecutorDemand: &domain.ResourceDemand{}, LeaseExpiresAt: now.Add(30 * time.Second), CreatedAt: now, UpdatedAt: now,
 	}
 	if err = store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{
 		WorkflowRuns: []domain.WorkflowRun{run}, Tasks: []domain.Task{task},
@@ -158,6 +158,7 @@ func TestAttentionStopObservationIsProducedByRuntimeAndConsumedBySQLite(t *testi
 	command := records[0].Command
 	// A normal exchange between decision and effect must preserve the exact
 	// attention owner revision while still letting the existing stop settle it.
+	now = now.Add(time.Second)
 	claimed, err := runtime.Snapshot(ctx)
 	if err != nil {
 		t.Fatal(err)
