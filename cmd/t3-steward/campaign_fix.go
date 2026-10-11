@@ -675,6 +675,10 @@ func (c campaignFixCLI) resolve(ctx context.Context, a campaignFixArgs) (resolve
 		gateSource = "lineage"
 	default:
 		gate = p.task.Task.Gate
+		if gate == nil && len(p.task.Task.Verification) > 0 {
+			gate = &domain.TaskGate{Commands: p.task.Task.Verification}
+			gateSource = "producer-verify"
+		}
 	}
 	if gate == nil && gateSource != "no-gate" && !(hasLineage && lineage.Gate == nil) {
 		return out, errors.New("no gate is resolvable: pass --gate CMD [--gate-timeout DUR] or --no-gate")
