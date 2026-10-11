@@ -159,6 +159,9 @@ backlog_v2:
   mode: disabled
   coordinator:
     id: ""
+    # Zero or absent means 30 days. Each tick prunes at most 1000 audit rows;
+    # replay evidence is kept. See docs/backlog-v2-operations.md.
+    audit_event_retention: 720h
     # Compatibility boolean: false/default accepted; true is a startup error.
     # Use t3-steward task run / campaign submit; historical files remain untouched.
     legacy_file_intake_enabled: false

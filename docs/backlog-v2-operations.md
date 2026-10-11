@@ -1,5 +1,38 @@
 # Backlog-v2 operations and recovery
 
+## Coordinator audit retention
+
+`backlog_v2.coordinator.audit_event_retention` is a duration, defaulting to
+`720h` or 30 days. An absent or zero value uses that default; negative values
+are rejected. Each coordinator boundary tick deletes at most 1,000 audit
+events strictly older than the cutoff. It runs one batch even when quota
+reconciliation is unavailable, and logs pruning failures for retry on the
+next tick. A partial index on the normalized UTC timestamp keeps the prune
+query from scanning retained replay evidence.
+
+These kinds remain indefinitely because code reads their IDs for replay or
+transition evidence:
+
+- `admin-command-*` for admin submission and outcome replay.
+- `assignment-released` for activation-offer supersession.
+- `worker-state-*`, `assignment-dispatch-*`, and `worker-command-*` for
+  native transition replay and its required audit evidence.
+- `assignment-lease-renewed` for exact lease renewal replay.
+- `artifact-published` for artifact publication replay.
+- `native-question` and `native-answer` for native input deduplication.
+- `checkpoint-import-rejected` for rejected upload replay.
+- `unknown-assignment-recovered` for recovery replay.
+- `schedule-definition-updated` for schedule request replay.
+- `operator-reassessment` for activation dispatch evidence.
+
+Other audit kinds, including `worker-snapshot-observed` and
+`worker-snapshot-disconnected`, expire. Adding a state-changing lookup by
+audit ID requires adding its kind to the protected predicate. Generic audit
+append deduplication alone does not retain a kind indefinitely. Existing
+sequence numbers are unchanged; history readers may see gaps after pruning.
+This removes rows, with no `VACUUM` or retention changes to other tables.
+
+
 ## Read-only campaign progress mirror
 
 `t3-steward campaign progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]`

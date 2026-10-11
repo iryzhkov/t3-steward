@@ -22,6 +22,12 @@ const (
 
 func (c *Config) validateBacklogV2() error {
 	v := &c.BacklogV2
+	if v.Coordinator.AuditEventRetention.D() < 0 {
+		return errors.New("backlog_v2.coordinator.audit_event_retention must be nonnegative")
+	}
+	if v.Coordinator.AuditEventRetention == 0 {
+		v.Coordinator.AuditEventRetention = Duration(30 * 24 * time.Hour)
+	}
 	if v.ResultSecretScan.MaxObjectBytes < 0 {
 		return errors.New("backlog_v2.result_secret_scan.max_object_bytes must be nonnegative")
 	}

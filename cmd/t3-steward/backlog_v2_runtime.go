@@ -654,12 +654,14 @@ type coordinatorCampaignRefTicker interface {
 }
 
 type coordinatorBoundaryCycle struct {
-	reviews    *backlog.ReviewCollector
-	projection backlog.ProjectionStore
-	quota      coordinatorQuotaTicker
-	schedules  coordinatorScheduleTicker
-	planning   coordinatorPlanningTicker
-	admin      coordinatorAdminExecutor
+	pruneAudit     func(context.Context, time.Time) (int, error)
+	auditRetention time.Duration
+	reviews        *backlog.ReviewCollector
+	projection     backlog.ProjectionStore
+	quota          coordinatorQuotaTicker
+	schedules      coordinatorScheduleTicker
+	planning       coordinatorPlanningTicker
+	admin          coordinatorAdminExecutor
 	// retries classifies failed attempts and submits automatic retries of
 	// infrastructure failures, up to retryCeiling per task. A nil value, or
 	// a zero ceiling, retries nothing automatically.
@@ -707,6 +709,11 @@ func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err er
 }
 
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) backlog.QuotaBridgeReport {
+	if c.pruneAudit != nil {
+		if _, err := c.pruneAudit(ctx, time.Now().UTC().Add(-c.auditRetention)); err != nil {
+			logTickFailure(ctx, c.logger, "coordinator audit retention failed", err)
+		}
+	}
 	if c.supervision != nil && c.supervision.settings.CoordinatorEpoch > 0 {
 		ctx = sqlite.WithCoordinatorEpochFence(ctx, c.supervision.settings.CoordinatorEpoch)
 	}
@@ -1127,6 +1134,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	ledgers := newCoordinatorLedger(cfg, store, reviewArtifacts, logger)
 	defer ledgers.stop()
 	cycle := coordinatorBoundaryCycle{
+		pruneAudit:     store.PruneCoordinatorAuditEvents,
+		auditRetention: cfg.BacklogV2.Coordinator.AuditEventRetention.D(),
 		reviews: &backlog.ReviewCollector{Store: store, Results: resultsDir, Open: func(ctx context.Context, id string) (domain.Artifact, io.ReadCloser, error) {
 			a, f, err := reviewArtifacts.Open(ctx, id)
 			return a, f, err

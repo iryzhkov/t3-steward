@@ -13,8 +13,8 @@ import (
 // without 42 (a build of M16-6 alone). Every one of them must end with both
 // rows and both tables.
 func TestRC117RegistryUpgradesEveryPredecessorDatabase(t *testing.T) {
-	if currentSchemaVersion != 42 {
-		t.Fatalf("currentSchemaVersion = %d, want 42", currentSchemaVersion)
+	if currentSchemaVersion != 43 {
+		t.Fatalf("currentSchemaVersion = %d, want 43", currentSchemaVersion)
 	}
 	var registered []int
 	for _, migration := range versionedMigrations {
@@ -22,8 +22,8 @@ func TestRC117RegistryUpgradesEveryPredecessorDatabase(t *testing.T) {
 			registered = append(registered, migration.version)
 		}
 	}
-	if !reflect.DeepEqual(registered, []int{39, 42}) {
-		t.Fatalf("versions above %d = %v, want [39 42]", legacyContiguousSchemaVersion, registered)
+	if !reflect.DeepEqual(registered, []int{39, 42, 43}) {
+		t.Fatalf("versions above %d = %v, want [39 42 43]", legacyContiguousSchemaVersion, registered)
 	}
 	for _, test := range []struct {
 		name  string
@@ -63,7 +63,7 @@ func TestRC117RegistryUpgradesEveryPredecessorDatabase(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer s.Close()
-			for _, version := range []int{37, 39, 42} {
+			for _, version := range []int{37, 39, 42, 43} {
 				var rows int
 				if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_version WHERE version = ?", version).Scan(&rows); err != nil || rows != 1 {
 					t.Fatalf("V%d rows = %d, %v; want 1", version, rows, err)
@@ -77,8 +77,8 @@ func TestRC117RegistryUpgradesEveryPredecessorDatabase(t *testing.T) {
 			if pending, err := s.PendingSchemaVersions(context.Background()); err != nil || len(pending) != 0 {
 				t.Fatalf("pending after upgrade = %v, %v", pending, err)
 			}
-			if version := schemaVersionOf(t, s); version != 42 {
-				t.Fatalf("schema version = %d, want 42", version)
+			if version := schemaVersionOf(t, s); version != 43 {
+				t.Fatalf("schema version = %d, want 43", version)
 			}
 		})
 	}
@@ -97,7 +97,7 @@ func registeredMigration(t *testing.T, version int) string {
 
 func missingAbove37(applied []int) []int {
 	var missing []int
-	for _, version := range []int{39, 42} {
+	for _, version := range []int{39, 42, 43} {
 		found := false
 		for _, done := range applied {
 			found = found || done == version

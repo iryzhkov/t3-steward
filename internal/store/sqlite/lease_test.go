@@ -208,7 +208,7 @@ func TestLeaseMigrationV42FromBaseAndFresh(t *testing.T) {
 				t.Fatal(err)
 			}
 			var version int
-			if err = s.db.QueryRow("SELECT MAX(version) FROM schema_version").Scan(&version); err != nil || version != 42 {
+			if err = s.db.QueryRow("SELECT MAX(version) FROM schema_version").Scan(&version); err != nil || version != currentSchemaVersion {
 				t.Fatalf("version %d %v", version, err)
 			}
 			r, err := s.ExecuteLease(context.Background(), domain.LeaseRequest{Action: "acquire", Name: "repo:steward/main", OwnerThread: "a", Principal: "admin", Reason: "test", RequestID: "one"})

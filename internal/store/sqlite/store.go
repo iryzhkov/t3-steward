@@ -520,6 +520,7 @@ var versionedMigrations = []struct {
 	// order, which the gap-filling runner applies.
 	{39, coordinatorMigrationV39},
 	{42, coordinatorMigrationV42},
+	{43, coordinatorMigrationV43},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {

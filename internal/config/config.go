@@ -539,8 +539,10 @@ type V2Verification struct {
 }
 
 type V2Coordinator struct {
-	ID                string              `yaml:"id"`
-	ResourcePlacement V2ResourcePlacement `yaml:"resource_placement"`
+	// AuditEventRetention defaults to thirty days when absent or zero.
+	AuditEventRetention Duration            `yaml:"audit_event_retention"`
+	ID                  string              `yaml:"id"`
+	ResourcePlacement   V2ResourcePlacement `yaml:"resource_placement"`
 	// LegacyFileIntakeEnabled is a compatibility boolean. False/default is accepted;
 	// true is rejected because Markdown intake has been retired.
 	LegacyFileIntakeEnabled bool `yaml:"legacy_file_intake_enabled"`
@@ -944,6 +946,7 @@ func Default() Config {
 	c.Backlog.MinSamples = 3
 	c.BacklogV2.Mode = "disabled"
 	c.BacklogV2.StartupAdmission = "closed"
+	c.BacklogV2.Coordinator.AuditEventRetention = Duration(30 * 24 * time.Hour)
 	c.BacklogV2.Transport.Kind = "ssh"
 	c.BacklogV2.Transport.RequestTimeout = Duration(30 * time.Second)
 	c.BacklogV2.MessageLimits.MaxBytes = 4 << 20
