@@ -37,3 +37,5 @@ tasks:
     outputs: [continuation.md, review.md]
     review_output:
       verdict_line: review.md
+    resources:
+      preset: review

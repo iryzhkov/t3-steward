@@ -61,6 +61,10 @@ func TestCompiledV1PlanIsEquivalentToTheLegacyWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// The review preset is the intentional change to the legacy defaults.
+		legacyReview := legacy.Tasks["review"]
+		legacyReview.Resources = compiledManifest(t, unit).Tasks["review"].Resources
+		legacy.Tasks["review"] = legacyReview
 		got, err := yaml.Marshal(compiledManifest(t, unit))
 		if err != nil {
 			t.Fatal(err)

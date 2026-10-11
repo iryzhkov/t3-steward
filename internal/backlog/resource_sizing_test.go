@@ -17,7 +17,7 @@ func TestResourcePresetsExpandSizes(t *testing.T) {
 		preset          string
 		cpu             float64
 		memory, scratch int
-	}{{ResourcePresetBuild, 4, 6000, 8192}, {ResourcePresetLight, .5, 1000, 512}} {
+	}{{ResourcePresetBuild, 4, 6000, 8192}, {ResourcePresetLight, .5, 1000, 512}, {ResourcePresetReview, 1, 1500, 1024}} {
 		t.Run(tc.preset, func(t *testing.T) {
 			r := ManifestResources{Preset: tc.preset}
 			expandResourcePreset(&r)

@@ -79,8 +79,8 @@ func campaignCompileHelpPage() helpPage {
 			"class, required or surplus (default surplus); template: implement-review, the only template and the default; " +
 			"roles.execute and roles.review, each an optional {effort: low|medium|high}; " +
 			"routes.execute and routes.review, each {instance, model, quota_pool, effort}; verify, an optional list of implement verify commands; " +
-			"ledger, the workflow ledger block {jocasta_project, plan, risk, acceptance}; placement, {hosts, requires} for every task; " +
-			"resources, a resources block per template task, as {implement: {preset: build}, review: {preset: light}}; " +
+			"ledger, the workflow ledger block {jocasta_project, plan, risk, acceptance}; placement, either shared {hosts, requires} for every task or {implement: {hosts, requires}, review: {hosts, requires}}; mixing forms is refused; " +
+			"resources, a resources block per template task, as {implement: {preset: build}, review: {preset: review}}; review resources default to preset review (1 CPU unit, 1500 MB memory, 1024 MB scratch, minimum CPU class low), which fits 3-CPU/2000-MB/8-GB workers including the 2048-MB disk reserve; review has no host pin unless placement declares one; " +
 			"max_turns, a positive turn bound for every task; inputs, a list of extra files relative to the plan's directory; " +
 			"and units, a list of {id, title, section}, such as {id: c1, title: Campaign compile skeleton, section: \"C-1\"}.\n\n" +
 			"Routing: each template task is routed by role unless routes pins it. The implement task takes role execute and the review task role review, " +

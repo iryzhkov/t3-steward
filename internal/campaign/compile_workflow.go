@@ -70,6 +70,7 @@ type compiledTask struct {
 	ReviewOutput *domain.ReviewOutput `yaml:"review_output,omitempty"`
 	Verify       []string             `yaml:"verify,omitempty"`
 	Resources    *compiledResources   `yaml:"resources,omitempty"`
+	Placement    *compiledPlacement   `yaml:"placement,omitempty"`
 	// MaxTurns is omitted for 0, which the manifest defaults.
 	MaxTurns int `yaml:"max_turns,omitempty"`
 }

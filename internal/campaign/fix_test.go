@@ -80,7 +80,7 @@ func TestFixChainTwoRoundTemplate(t *testing.T) {
 		t.Fatal(f)
 	}
 	for _, n := range []string{"review2", "review3"} {
-		if m.Tasks[n].ReviewOutput.Verdict != "verdict.json" || m.Tasks[n].MaxTurns != 5 {
+		if m.Tasks[n].ReviewOutput.Verdict != "verdict.json" || m.Tasks[n].MaxTurns != 5 || m.Tasks[n].Resources.Preset != backlog.ResourcePresetReview || len(m.Tasks[n].Placement.Hosts) != 0 {
 			t.Fatal(m.Tasks[n])
 		}
 	}

@@ -153,7 +153,9 @@ func TestCampaignCompileHelpDocumentsRolesAndTheNewKeys(t *testing.T) {
 	body := strings.Join(strings.Fields(page.render()), " ")
 	for _, want := range []string{
 		"roles.execute and roles.review", "routed by role unless routes pins it", "refused as a conflict",
-		"ledger", "placement", "{implement: {preset: build}, review: {preset: light}}", "max_turns",
+		"ledger", "placement", "{implement: {preset: build}, review: {preset: review}}", "max_turns",
+		"{implement: {hosts, requires}, review: {hosts, requires}}", "mixing forms is refused",
+		"1 CPU unit, 1500 MB memory, 1024 MB scratch", "review has no host pin unless placement declares one",
 		"inputs/<path>", "campaign check DIR/<unit id>", "only the fields that differ from the workflow defaults",
 	} {
 		if !strings.Contains(body, want) {

@@ -166,7 +166,7 @@ tasks:
             hosts: []
             requires: []
         resources:
-            preset: ""
+            preset: review
             min_cpu_class: ""
             preferred_cpu_class: ""
             cpu_units: null
@@ -220,7 +220,7 @@ tasks:
             hosts: []
             requires: []
         resources:
-            preset: ""
+            preset: review
             min_cpu_class: ""
             preferred_cpu_class: ""
             cpu_units: null

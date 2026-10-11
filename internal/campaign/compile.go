@@ -106,16 +106,23 @@ type compileFrontMatter struct {
 	Roles    compileRoles  `yaml:"roles"`
 	Routes   compileRoutes `yaml:"routes"`
 	Verify   []string      `yaml:"verify"`
-	// Ledger and Placement are copied into every unit's workflow as written;
-	// the workflow format validates them.
-	Ledger    *backlog.ManifestLedger    `yaml:"ledger"`
-	Placement *backlog.ManifestPlacement `yaml:"placement"`
-	Resources compileTaskResources       `yaml:"resources"`
+	// Ledger and placement are validated by the generated workflow format.
+	Ledger    *backlog.ManifestLedger `yaml:"ledger"`
+	Placement *compilePlacement       `yaml:"placement"`
+	Resources compileTaskResources    `yaml:"resources"`
 	// MaxTurns bounds every task of a unit; nil leaves the manifest default.
 	MaxTurns *int `yaml:"max_turns"`
 	// Inputs are extra files, relative to the plan, bundled into every unit.
 	Inputs []string          `yaml:"inputs"`
 	Units  []compileUnitSpec `yaml:"units"`
+}
+
+// A legacy shared block remains valid; task blocks allow independent placement.
+type compilePlacement struct {
+	Hosts     []string                   `yaml:"hosts"`
+	Requires  []string                   `yaml:"requires"`
+	Implement *backlog.ManifestPlacement `yaml:"implement"`
+	Review    *backlog.ManifestPlacement `yaml:"review"`
 }
 
 // compileRoles chooses a template task's route by role through the
@@ -165,6 +172,7 @@ var compileObjectNames = strings.NewReplacer(
 	"in type campaign.compileTaskResources", "in resources, which names the template tasks implement and review",
 	"in type campaign.compileUnitSpec", "in a unit",
 	"in type backlog.ManifestLedger", "in ledger",
+	"in type campaign.compilePlacement", "in placement",
 	"in type backlog.ManifestPlacement", "in placement",
 	"in type backlog.ManifestResources", "in a task's resources",
 	"campaign.compileFrontMatter", "the front matter, which must be a mapping",
@@ -175,6 +183,7 @@ var compileObjectNames = strings.NewReplacer(
 	"campaign.compileUnitSpec", "a unit",
 	"campaign.compileRoute", "a route",
 	"backlog.ManifestLedger", "ledger, which must be a mapping",
+	"campaign.compilePlacement", "placement, which must be a mapping",
 	"backlog.ManifestPlacement", "placement, which must be a mapping",
 	"backlog.ManifestResources", "a task's resources, which must be a mapping",
 )
@@ -270,6 +279,12 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 			return key.Line
 		}
 		return 1
+	}
+
+	placementNode := mappingValue(root, "placement")
+	if (mappingKey(placementNode, "hosts") != nil || mappingKey(placementNode, "requires") != nil) &&
+		(mappingKey(placementNode, "implement") != nil || mappingKey(placementNode, "review") != nil) {
+		return CompilePlan{}, refuse(lineOf(root, "placement"), "placement mixes shared hosts/requires with implement/review blocks; use one form")
 	}
 
 	switch {
@@ -570,6 +585,18 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 		Resources:    newCompiledResources(header.Resources.Review),
 		MaxTurns:     maxTurns,
 	}
+	if header.Resources.Review == nil {
+		review.Resources = &compiledResources{Preset: backlog.ResourcePresetReview}
+	}
+	var sharedPlacement *compiledPlacement
+	if p := header.Placement; p != nil {
+		if p.Implement != nil || p.Review != nil {
+			implement.Placement = newCompiledPlacement(p.Implement)
+			review.Placement = newCompiledPlacement(p.Review)
+		} else {
+			sharedPlacement = newCompiledPlacement(&backlog.ManifestPlacement{Hosts: p.Hosts, Requires: p.Requires})
+		}
+	}
 	for _, routing := range compileTemplateRouting(header) {
 		task := &implement
 		if routing.task == "review" {
@@ -583,7 +610,7 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 		Name:        spec.ID,
 		Class:       class,
 		Environment: compiledEnvironment{Project: plan.Project, Ref: plan.Ref},
-		Placement:   newCompiledPlacement(header.Placement),
+		Placement:   sharedPlacement,
 		Ledger:      newCompiledLedger(header.Ledger),
 		Inputs:      inputs,
 		Tasks:       compiledTasks{Implement: implement, Review: review},

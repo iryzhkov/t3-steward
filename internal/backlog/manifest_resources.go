@@ -28,8 +28,9 @@ const (
 // explicitly declared field always wins over what a preset would have expanded
 // to.
 const (
-	ResourcePresetBuild = "build"
-	ResourcePresetLight = "light"
+	ResourcePresetBuild  = "build"
+	ResourcePresetLight  = "light"
+	ResourcePresetReview = "review"
 )
 
 // presetSizes is the one definition of what a preset reserves. The same sizes
@@ -39,6 +40,9 @@ const (
 var presetSizes = map[string]domain.ResourceDemand{
 	ResourcePresetBuild: {CPUUnits: 4, MemoryMB: 6000, ScratchMB: 8192},
 	ResourcePresetLight: {CPUUnits: .5, MemoryMB: 1000, ScratchMB: 512},
+	// Reviews fit workers with 3 CPU units, 2000 MB memory and 8 GB temp
+	// disk, leaving room for the 2048 MB disk reserve and modest tooling.
+	ResourcePresetReview: {CPUUnits: 1, MemoryMB: 1500, ScratchMB: 1024},
 }
 
 // rank orders the classes. An unknown or unset class ranks below every valid
@@ -98,7 +102,7 @@ func expandResourcePresetClasses(resources *ManifestResources) {
 		if resources.PreferredCPUClass == "" {
 			resources.PreferredCPUClass = CPUClassHigh
 		}
-	case ResourcePresetLight:
+	case ResourcePresetLight, ResourcePresetReview:
 		if resources.MinCPUClass == "" {
 			resources.MinCPUClass = CPUClassLow
 		}
@@ -164,9 +168,9 @@ func effectiveResources(workflow, task ManifestResources) ManifestResources {
 // and value so that an author of a hundred-task batch can find it.
 func validateResources(label string, resources ManifestResources) error {
 	switch resources.Preset {
-	case "", ResourcePresetBuild, ResourcePresetLight:
+	case "", ResourcePresetBuild, ResourcePresetLight, ResourcePresetReview:
 	default:
-		return fmt.Errorf("%s preset %q is not one of build, light", label, resources.Preset)
+		return fmt.Errorf("%s preset %q is not one of build, light, review", label, resources.Preset)
 	}
 	if resources.MinCPUClass != "" && !resources.MinCPUClass.Valid() {
 		return fmt.Errorf("%s min_cpu_class %q is not one of low, medium, high", label, resources.MinCPUClass)
