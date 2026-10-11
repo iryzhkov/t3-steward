@@ -280,6 +280,7 @@ func dispatch(args []string) error {
 		for i := 0; i < len(rest); i++ {
 			if rest[i] == "--config" && i+1 < len(rest) {
 				g.configPath = rest[i+1]
+				g.configExplicit = true
 				i++
 				continue
 			}
