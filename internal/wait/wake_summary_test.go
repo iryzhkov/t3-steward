@@ -596,7 +596,15 @@ func TestSummaryArtifactParsers(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
 		{`{"verdict":"accept"}`, "ACCEPT"},
 		{`{"verdict":"changes-requested"}`, "CHANGES_REQUESTED"},
-		{`{"verdict":"ACCEPT"}`, "unrecognized"},
+		{`{"verdict":"ACCEPT"}`, "ACCEPT"},
+		{`{"verdict":"AcCePt"}`, "ACCEPT"},
+		{`{"verdict":"changes"}`, "CHANGES_REQUESTED"},
+		{`{"verdict":"CHANGES"}`, "CHANGES_REQUESTED"},
+		{`{"verdict":"ChAnGeS-ReQuEsTeD"}`, "CHANGES_REQUESTED"},
+		{`{"verdict":"changes_requested"}`, "CHANGES_REQUESTED"},
+		{`{"verdict":"CHANGES_REQUESTED"}`, "CHANGES_REQUESTED"},
+		{`{"verdict":"unknown"}`, "unrecognized"},
+		{`{"verdict":"REJECT"}`, "unrecognized"},
 		{`{"verdict":1}`, "unrecognized"},
 		{`not json`, "unrecognized"},
 	} {

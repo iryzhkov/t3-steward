@@ -77,6 +77,69 @@ func summaryTestNodeWait() domain.NodeWait {
 	}
 }
 
+func TestTaskRunWakeSummaryReviewVerdicts(t *testing.T) {
+	// task run submits a workflow with ordinary declared outputs and no
+	// review_output. Its retained review files reach the shared wake builder.
+	for _, tc := range []struct {
+		name, output, body, verdict, trailer string
+	}{
+		{"accept JSON", "verdict.json", `{"verdict":"ACCEPT"}`, "ACCEPT", "accept"},
+		{"changes JSON", "verdict.json", `{"verdict":"CHANGES"}`, "CHANGES_REQUESTED", "changes-requested"},
+		{"review first line", "review.md", "VERDICT: CHANGES_REQUESTED\nVERDICT: ACCEPT\n", "CHANGES_REQUESTED", "changes-requested"},
+		{"unknown JSON", "verdict.json", `{"verdict":"unknown"}`, "unrecognized", "unrecognized"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			detail := backlogadmin.WorkflowDetail{
+				Summary: backlogadmin.WorkflowSummary{
+					Run:      domain.WorkflowRun{ID: summaryTestRun, Progress: domain.ProgressSucceeded},
+					Workflow: domain.Workflow{Name: "task-run", TaskIDs: []string{"task-review"}},
+				},
+				Tasks: []backlogadmin.TaskDetail{{
+					Task:    domain.Task{ID: "task-review", Name: "review", Outputs: []domain.ArtifactDeclaration{{Name: tc.output}}},
+					Attempt: &domain.Attempt{ID: "attempt-review", Progress: domain.ProgressSucceeded},
+					Artifacts: []backlogadmin.Artifact{{Metadata: backlogadmin.ArtifactMetadata{
+						ID: "artifact-review", WorkflowRunID: summaryTestRun, TaskID: "task-review",
+						AttemptID: "attempt-review", Kind: domain.ArtifactOutput, Name: tc.output, Size: int64(len(tc.body)),
+					}}},
+				}},
+			}
+			source := summaryTestSource(t, detail, nil)
+			opens := 0
+			source.open = func(_ context.Context, id string) (backlogadmin.ArtifactContent, error) {
+				opens++
+				if id != "artifact-review" {
+					t.Errorf("unexpected artifact %q", id)
+				}
+				return backlogadmin.ArtifactContent{Content: io.NopCloser(strings.NewReader(tc.body))}, nil
+			}
+			w := summaryTestNodeWait()
+			w.Request.Target.TaskID = "review"
+			w.Observation = &domain.NodeObservation{
+				Target:    domain.NodeRef{RunID: summaryTestRun, TaskID: "task-review"},
+				AttemptID: "attempt-review", Progress: domain.ProgressSucceeded, Outcome: domain.TaskWaitMet,
+			}
+			summary := wait.BuildNodeSummary(context.Background(), source, w)
+			if summary.Unavailable != "" || len(summary.Tasks) != 1 {
+				t.Fatalf("summary = %+v", summary)
+			}
+			row := summary.Tasks[0]
+			if row.Verdict != tc.verdict || row.VerdictSource != tc.output || summary.Verdict != tc.trailer {
+				t.Fatalf("verdict row = %+v; trailer verdict = %q", row, summary.Verdict)
+			}
+			wantStatus := "known"
+			if tc.trailer == "unrecognized" {
+				wantStatus = "unrecognized"
+			}
+			if row.VerdictStatus != wantStatus || opens != 1 {
+				t.Fatalf("status = %q, artifact opens = %d", row.VerdictStatus, opens)
+			}
+			if !strings.Contains(summary.Headline, tc.verdict) || !strings.Contains(summary.Text(), tc.verdict) {
+				t.Fatalf("wake text = %s", summary.Text())
+			}
+		})
+	}
+}
+
 func TestWaitSummaryNodeWaitJSON(t *testing.T) {
 	sources := waitSummarySources{
 		nodes:   func(context.Context) ([]domain.NodeWait, error) { return []domain.NodeWait{summaryTestNodeWait()}, nil },

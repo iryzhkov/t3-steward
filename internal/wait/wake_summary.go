@@ -259,10 +259,10 @@ func parseVerdictJSON(data []byte) string {
 	if json.Unmarshal(data, &document) != nil {
 		return verdictUnrecognized
 	}
-	switch document.Verdict {
+	switch strings.ToLower(document.Verdict) {
 	case "accept":
 		return "ACCEPT"
-	case "changes-requested":
+	case "changes", "changes-requested", "changes_requested":
 		return "CHANGES_REQUESTED"
 	}
 	return verdictUnrecognized
