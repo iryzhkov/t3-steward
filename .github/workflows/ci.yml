@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# Main runs stay independent because releases require complete CI for each commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Go caching: setup-go's built-in cache keys only on the OS, the Go version and
 # go.sum, so every job here would share one entry and the first job to finish
 # would save a build cache that lacks the others' artifacts (the race job's
