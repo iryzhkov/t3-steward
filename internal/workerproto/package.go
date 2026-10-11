@@ -153,6 +153,8 @@ const (
 	// of each declared commit, and a consuming worker that has it imports one
 	// delivered in CommitBundles into its own campaign ref store.
 	PackageCapabilityCommitBundle = "campaign-commit-bundle-v1"
+	// CampaignRef supports a retained cross-run commit as the initial checkout.
+	PackageCapabilityCampaignRef = "campaign-ref-v1"
 	// PackageCapabilityWorkspaceHead asks the worker to report the workspace's
 	// physical HEAD and tracked changes when it collects the turn. A
 	// review-declared task requires it, because the coordinator's completion
@@ -197,7 +199,7 @@ type ContinuationInput struct {
 // requires anything else is refused by name instead of being run without the
 // evidence it promised to produce.
 func SupportedPackageCapabilities() []string {
-	return []string{PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs, PackageCapabilityFailedCommit, PackageCapabilityContainedLimits}
+	return []string{PackageCapabilityCampaignRef, PackageCapabilityWorkerOwnedGate, PackageCapabilityPreflight, PackageCapabilitySupervisionEvidence, PackageCapabilityRecoveryRetry, PackageCapabilityRecoverySupplement, PackageCapabilityProjectContext, PackageCapabilitySessionDisplay, PackageCapabilityCommitBundle, PackageCapabilityWorkspaceHead, PackageCapabilityAcceptedDependencies, PackageCapabilityContinuationCheckpoint, PackageCapabilityCommitOutputs, PackageCapabilityFailedCommit, PackageCapabilityContainedLimits}
 }
 
 // MarksCommitOutputs reports whether the package names its dependencies'
@@ -609,6 +611,9 @@ func validateCommitOutputs(dependency DependencyInput) error {
 }
 
 func validatePackageCapabilities(pkg ExecutionPackage) error {
+	if strings.HasPrefix(pkg.Environment.Ref, "campaign:") && !slices.Contains(pkg.RequiredCapabilities, PackageCapabilityCampaignRef) {
+		return errors.New("execution package: campaign ref requires campaign-ref-v1 capability")
+	}
 	// The campaign-supervision capability is a worker inventory capability, not
 	// a package capability: it says which build is running on the host rather
 	// than which behaviour this package needs. An activation package names it

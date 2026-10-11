@@ -223,6 +223,9 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 		},
 		CreatedAt: assignment.CreatedAt,
 	}
+	if strings.HasPrefix(environment.Ref, "campaign:") {
+		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityCampaignRef)
+	}
 	if slices.Contains(state.task.Placement.Capabilities, workerproto.PackageCapabilityFailedCommit) {
 		pkg.RequiredCapabilities = append(pkg.RequiredCapabilities, workerproto.PackageCapabilityFailedCommit)
 	}

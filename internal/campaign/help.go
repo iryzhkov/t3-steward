@@ -302,6 +302,21 @@ no separate T3 session, so nothing above applies to what it delegated. See
 // cannot guess from its name.
 const CommitsHelp = `Hand a Git commit to a later task, by reference rather than by luck.
 
+Across separate runs, use environment.ref: campaign:RUN/TASK/NAME to start
+at a succeeded task's declared commit. Each task automatically consumes the
+retained campaign-commit/v1 record; no WIP branch push is required.
+inputs_from_run: {RUN/TASK: [handoff.md]} adds retained cross-run files and
+their dependency edges. Submission pins SHA-256; workers verify it before
+setup or agent start. Unknown commit references are permanent unknown-node
+reasons at check. Upgrade client and coordinator for these fields, then
+consuming workers for campaign-ref-v1; older workers run existing manifests.
+
+Fetch locally with provenance in one command:
+  t3-steward campaign commit export RUN/TASK/NAME --into . --branch next-unit
+This reuses commit export and creates a new local branch in a repository
+holding the recorded base; it performs no remote write.
+See docs/campaign-commit-export.md for retention and upgrade requirements.
+
   tasks:
     implement:
       prompt_file: prompts/implement.md

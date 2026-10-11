@@ -88,6 +88,9 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 			for _, output := range producerTask.Outputs {
 				declared[output.Name] = true
 			}
+			if ref, commit, err := ParseCampaignReference(manifest.Environment.Ref); err == nil && producer == ref.RunID+"/"+ref.TaskID && !DeclaresCommit(producerTask, commit) {
+				return fmt.Errorf("campaign ref %s names an unknown commit declaration", manifest.Environment.Ref)
+			}
 			for _, name := range names {
 				name = filepath.ToSlash(name)
 				if !declared[name] {

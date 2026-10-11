@@ -239,6 +239,17 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		return PreparedWorkspace{}, &PreparationError{Err: cause, LogPath: retained}
 	}
 
+	if err := p.materializeDependencyView(stageDir, request); err != nil {
+		return fail(err)
+	}
+	chained, err := chainedWorkspaceCommit(stageDir, request)
+	if err != nil {
+		return fail(err)
+	}
+	initialRef := request.Environment.Ref
+	if chained != nil {
+		initialRef = chained.Base
+	}
 	workspaceDir := filepath.Join(stageDir, "workspace")
 	var cached CachedRepository
 	var commit string
@@ -251,7 +262,7 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		if err != nil {
 			return fail(fmt.Errorf("prepare repository cache: %w", err))
 		}
-		commitBytes, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "--git-dir", cached.Path, "rev-parse", "--verify", request.Environment.Ref+"^{commit}")
+		commitBytes, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "--git-dir", cached.Path, "rev-parse", "--verify", initialRef+"^{commit}")
 		if err != nil {
 			return fail(fmt.Errorf("resolve ref %q: %w", request.Environment.Ref, err))
 		}
@@ -293,19 +304,26 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 	if err := p.materializeInputs(stageDir, request); err != nil {
 		return fail(err)
 	}
-	if err := p.materializeDependencyView(stageDir, request); err != nil {
-		return fail(err)
-	}
 	if err := exposeWorkspaceInputs(workspaceDir); err != nil {
-		return fail(err)
-	}
-	if err := writeWorkspaceBaseCommit(workspaceDir, commit); err != nil {
 		return fail(err)
 	}
 	if err := p.resolveDependencyCommits(ctx, filepath.Join(stageDir, "dependencies"), workspaceDir, request, logFile); err != nil {
 		return fail(err)
 	}
 
+	if chained != nil {
+		commit = chained.Commit
+		if err := runLoggedCheckoutCommand(ctx, logFile, p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
+			return fail(fmt.Errorf("checkout campaign commit: %w", err))
+		}
+		head, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "-C", workspaceDir, "rev-parse", "HEAD")
+		if err != nil || strings.TrimSpace(string(head)) != commit {
+			return fail(fmt.Errorf("verify campaign checkout %s: %v", commit, err))
+		}
+	}
+	if err := writeWorkspaceBaseCommit(workspaceDir, commit); err != nil {
+		return fail(err)
+	}
 	setupCtx, cancel := context.WithTimeout(ctx, request.Environment.Setup.Timeout)
 	defer cancel()
 	for index, command := range request.Environment.Setup.Commands {
@@ -373,7 +391,7 @@ func (p WorkspacePreparer) validate(request WorkspacePreparation) error {
 	if request.Environment.Type != EnvironmentFresh && request.Environment.Repository == "" {
 		return errors.New("repository is required")
 	}
-	if err := validateGitRef(request.Environment.Ref); request.Environment.Type != EnvironmentFresh && err != nil {
+	if err := validateEnvironmentRef(request.Environment.Ref); request.Environment.Type != EnvironmentFresh && err != nil {
 		return fmt.Errorf("environment ref: %w", err)
 	}
 	if request.Environment.Setup.Timeout <= 0 {

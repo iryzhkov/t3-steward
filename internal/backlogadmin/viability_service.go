@@ -421,6 +421,15 @@ func (v view) viabilityTask(ctx context.Context, settings ViabilitySettings, tas
 		ref = project.DefaultRef
 	}
 	repositoryUsable := project.Type != backlog.EnvironmentFresh
+	if strings.HasPrefix(ref, "campaign:") {
+		if problem := v.campaignReferenceProblem(ref); problem != "" {
+			result.Reasons = append(result.Reasons, newViabilityReason(ReasonUnknownNode, problem))
+			repositoryUsable = false
+		}
+		// The campaign object arrives through retained custody, not origin.
+		// Probe the catalog base for repository accessibility instead.
+		ref = project.DefaultRef
+	}
 	if repositoryUsable {
 		if err := backlog.ValidateRepositorySyntax(project.Repository); err != nil {
 			repositoryUsable = false

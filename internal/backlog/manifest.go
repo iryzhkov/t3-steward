@@ -105,6 +105,7 @@ type ManifestTask struct {
 	NeedsVerdict       map[string]string           `yaml:"needs_verdict,omitempty"`
 	FixLoop            *domain.FixLoopTask         `yaml:"-"`
 	InputsFrom         map[string][]string         `yaml:"inputs_from"`
+	InputsFromRun      map[string][]string         `yaml:"inputs_from_run,omitempty"`
 	Context            *domain.ProjectContext      `yaml:"context"`
 	Outputs            []string                    `yaml:"outputs"`
 	Commits            []ManifestCommit            `yaml:"commits"`
@@ -343,6 +344,7 @@ func LoadManifest(bundleDir string) (Manifest, error) {
 }
 
 func applyManifestDefaults(manifest *Manifest) {
+	applyChainingDefaults(manifest)
 	if manifest.Class == "" {
 		manifest.Class = domain.TaskClassSurplus
 	}
@@ -552,6 +554,9 @@ func uniqueSorted(values []string) []string {
 }
 
 func validateManifest(manifest Manifest) error {
+	if err := validateChaining(manifest); err != nil {
+		return err
+	}
 	if err := validateAuthoredRoles(manifest); err != nil {
 		return err
 	}
