@@ -172,7 +172,11 @@ func (f AttemptFinalizer) makeCommitBundle(
 		// artifact transport accepts.
 		limit = request.CommitBundleLimit
 	}
-	path, omitted, err := f.CampaignRefs.createBundle(ctx, provenance, limit, nil)
+	prerequisites, err := f.bundlePrerequisites(ctx, request.WorkspaceDir, provenance.Base)
+	if err != nil {
+		return CommitProvenance{}, nil, err
+	}
+	path, omitted, err := f.CampaignRefs.createBundle(ctx, provenance, prerequisites, limit, nil)
 	if err != nil {
 		return CommitProvenance{}, nil, err
 	}
@@ -327,12 +331,12 @@ func (f AttemptFinalizer) captureCommitBundle(
 	}, nil
 }
 
-// createBundle writes a verified bundle of base..commit for one published
+// createBundle writes a verified bundle from the catalog-visible boundary to a
 // commit into a private temporary directory and returns its path. An empty path
 // with no error means no bundle exists: either the commit is its base, which a
 // consumer already holds, or omitted says why none could be made.
-func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitProvenance, limit int64, log io.Writer) (string, string, error) {
-	if provenance.Commit == provenance.Base {
+func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitProvenance, prerequisites []string, limit int64, log io.Writer) (string, string, error) {
+	if provenance.Commit == provenance.Base && slices.Contains(prerequisites, provenance.Base) {
 		return "", "", nil
 	}
 	source, err := bundleRef(provenance)
@@ -374,8 +378,11 @@ func (s CampaignRefStore) createBundle(ctx context.Context, provenance CommitPro
 		}
 	}()
 	path := filepath.Join(directory, "commit.bundle")
-	if err := runLoggedCommand(ctx, log, "", s.git(), "--git-dir", gitDir,
-		"bundle", "create", path, source, "^"+provenance.Base); err != nil {
+	args := []string{"--git-dir", gitDir, "bundle", "create", path, source}
+	for _, prerequisite := range prerequisites {
+		args = append(args, "^"+prerequisite)
+	}
+	if err := runLoggedCommand(ctx, log, "", s.git(), args...); err != nil {
 		return "", "", fmt.Errorf("bundle campaign commit %s: %w", source, err)
 	}
 	info, err := os.Stat(path)
@@ -475,11 +482,11 @@ func (s CampaignRefStore) Obtain(ctx context.Context, workspaceDir string, prove
 			return err
 		}
 	}
-	if !s.hasCommit(ctx, workspaceDir, provenance.Base, log) {
+	if provenance.Bundle == nil && !s.hasCommit(ctx, workspaceDir, provenance.Base, log) {
 		return fmt.Errorf("campaign commit %s: missing prerequisite: its base %s is not present in this worker's repository cache for %s, "+
 			"and the commit can only be imported on top of it", ref, provenance.Base, provenance.Repository)
 	}
-	if provenance.Commit != provenance.Base {
+	if provenance.Commit != provenance.Base || provenance.Bundle != nil {
 		if err := s.importBundle(ctx, workspaceDir, provenance, source, delivery, log); err != nil {
 			return err
 		}
@@ -618,11 +625,6 @@ func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string,
 			return fmt.Errorf("campaign commit %s: missing prerequisite: the bundle requires %s, which is not present in this worker's repository cache",
 				ref, prerequisite)
 		}
-		if _, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", workspaceDir,
-			"merge-base", "--is-ancestor", prerequisite, provenance.Base); err != nil {
-			return fmt.Errorf("campaign commit %s: the bundle requires %s, which is neither the base %s its provenance record names nor an ancestor of it",
-				ref, prerequisite, provenance.Base)
-		}
 	}
 	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", workspaceDir, "bundle", "verify", path); err != nil {
 		return fmt.Errorf("campaign commit %s: commit bundle failed verification: %w", ref, err)
@@ -630,6 +632,11 @@ func (s CampaignRefStore) importBundle(ctx context.Context, workspaceDir string,
 	if err := runLoggedCommand(ctx, log, "", s.git(), "-C", workspaceDir,
 		"fetch", "--no-tags", "--", path, "+"+source+":"+ref); err != nil {
 		return fmt.Errorf("campaign commit %s: import commit bundle: %w", ref, err)
+	}
+	for _, prerequisite := range prerequisites {
+		if _, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", workspaceDir, "merge-base", "--is-ancestor", prerequisite, provenance.Base); err != nil {
+			return fmt.Errorf("campaign commit %s: the bundle requires %s, which is neither the base %s its provenance record names nor an ancestor of it", ref, prerequisite, provenance.Base)
+		}
 	}
 	raw, err := runLoggedCommandOutput(ctx, log, "", s.git(), "-C", workspaceDir, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {

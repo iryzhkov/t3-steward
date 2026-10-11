@@ -119,7 +119,7 @@ func ExportCommitBundle(ctx context.Context, p CommitProvenance, branch string, 
 	if err != nil {
 		return result, fmt.Errorf("commit export: %w", err)
 	}
-	// A review-declared task's staged commit is bundled under its staging.
+	// A review-declared task's staged commit is bundled under its staging ref.
 	sourceRef, err := bundleRef(p)
 	if err != nil {
 		return result, fmt.Errorf("commit export: %w", err)
@@ -127,8 +127,9 @@ func ExportCommitBundle(ctx context.Context, p CommitProvenance, branch string, 
 	if len(heads) != 1 || heads[0].commit != p.Commit || heads[0].ref != sourceRef {
 		return result, errors.New("commit export: bundle must advertise exactly its declared commit and ref")
 	}
-	if (p.Commit != p.Base && (len(prerequisites) != 1 || prerequisites[0] != p.Base)) ||
-		(p.Commit == p.Base && len(prerequisites) != 0 && (len(prerequisites) != 1 || prerequisites[0] != p.Base)) {
+	basePrerequisite := len(prerequisites) == 1 && prerequisites[0] == p.Base
+	expandedAncestry := !basePrerequisite && !(p.Commit == p.Base && len(prerequisites) == 0)
+	if expandedAncestry && p.Bundle == nil {
 		return result, errors.New("commit export: bundle must have exactly the declared base prerequisite")
 	}
 	file, err := os.Open(sourcePath)
@@ -228,6 +229,11 @@ func ExportCommitBundle(ctx context.Context, p CommitProvenance, branch string, 
 	if out, err := cmd.Output(); err != nil || strings.TrimSpace(string(out)) != "commit" {
 		return result, errors.New("commit export: pack does not contain declared commit")
 	}
+	if expandedAncestry {
+		if err := verifyExportAncestry(ctx, repo, p, prerequisites); err != nil {
+			return result, err
+		}
+	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return result, err
 	}
@@ -248,7 +254,11 @@ func ExportCommitBundle(ctx context.Context, p CommitProvenance, branch string, 
 	}
 	outHash := sha256.New()
 	writer := io.MultiWriter(output, outHash)
-	_, headerErr := io.WriteString(writer, signature+strings.Join(capabilities, "")+"-"+p.Base+" campaign base\n"+p.Commit+" refs/heads/"+branch+"\n\n")
+	header := signature + strings.Join(capabilities, "")
+	for _, prerequisite := range prerequisites {
+		header += "-" + prerequisite + " campaign prerequisite\n"
+	}
+	_, headerErr := io.WriteString(writer, header+p.Commit+" refs/heads/"+branch+"\n\n")
 	packSize, packErr := io.Copy(writer, reader)
 	closeErr := output.Close()
 	if err := errors.Join(headerErr, packErr, closeErr); err != nil {

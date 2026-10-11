@@ -247,9 +247,6 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		return fail(err)
 	}
 	initialRef := request.Environment.Ref
-	if chained != nil {
-		initialRef = chained.Base
-	}
 	workspaceDir := filepath.Join(stageDir, "workspace")
 	var cached CachedRepository
 	var commit string
@@ -262,15 +259,16 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		if err != nil {
 			return fail(fmt.Errorf("prepare repository cache: %w", err))
 		}
-		commitBytes, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "--git-dir", cached.Path, "rev-parse", "--verify", initialRef+"^{commit}")
-		if err != nil {
-			return fail(fmt.Errorf("resolve ref %q: %w", request.Environment.Ref, err))
+		if chained == nil { // Campaign objects are imported before their first checkout.
+			commitBytes, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "--git-dir", cached.Path, "rev-parse", "--verify", initialRef+"^{commit}")
+			if err != nil {
+				return fail(fmt.Errorf("resolve ref %q: %w", request.Environment.Ref, err))
+			}
+			commit = strings.TrimSpace(string(commitBytes))
+			if !validGitObjectID(commit) {
+				return fail(fmt.Errorf("resolve ref %q: Git returned invalid commit %q", request.Environment.Ref, commit))
+			}
 		}
-		commit = strings.TrimSpace(string(commitBytes))
-		if !validGitObjectID(commit) {
-			return fail(fmt.Errorf("resolve ref %q: Git returned invalid commit %q", request.Environment.Ref, commit))
-		}
-
 		if err := runLoggedCheckoutCommand(ctx, logFile, p.git(), "clone", "--no-local", "--no-checkout", "--", cached.Path, workspaceDir); err != nil {
 			return fail(fmt.Errorf("clone task workspace: %w", err))
 		}
@@ -290,21 +288,20 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		if err := runLoggedCommand(ctx, logFile, "", p.git(), "-C", workspaceDir, "remote", "set-url", "--push", "--", "origin", request.Environment.Repository); err != nil {
 			return fail(fmt.Errorf("point the workspace's origin push URL at the project repository: %w", err))
 		}
-		if err := runLoggedCheckoutCommand(ctx, logFile, p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
-			return fail(fmt.Errorf("checkout pinned commit %s: %w", commit, err))
-		}
-		head, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "-C", workspaceDir, "rev-parse", "HEAD")
-		if err != nil {
-			return fail(fmt.Errorf("verify checkout: %w", err))
-		}
-		if strings.TrimSpace(string(head)) != commit {
-			return fail(fmt.Errorf("verify checkout: HEAD changed from pinned commit %s", commit))
+		if chained == nil { // Campaign objects are imported before their first checkout.
+			if err := runLoggedCheckoutCommand(ctx, logFile, p.git(), "-C", workspaceDir, "checkout", "--detach", commit); err != nil {
+				return fail(fmt.Errorf("checkout pinned commit %s: %w", commit, err))
+			}
+			head, err := runLoggedCommandOutput(ctx, logFile, "", p.git(), "-C", workspaceDir, "rev-parse", "HEAD")
+			if err != nil {
+				return fail(fmt.Errorf("verify checkout: %w", err))
+			}
+			if strings.TrimSpace(string(head)) != commit {
+				return fail(fmt.Errorf("verify checkout: HEAD changed from pinned commit %s", commit))
+			}
 		}
 	}
 	if err := p.materializeInputs(stageDir, request); err != nil {
-		return fail(err)
-	}
-	if err := exposeWorkspaceInputs(workspaceDir); err != nil {
 		return fail(err)
 	}
 	if err := p.resolveDependencyCommits(ctx, filepath.Join(stageDir, "dependencies"), workspaceDir, request, logFile); err != nil {
@@ -320,6 +317,9 @@ func (p WorkspacePreparer) Prepare(ctx context.Context, request WorkspacePrepara
 		if err != nil || strings.TrimSpace(string(head)) != commit {
 			return fail(fmt.Errorf("verify campaign checkout %s: %v", commit, err))
 		}
+	}
+	if err := exposeWorkspaceInputs(workspaceDir); err != nil {
+		return fail(err)
 	}
 	if err := writeWorkspaceBaseCommit(workspaceDir, commit); err != nil {
 		return fail(err)

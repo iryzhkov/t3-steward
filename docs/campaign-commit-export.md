@@ -37,8 +37,13 @@ tasks require this capability and are excluded from older workers. Ordinary
 `inputs_from_run` files lower to the existing cross-run input protocol.
 Cross-worker commits also require `campaign-commit-bundle-v1`; if an older
 producer retained no bundle and the consumer's local store lacks the commit,
-preparation refuses it. The catalog repository must still supply the recorded
-base. Chaining does not remove repository read credentials.
+preparation refuses it. Upgraded producers include unpublished ancestry back to
+commits reachable from their origin tracking refs in each retained bundle, even
+when a chained task declares its unchanged starting commit. Fresh consuming
+workers can therefore continue A → B → C without publishing A or B. The catalog
+repository must supply the bundle's prerequisites; the recorded base can travel
+inside the bundle. Existing bundle size and transport limits still apply.
+Chaining does not remove repository read credentials.
 
 Fetch into a local repository that already holds the base in one command:
 
@@ -62,7 +67,7 @@ t3-steward campaign commit export RUN/TASK/implementation --bundle fix.bundle --
 
 The command prints the full commit, base and SHA-256 digest. The destination must be new. It resolves the provenance on the coordinator and uses a retained M16-0 bundle when available; otherwise it requests the commit from the producing worker over authenticated transport. Unknown runs, tasks or declarations, missing provenance, corrupt objects and unavailable transports fail explicitly. Coordinator and worker refs remain unchanged.
 
-The resulting bundle advertises exactly `refs/heads/NAME`, where NAME defaults to the declared commit name, and requires the recorded campaign base. Import into a repository that already holds that base:
+The resulting bundle advertises exactly `refs/heads/NAME`, where NAME defaults to the declared commit name. Retained bundles may include unpublished ancestors of the recorded base; worker fallback exports require the recorded base. Import into a repository that holds the bundle's prerequisites (holding the recorded base also suffices):
 
 ```sh
 git bundle verify fix.bundle
