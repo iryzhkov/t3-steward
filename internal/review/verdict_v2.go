@@ -205,7 +205,7 @@ func ValidateVerdictV2(raw, markdown []byte, digest, route string, resolver Cont
 		err = marshalErr
 		return
 	}
-	if _, err = ValidateVerdict(projected, digest, route); err != nil {
+	if _, err = validateVerdict(projected, digest, route); err != nil {
 		return
 	}
 	for _, citation := range verdict.CheckEvidence {

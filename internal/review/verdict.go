@@ -69,10 +69,17 @@ func validEvidence(value string) bool {
 // and binding. Contradictory accept-with-changes plus blocking evidence is invalid;
 // a required invalid result blocks exactly as reject would.
 func ValidateVerdict(raw []byte, digest, route string) (Verdict, error) {
-	var verdict Verdict
 	if len(raw) > MaxDocumentBytes {
-		return verdict, errors.New("verdict exceeds 1 MiB")
+		return Verdict{}, errors.New("verdict exceeds 1 MiB")
 	}
+	return validateVerdict(raw, digest, route)
+}
+
+// validateVerdict shares strict parsing and semantic checks with v2's internal
+// projection. Callers enforce the size cap on the supplied document before
+// calling this helper; generated projection bytes are not a supplied document.
+func validateVerdict(raw []byte, digest, route string) (Verdict, error) {
+	var verdict Verdict
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := uniqueValue(dec); err != nil {
 		return verdict, fmt.Errorf("verdict JSON: %w", err)

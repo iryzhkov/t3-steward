@@ -1,6 +1,7 @@
 package review
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -203,6 +204,41 @@ func assertV2Failure(t *testing.T, raw, md []byte) {
 		t.Fatalf("failure not typed/cleared: %+v %v %v %v", v, fs, events, err)
 	}
 }
+
+// The document cap belongs to the supplied JSON, not an escaped v1 projection.
+func TestVerdictV2UnescapedDocumentLimit(t *testing.T) {
+	for _, character := range []string{"<", ">", "&", "\u2028", "\u2029"} {
+		t.Run(character, func(t *testing.T) {
+			p := v2Packet()
+			recommendation := "Fix " + strings.Repeat(character, 180000)
+			v2Finding(p)["recommendation"] = recommendation
+			var buf bytes.Buffer
+			encoder := json.NewEncoder(&buf)
+			encoder.SetEscapeHTML(false)
+			if err := encoder.Encode(p); err != nil {
+				t.Fatal(err)
+			}
+			// encoding/json always escapes the Unicode separators, so make
+			// those valid literal UTF-8 bytes explicit in the supplied input.
+			raw := bytes.ReplaceAll(buf.Bytes(), []byte("\\u2028"), []byte("\u2028"))
+			raw = bytes.ReplaceAll(raw, []byte("\\u2029"), []byte("\u2029"))
+			if len(raw) >= MaxDocumentBytes {
+				t.Fatalf("fixture must be below cap: %d bytes", len(raw))
+			}
+			for _, size := range []int{len(raw), MaxDocumentBytes} {
+				bounded := append([]byte{}, raw...)
+				bounded = append(bounded, bytes.Repeat([]byte(" "), size-len(raw))...)
+				v, fs, events, err := ValidateVerdictV2(bounded, []byte("VERDICT: CHANGES_REQUESTED\nF1"), testDigest, "codex/sol", refResolverFunc(func(string) bool { return true }))
+				if err != nil || len(fs) != 1 || len(events) != 0 || v.Findings[0].Recommendation != recommendation {
+					t.Fatalf("supplied size %d: findings=%d events=%v error=%v", size, len(fs), events, err)
+				}
+			}
+			oversized := append(append([]byte{}, raw...), bytes.Repeat([]byte(" "), MaxDocumentBytes+1-len(raw))...)
+			assertV2Failure(t, oversized, []byte("VERDICT: CHANGES_REQUESTED\nF1"))
+		})
+	}
+}
+
 func TestVerdictV2Documents(t *testing.T) {
 	raw := v2Bytes(t, v2Packet())
 	boundedRaw := append(append([]byte{}, raw...), []byte(strings.Repeat(" ", MaxDocumentBytes-len(raw)))...)
