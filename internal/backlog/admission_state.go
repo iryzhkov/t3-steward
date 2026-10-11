@@ -72,8 +72,9 @@ type QuotaPoolAdmissionSnapshot struct {
 }
 
 // DeriveQuotaPoolAdmissions combines the current state of every configured
-// bucket conservatively. Missing, stale, future-dated, irreconcilably
-// conflicting, or epoch-inconsistent observations close the affected pool.
+// bucket conservatively. Expired readings drop out when fresh windows remain.
+// Missing, future-dated, irreconcilably conflicting, or epoch-inconsistent
+// observations close the affected pool, as does a pool with no fresh reading.
 func DeriveQuotaPoolAdmissions(input QuotaAdmissionDerivationInput) ([]QuotaPoolAdmissionSnapshot, error) {
 	if input.Now.IsZero() {
 		return nil, fmt.Errorf("quota admission derivation time must be set")
@@ -220,6 +221,15 @@ func deriveQuotaPoolAdmission(pool domain.QuotaPool, statesByKey map[domain.Buck
 		})
 	}
 
+	// Drop expired newest readings only when a fresh governing reading remains.
+	// With no fresh reading, the existing fail-closed projection still applies.
+	hasFresh := false
+	for _, key := range pool.Buckets {
+		state, issue, found := reconcileAdmissionBucketStates(key, statesByKey[key])
+		if found && issue == nil && !state.ObservedAt.After(now) && domain.QuotaReadingFresh(state, now, maxAge) {
+			hasFresh = true
+		}
+	}
 	maxPhase := domain.PhaseNormal
 	allHealthy := true
 	for _, key := range pool.Buckets {
@@ -233,6 +243,9 @@ func deriveQuotaPoolAdmission(pool domain.QuotaPool, statesByKey map[domain.Buck
 		}
 		if issue != nil {
 			result.Issues = append(result.Issues, *issue)
+			continue
+		}
+		if hasFresh && domain.QuotaReadingExpired(state, now, maxAge) {
 			continue
 		}
 		result.BucketEpochs = append(result.BucketEpochs, QuotaBucketEpoch{Bucket: key, Epoch: state.Epoch})

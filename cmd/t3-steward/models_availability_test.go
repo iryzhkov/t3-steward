@@ -62,9 +62,9 @@ func TestModelsAvailabilityNamesEachReason(t *testing.T) {
 		status string
 	}{
 		{name: "complete, fresh and ready", change: func([]backlogadmin.Worker, []backlogadmin.Quota) {}, code: modelsStatusAvailable, status: "available"},
-		{name: "stale weekly window", change: func(w []backlogadmin.Worker, _ []backlogadmin.Quota) {
+		{name: "expired weekly window leaves fresh primary available", change: func(w []backlogadmin.Worker, _ []backlogadmin.Quota) {
 			w[0].Snapshot.QuotaObservations[1].ObservedAt = now.Add(-61 * time.Minute)
-		}, code: domain.QuotaWindowStale, status: "stale seven_day"},
+		}, code: modelsStatusAvailable, status: "available"},
 		{name: "weekly window exactly at the threshold", change: func(w []backlogadmin.Worker, _ []backlogadmin.Quota) {
 			w[0].Snapshot.QuotaObservations[1].ObservedAt = now.Add(-time.Hour)
 		}, code: modelsStatusAvailable, status: "available"},
@@ -124,10 +124,12 @@ func TestModelsStaleNinetySevenThenManualRefresh(t *testing.T) {
 	reset := time.Date(2026, 10, 8, 16, 0, 0, 0, time.UTC)
 	pinModelsNow(t, now)
 	workers, quotas := availabilityFixture(now)
+	// With no fresh governing window the pool remains unavailable until refresh.
+	workers[0].Snapshot.QuotaObservations[0].ObservedAt = now.Add(-5 * time.Hour)
 	stale := &workers[0].Snapshot.QuotaObservations[1]
 	stale.Phase, stale.UsedPercent, stale.ResetsAt, stale.ObservedAt, stale.Healthy = domain.PhaseDraining, 97, &reset, now.Add(-5*time.Hour), false
 	before := buildModelsDocument("", workers, quotas, nil, time.Hour)
-	if instance := modelsInstanceByName(t, before, "t3-primary"); instance.Availability.Code == modelsStatusAvailable || modelsStatus(instance) != "stale seven_day" {
+	if instance := modelsInstanceByName(t, before, "t3-primary"); instance.Availability.Code == modelsStatusAvailable || modelsStatus(instance) != "stale five_hour" {
 		t.Fatalf("before the refresh: %+v status %q", instance.Availability, modelsStatus(instance))
 	}
 	if scoped := scopeModelsDocument(before, modelsScope{Available: true}); len(scoped.Instances) != 0 {

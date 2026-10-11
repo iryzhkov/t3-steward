@@ -32,11 +32,28 @@ func deriveQuotaPlanningWindows(
 	for _, pool := range pools {
 		admissionByPool[pool.ID] = pool.Admission
 	}
+	// Select the newest reading before dropping expired windows. Retain an
+	// all-expired pool so planning still fails closed.
+	newest := make(map[domain.BucketKey]domain.BucketState)
+	for _, state := range states {
+		if current, ok := newest[state.Key]; !ok || state.ObservedAt.After(current.ObservedAt) {
+			newest[state.Key] = state
+		}
+	}
+	freshByPool := make(map[string]bool)
+	for _, state := range newest {
+		if poolID, ok := poolByProviderInstance[state.Key.ProviderInstanceID]; ok && !state.ObservedAt.After(now) && domain.QuotaReadingFresh(state, now, bridge.MaxObservationAge) {
+			freshByPool[poolID] = true
+		}
+	}
 	windows := make([]QuotaWindowBudget, 0, len(states))
 	seen := make(map[string]struct{}, len(states))
 	for _, state := range states {
 		poolID, configured := poolByProviderInstance[state.Key.ProviderInstanceID]
 		if !configured {
+			continue
+		}
+		if !state.ObservedAt.Equal(newest[state.Key].ObservedAt) || freshByPool[poolID] && domain.QuotaReadingExpired(state, now, bridge.MaxObservationAge) {
 			continue
 		}
 		windowKey := poolID + "\x00" + state.Key.String()

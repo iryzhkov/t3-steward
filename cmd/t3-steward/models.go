@@ -41,12 +41,14 @@ offers it.
 
 STATUS says "available" only when every window the pool's provider declares
 (Claude five_hour and seven_day; Codex primary, and secondary when it reports
-one) has a reading no older than the stale threshold, no window is used up, the
+one) has a reading, at least one remains fresh, no fresh window is used up, the
 pool admits work, and at least one ready worker both advertises the route's
 model and is authorized for it by the coordinator. A worker may advertise
 more models than it is authorized for, and those routes are not available.
 Each model is judged on its own, so --available drops a model only unready or
 unauthorized workers offer while keeping the instance's other models.
+Expired readings no longer govern a pool with fresh windows; each is listed
+with its age and supplies no headroom.
 Otherwise it names the first reason: "not authorized", "quota unknown",
 "missing <window>", "stale <window>", "exhausted <window> until <reset>",
 "pool <admission>" or "no ready worker".
@@ -738,6 +740,10 @@ func renderModels(out io.Writer, document modelsDocument) error {
 					if w.Stale {
 						freshness = "stale"
 					}
+					if w.Expired {
+						fmt.Fprintf(out, "  %s (%s): expired; age %s; reset %s\n", w.Key.Window, w.Key.LimitID, modelsAge(modelsNow().Sub(w.ObservedAt)), reset)
+						continue
+					}
 					fmt.Fprintf(out, "  %s (%s): used %.1f%%; headroom %.1f%%; reset %s; %s\n", w.Key.Window, w.Key.LimitID, w.UsedPercent, w.Headroom, reset, freshness)
 				}
 			}
@@ -1019,7 +1025,7 @@ func modelsAvailabilityFor(instance modelsInstance, windows *domain.QuotaWindowS
 	case windows == nil:
 		return modelsAvailability{Code: domain.QuotaWindowUnknown, Detail: domain.QuotaWindowProblem{Code: domain.QuotaWindowUnknown}.String()}
 	}
-	if problem, found := windows.Problem(); found {
+	if problem, found := windows.Governing().Problem(); found {
 		return modelsAvailability{Code: problem.Code, Window: problem.Window, ResetsAt: problem.ResetsAt, Detail: problem.String()}
 	}
 	if instance.Admission != "" && instance.Admission != string(domain.AdmissionOpen) {

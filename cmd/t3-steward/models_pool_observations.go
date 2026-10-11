@@ -15,6 +15,7 @@ type modelsWindow struct {
 	ResetsAt    *time.Time       `json:"resetsAt,omitempty"`
 	ObservedAt  time.Time        `json:"observedAt"`
 	Stale       bool             `json:"stale"`
+	Expired     bool             `json:"expired,omitempty"`
 }
 
 // modelsBucketStale is shared by aggregate and window freshness, and is the
@@ -34,7 +35,12 @@ func modelsPoolWindows(pool domain.QuotaPool, states []domain.BucketState, now t
 			continue
 		}
 		stale := modelsBucketStale(s, now, staleAfter)
-		result = append(result, modelsWindow{Key: s.Key, UsedPercent: s.UsedPercent, Headroom: math.Max(0, 100-s.UsedPercent), ResetsAt: s.ResetsAt, ObservedAt: s.ObservedAt, Stale: stale})
+		expired := domain.QuotaReadingExpired(s, now, staleAfter)
+		headroom := math.Max(0, 100-s.UsedPercent)
+		if expired {
+			headroom = 0
+		}
+		result = append(result, modelsWindow{Key: s.Key, UsedPercent: s.UsedPercent, Headroom: headroom, ResetsAt: s.ResetsAt, ObservedAt: s.ObservedAt, Stale: stale, Expired: expired})
 	}
 	for _, key := range pool.Buckets {
 		found := false

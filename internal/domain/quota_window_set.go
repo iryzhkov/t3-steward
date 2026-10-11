@@ -41,6 +41,15 @@ func QuotaReadingFresh(state BucketState, now time.Time, maxAge time.Duration) b
 	return state.ResetsAt == nil || !state.ObservedAt.Before(*state.ResetsAt) || now.Before(*state.ResetsAt)
 }
 
+// QuotaReadingExpired reports an observation whose age or own reset has ended.
+// Missing timestamps remain invalid evidence, rather than expired windows.
+func QuotaReadingExpired(state BucketState, now time.Time, maxAge time.Duration) bool {
+	if state.ObservedAt.IsZero() {
+		return false
+	}
+	return !QuotaReadingFresh(state, now, maxAge)
+}
+
 // QuotaReadingExhausted reports whether a reading says its window is used up:
 // at 100% or in the stopped phase.
 func QuotaReadingExhausted(state BucketState) bool {
@@ -81,6 +90,7 @@ type QuotaWindowReading struct {
 	Declared  bool `json:"declared,omitempty"`
 	Missing   bool `json:"missing,omitempty"`
 	Stale     bool `json:"stale,omitempty"`
+	Expired   bool `json:"expired,omitempty"`
 	Exhausted bool `json:"exhausted,omitempty"`
 }
 
@@ -125,6 +135,7 @@ func ReadQuotaWindows(pool QuotaPool, states []BucketState, now time.Time, maxAg
 		reading := quotaWindowReading(state)
 		reading.Declared = declared[state.Key.Window]
 		reading.Stale = !QuotaReadingFresh(state, now, maxAge)
+		reading.Expired = QuotaReadingExpired(state, now, maxAge)
 		reading.Exhausted = QuotaReadingExhausted(state)
 		set.Windows = append(set.Windows, reading)
 		covered[state.Key.Window] = true
@@ -162,6 +173,27 @@ func quotaWindowReading(state BucketState) QuotaWindowReading {
 	return reading
 }
 
+// Governing returns the windows that still govern ranking and admission.
+// Retain the original set when no fresh window remains so it stays unknown;
+// an expired reading never supplies headroom. The full set remains available
+// for display and for quota waits that require every window to be fresh.
+func (s QuotaWindowSet) Governing() QuotaWindowSet {
+	fresh := false
+	for _, w := range s.Windows {
+		fresh = fresh || !w.Missing && !w.Stale && !w.Expired
+	}
+	if !fresh {
+		return s
+	}
+	result := QuotaWindowSet{Pool: s.Pool, Unknown: s.Unknown}
+	for _, w := range s.Windows {
+		if !w.Expired {
+			result.Windows = append(result.Windows, w)
+		}
+	}
+	return result
+}
+
 // Complete reports that the governing buckets are known, at least one window
 // was read, and no named bucket or declared window lacks a reading.
 func (s QuotaWindowSet) Complete() bool {
@@ -182,7 +214,7 @@ func (s QuotaWindowSet) Fresh() bool {
 		return false
 	}
 	for _, window := range s.Windows {
-		if window.Stale {
+		if window.Stale || window.Expired {
 			return false
 		}
 	}
@@ -239,7 +271,7 @@ func (s QuotaWindowSet) Problem() (QuotaWindowProblem, bool) {
 		}
 	}
 	for _, window := range s.Windows {
-		if window.Stale {
+		if window.Stale || window.Expired {
 			observed := window.ObservedAt
 			return QuotaWindowProblem{Code: QuotaWindowStale, Window: window.Window, ObservedAt: &observed}, true
 		}

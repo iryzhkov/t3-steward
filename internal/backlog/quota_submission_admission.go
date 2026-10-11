@@ -168,7 +168,7 @@ func (a SubmissionQuotaAdmission) evaluate(records sqlite.CoordinatorRecords, sn
 			poolErrors[id] = "quota-unknown"
 			continue
 		}
-		entry.WindowSet = domain.ReadQuotaWindows(pool, snapshot.States, now, age)
+		entry.WindowSet = domain.ReadQuotaWindows(pool, snapshot.States, now, age).Governing()
 		if problem, bad := entry.WindowSet.Problem(); bad {
 			detail := problem.Code + " " + problem.Window
 			if problem.ObservedAt != nil {
