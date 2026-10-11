@@ -3,5 +3,5 @@ Read .t3/inputs/inputs/fix/rules.md first and follow it, then the original brief
 
 Read the preceding review's verdict.json. If it says accept, check out the preceding fix commit unchanged, declare it as fix, and write the one-line no-op handoff and verification.log described in the shared rules. Still write continuation.md. Otherwise reproduce and repair every blocking finding.
 
-Write continuation.md, handoff.md and verification.log. Commit the fix as HEAD (declared commit name fix). Run focused checks and the self-review swarm and test-integrity check before finishing. Leave the tracked tree clean.
+Write continuation.md, handoff.md and verification.log. Commit the fix as HEAD (declared commit name fix). Run the affected-test loop against the original pinned base as described in the shared rules, then the self-review swarm and test-integrity check before finishing. Leave the tracked tree clean.
 The worker executes the declared final gate after your verification; do not run a separate agent gate.

@@ -3,4 +3,4 @@ Read .t3/inputs/inputs/fix/rules.md first and follow it, then the original brief
 
 Reproduce and repair the source review's blocking findings.
 
-Write continuation.md, handoff.md and verification.log. Commit the fix as HEAD (declared commit name fix). Run focused checks and the self-review swarm and test-integrity check before finishing. Leave the tracked tree clean.
+Write continuation.md, handoff.md and verification.log. Commit the fix as HEAD (declared commit name fix). Run the affected-test loop against the original pinned base as described in the shared rules, then the self-review swarm and test-integrity check before finishing. Leave the tracked tree clean.

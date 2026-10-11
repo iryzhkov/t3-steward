@@ -5,5 +5,5 @@ Read the preceding review's verdict.json. If it says accept, check out the prece
 {{else}}
 Reproduce and repair the source review's blocking findings.
 {{end}}
-Write continuation.md, handoff.md and verification.log. Commit the fix as HEAD (declared commit name fix). Run focused checks and the self-review swarm and test-integrity check before finishing. Leave the tracked tree clean.
+Write continuation.md, handoff.md and verification.log. Commit the fix as HEAD (declared commit name fix). Run the affected-test loop against the original pinned base as described in the shared rules, then the self-review swarm and test-integrity check before finishing. Leave the tracked tree clean.
 {{if .HasGate}}{{if eq .Name .LastFix}}The worker executes the declared final gate after your verification; do not run a separate agent gate.{{end}}{{end}}

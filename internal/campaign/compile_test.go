@@ -214,8 +214,20 @@ func TestCompiledImplementPromptIteratesOnAffectedPackages(t *testing.T) {
 				t.Fatalf("%s prompts/implement.md does not contain %q:\n%s", unit.ID, want, prompt)
 			}
 		}
-		if strings.Contains(compiledFile(t, unit, "prompts/review.md"), "test-affected") {
-			t.Fatalf("%s: the review prompt names the executor's iteration loop", unit.ID)
+		review := compiledFile(t, unit, "prompts/review.md")
+		for _, want := range []string{
+			"first reproduce any suspected defect with a focused test or command",
+			"`make test-affected BASE=" + plan.Ref + "`",
+			"`test_scope=affected`",
+			"Do not rerun the full declared gate",
+			"worker has run that gate on the implementation commit",
+		} {
+			if !strings.Contains(review, want) {
+				t.Fatalf("%s prompts/review.md does not contain %q:\n%s", unit.ID, want, review)
+			}
+		}
+		if strings.Index(review, "first reproduce") > strings.Index(review, "Then run") {
+			t.Fatalf("%s: review must reproduce suspected defects before affected tests", unit.ID)
 		}
 	}
 }

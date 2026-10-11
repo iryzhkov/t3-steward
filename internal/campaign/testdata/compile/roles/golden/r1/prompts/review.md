@@ -28,7 +28,11 @@ Outputs:
   review's verdict, and a first line in any other form fails this task.
 - `continuation.md`: kept current as you work.
 
-Verification: rerun these on the implementation commit:
-- `make test`
-
+Verification: first reproduce any suspected defect with a focused test or command.
+Then run `make test-affected BASE=d2e827681336e76413fdab34392f029a3e131cf4` where the repository has that
+make target; with Huyang, use `verify_run` with `test_scope=affected`. Otherwise
+run focused checks of the changed packages and their importers.
+Do not rerun the full declared gate (`make test`): the implement task only succeeds after the
+worker has run that gate on the implementation commit. Record focused commands
+and their exit codes.
 Request changes only for real defects or unmet criteria, not for style.
