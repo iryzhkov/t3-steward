@@ -97,6 +97,11 @@ func campaignViabilityRequest(plan campaign.Plan, bundleBytes int64, bundleFiles
 // being counted as a candidate.
 func campaignTaskCapabilities(plan campaign.Plan, task campaign.Task) []string {
 	capabilities := append([]string(nil), task.Placement.Requires...)
+	if strings.HasPrefix(plan.Environment.Ref, "campaign:") {
+		capabilities = append(capabilities, workerproto.PackageCapabilityCampaignRef, workerproto.PackageCapabilityCommitBundle)
+		slices.Sort(capabilities)
+		capabilities = slices.Compact(capabilities)
+	}
 	if slices.Contains(capabilities, workerproto.PackageCapabilityCommitBundle) {
 		return capabilities
 	}

@@ -17,7 +17,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 )
 
-const campaignCommitExportUsage = "Usage: t3-steward campaign commit export <run>/<task>/<commit-name> --bundle FILE [--branch NAME]\n"
+const campaignCommitExportUsage = "Usage: t3-steward campaign commit export <run>/<task>/<commit-name> (--bundle FILE | --into REPOSITORY) [--branch NAME]\n"
 
 func exportCLIHash(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
 
@@ -63,15 +63,15 @@ func parseCampaignCommitExportArgs(args []string) (backlogadmin.CommitExportRequ
 	branchSet := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--bundle", "--branch":
+		case "--bundle", "--into", "--branch":
 			flag := args[i]
 			if i+1 >= len(args) || args[i+1] == "" {
 				return r, path, fmt.Errorf("%s requires a value", flag)
 			}
 			i++
-			if flag == "--bundle" {
+			if flag != "--branch" {
 				if path != "" {
-					return r, path, errors.New("duplicate --bundle")
+					return r, path, errors.New("use exactly one --bundle or --into")
 				}
 				path = args[i]
 			} else {
@@ -113,6 +113,9 @@ func parseCampaignCommitExportArgs(args []string) (backlogadmin.CommitExportRequ
 func (c campaignCLI) runCommit(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] != "export" {
 		return fmt.Errorf("invalid commit export arguments: %s", strings.TrimSpace(campaignCommitExportUsage))
+	}
+	if slicesContainInto(args[1:]) {
+		return c.fetchCommitExport(ctx, args[1:])
 	}
 	r, path, err := parseCampaignCommitExportArgs(args[1:])
 	if err != nil {

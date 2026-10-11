@@ -204,7 +204,7 @@ func (c *ProjectCatalog) Resolve(workflow domain.Workflow, task domain.Task) (Re
 	if ref == "" {
 		ref = project.DefaultRef
 	}
-	if err := validateGitRef(ref); projectType == EnvironmentGit && err != nil {
+	if err := validateEnvironmentRef(ref); projectType == EnvironmentGit && err != nil {
 		return ResolvedEnvironment{}, fmt.Errorf("resolve project %q ref: %w", project.Name, err)
 	}
 
