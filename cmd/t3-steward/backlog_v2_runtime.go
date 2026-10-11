@@ -711,6 +711,12 @@ func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err er
 }
 
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) backlog.QuotaBridgeReport {
+	started := time.Now()
+	ctx, snapshot := sqlite.WithCoordinatorRecordsSnapshot(ctx)
+	defer func() {
+		c.logger.Info("backlog-v2 coordinator tick completed",
+			"duration", time.Since(started), "record_loads", snapshot.Finish())
+	}()
 	if c.supervision != nil && c.supervision.settings.CoordinatorEpoch > 0 {
 		ctx = sqlite.WithCoordinatorEpochFence(ctx, c.supervision.settings.CoordinatorEpoch)
 	}
@@ -785,7 +791,7 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 	}
 	// The milestone ledger records boundaries the projection above just made
 	// durable. It never blocks this cycle: the pass runs in the background.
-	c.ledgers.Tick(ctx)
+	c.ledgers.Tick(sqlite.WithoutCoordinatorRecordsSnapshot(ctx))
 	quotaHealthy := true
 	quotaReport, err := c.quota.Tick(ctx)
 	if err != nil {

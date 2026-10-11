@@ -410,13 +410,31 @@ func insertImmutableJSON[T any](
 
 // LoadCoordinatorRecords returns a transactionally consistent coordinator snapshot.
 func (s *Store) LoadCoordinatorRecords(ctx context.Context) (CoordinatorRecords, error) {
+	if snapshot, _ := ctx.Value(coordinatorRecordsSnapshotKey{}).(*CoordinatorRecordsSnapshot); snapshot != nil {
+		return s.loadCoordinatorRecordsSnapshot(ctx, snapshot)
+	}
+	return s.loadCoordinatorRecords(ctx)
+}
+
+func (s *Store) loadCoordinatorRecords(ctx context.Context) (CoordinatorRecords, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return CoordinatorRecords{}, fmt.Errorf("begin coordinator load: %w", err)
 	}
 	defer tx.Rollback()
+	records, err := loadCoordinatorRecordsTx(ctx, tx)
+	if err != nil {
+		return CoordinatorRecords{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CoordinatorRecords{}, fmt.Errorf("commit coordinator load: %w", err)
+	}
+	return records, nil
+}
 
+func loadCoordinatorRecordsTx(ctx context.Context, tx *sql.Tx) (CoordinatorRecords, error) {
 	var records CoordinatorRecords
+	var err error
 	if records.Workflows, err = loadJSON[domain.Workflow](ctx, tx, "coordinator_workflows"); err != nil {
 		return CoordinatorRecords{}, err
 	}
@@ -451,9 +469,6 @@ func (s *Store) LoadCoordinatorRecords(ctx context.Context) (CoordinatorRecords,
 		return CoordinatorRecords{}, err
 	}
 	// Audit events are deliberately not loaded here; see CoordinatorRecords.
-	if err := tx.Commit(); err != nil {
-		return CoordinatorRecords{}, fmt.Errorf("commit coordinator load: %w", err)
-	}
 	records.Tasks = domain.TasksWithGraphAdditions(records.WorkflowRuns, records.Tasks)
 	return records, nil
 }
