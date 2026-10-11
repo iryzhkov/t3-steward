@@ -35,8 +35,9 @@ roles:
 Roles are an ordered list of unique names: plan, execute, review, critical-review,
 read, and safe specialty names such as 3d. Candidates are ordered unique
 INSTANCE/MODEL routes; MODEL may contain slashes. Every candidate requires effort
-(low, medium, high) and cost tier (economy, standard, premium). Max and higher
-efforts are refused. Unknown fields, duplicate roles/routes, malformed documents
+(low, medium, high, or xhigh only when MODEL is exactly claude-haiku-5-5 or
+gpt-6-luna, on any instance) and cost tier (economy, standard, premium). Max
+and all other efforts are refused. Unknown fields, duplicate roles/routes, malformed documents
 and unknown schema versions are refused. Constraints accept provider_families,
 exclude_provider_families and tiers, all lists. Provider constraints require
 catalog family metadata; missing metadata cannot satisfy an exclusion.

@@ -62,6 +62,20 @@ func validPolicyEffort(e string) error {
 	}
 	return fmt.Errorf("effort %q is refused; use low, medium or high (max and higher are forbidden)", e)
 }
+
+// Policy candidates have a model-specific exception; CLI overrides retain
+// validPolicyEffort's low, medium and high restriction.
+func validPolicyCandidateEffort(route, effort string) error {
+	if effort == "xhigh" {
+		_, model, _ := strings.Cut(route, "/")
+		if model == "claude-haiku-5-5" || model == "gpt-6-luna" {
+			return nil
+		}
+		return fmt.Errorf("effort %q is refused for %s; xhigh is allowed only for claude-haiku-5-5 or gpt-6-luna", effort, route)
+	}
+	return validPolicyEffort(effort)
+}
+
 func parseRoutePolicy(raw []byte) (*routePolicy, error) {
 	if int64(len(raw)) > pinnedinput.MaxFileBytes {
 		return nil, errors.New("policy exceeds 1 MiB; reduce the policy")
@@ -100,7 +114,7 @@ func parseRoutePolicy(raw []byte) (*routePolicy, error) {
 			if c.Effort == "" {
 				return nil, fmt.Errorf("candidate %s needs effort: low, medium or high", c.Route)
 			}
-			if err := validPolicyEffort(c.Effort); err != nil {
+			if err := validPolicyCandidateEffort(c.Route, c.Effort); err != nil {
 				return nil, err
 			}
 			if !contains([]string{"economy", "standard", "premium"}, c.Tier) {

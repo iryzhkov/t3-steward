@@ -29,6 +29,60 @@ func TestM13PolicyStrictAndOrdered(t *testing.T) {
 		}
 	}
 }
+func TestRoutePolicyCandidateEffort(t *testing.T) {
+	tests := []struct {
+		route  string
+		effort string
+		wantOK bool
+	}{
+		{"claudeAgent/claude-haiku-5-5", "xhigh", true},
+		{"codex/gpt-6-luna", "xhigh", true},
+		{"other/claude-haiku-5-5", "xhigh", true},
+		{"other/gpt-6-luna", "xhigh", true},
+		{"codex/gpt-6.1-sol", "xhigh", false},
+		{"codex/vendor/gpt-6-luna", "xhigh", false},
+		{"codex/gpt-6-luna-preview", "xhigh", false},
+		{"claudeAgent/claude-haiku-5-5", "max", false},
+		{"codex/gpt-6-luna", "max", false},
+		{"codex/gpt-6-luna", "ultra", false},
+		{"codex/gpt-6-luna", "low", true},
+		{"codex/gpt-6-luna", "medium", true},
+		{"codex/gpt-6-luna", "high", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.route+"/"+tt.effort, func(t *testing.T) {
+			raw := "schema: route-policy/v1\nroles:\n - name: read\n   candidates:\n    - {route: " + tt.route + ", effort: " + tt.effort + ", tier: economy}\n"
+			p, err := parseRoutePolicy([]byte(raw))
+			if !tt.wantOK {
+				if err == nil {
+					t.Fatal("accepted forbidden effort")
+				}
+				if tt.effort == "xhigh" && (!strings.Contains(err.Error(), "claude-haiku-5-5") || !strings.Contains(err.Error(), "gpt-6-luna")) {
+					t.Fatalf("error must name allowed models: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			selection, err := selectPolicyRoute(p, "read", "", "", "", backlogadmin.Project{
+				Workers: []backlogadmin.ProjectWorker{{Ready: true, Advertises: true, Routes: []backlogadmin.ProjectRoute{{
+					Instance: strings.SplitN(tt.route, "/", 2)[0],
+					Model:    strings.SplitN(tt.route, "/", 2)[1],
+				}}}},
+			}, nil)
+			if err != nil || selection.Route != tt.route || selection.Effort != tt.effort {
+				t.Fatalf("selection = %+v, error = %v", selection, err)
+			}
+		})
+	}
+	for _, route := range []string{"claudeAgent/claude-haiku-5-5", "codex/gpt-6-luna"} {
+		if _, err := parseTaskRunArgs([]string{"--model", route, "--effort", "xhigh", "--", "hello"}); err == nil {
+			t.Fatal("task run accepted explicit xhigh effort")
+		}
+	}
+}
+
 func TestM14CatalogModelAuthorization(t *testing.T) {
 	tests := []struct {
 		name      string
