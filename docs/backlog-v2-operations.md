@@ -173,7 +173,7 @@ level: unknown keys are startup errors. Backlog-v2 is disabled by default.
   beneath the configured worker-scoped roots and must be restored coherently.
   `storage.campaign_commit_bundle_max_bytes` bounds the Git bundle of a
   declared campaign commit (default 64 MiB, `0` keeps the default; never more
-  than `message_limits.max_artifact_bytes`). See "Declared commits across
+  than `message_limits.max_total_artifact_bytes`). See "Declared commits across
   workers" below.
 - `transport`, `message_limits`, `freshness`, `leases`, and `scheduling`
   set bounded exchange and lifecycle controls. `message_limits.max_files`
@@ -371,7 +371,7 @@ over the same artifact path every other input takes:
   size are bound into the provenance record (`bundle`). A commit equal to its
   base needs no bundle: the consumer already holds the base.
 - A bundle larger than `storage.campaign_commit_bundle_max_bytes` (default
-  64 MiB, never more than `message_limits.max_artifact_bytes`) is not retained.
+  64 MiB, never more than `message_limits.max_total_artifact_bytes`) is not retained.
   The producer still succeeds, because a successor on its own worker needs no
   bundle, and the record states why in `bundleOmitted`.
 - `bundleOmitted` holds one fixed reason code, never free text:
@@ -2061,18 +2061,41 @@ recovery fault. Do not release dependencies or substitute worker-local content.
 Restore the matching database and artifact snapshot together, then verify the
 artifact through `backlog artifact get`.
 
+### Bounded result artifacts
+
+Result artifacts retain their whole-file size and SHA-256 in the logical manifest.
+Files larger than the physical object bound are split into immutable parts, each
+with its own size and SHA-256; the coordinator verifies and reassembles the whole
+file before accepting the result. Physical objects and persistent transport frames
+remain bounded at 16 MiB. `message_limits.max_artifact_bytes` retains its existing
+meaning and legacy SSH default; persistent connections still require it to be at
+most 16 MiB.
+
+`message_limits.max_total_artifact_bytes` bounds the complete result aggregate,
+including all parts and the other result files. It defaults to 1 GiB, must be
+positive and at most 1 GiB, and cannot be smaller than `max_artifact_bytes`.
+Zero on legacy settings retains `max_artifact_bytes` as the aggregate, so it is
+still bounded; loaded configuration defaults to the explicit 1 GiB aggregate.
+Logical files may exceed 16 MiB while remaining within this aggregate bound.
+Artifact downloads return the verified assembled file and use the same aggregate
+bound. Pause scheduling, upgrade the coordinator and every participating worker,
+then regenerate and activate their authenticated catalogs before resuming. Complete
+this upgrade before producing oversized outputs; mixed-release catalogs are not
+supported and older binaries do not understand the optional parts metadata.
+No database schema change is needed.
+
 ### Oversized thread archive
 
 The thread archive (`results/thread.json`, T3's full export of the attempt's
 thread) is the one result object whose size the task does not control. A long
 session can export tens of megabytes, and before this change an archive over
-`message_limits.max_artifact_bytes`, or over the room the other result objects
+the physical object limit, or over the room the other result objects
 left in the aggregate limit, made collection fail with `artifact: invalid or
 excessive size` and lost an otherwise valid result.
 
 The worker now checks the archive last, after every other result object has
-been accepted on its own, against the tighter of the worker custody limits and
-the package's. An archive that fits is uploaded byte for byte. One that does
+been accepted on its own, against the remaining bounded result aggregate.
+An archive that fits is uploaded byte for byte, using physical parts when needed. One that does
 not is replaced in the upload by a compacted archive of the same thread, and
 the worker logs `thread archive over the result upload limits; publishing a
 compacted archive`. The compacted archive keeps:

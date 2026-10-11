@@ -115,6 +115,9 @@ func (c *Config) validateBacklogV2() error {
 		v.MessageLimits.MaxArtifactBytes <= 0 {
 		return errors.New("backlog_v2: message byte, file, and artifact limits must be positive")
 	}
+	if v.MessageLimits.TotalArtifactBytes() <= 0 || v.MessageLimits.TotalArtifactBytes() > 1<<30 || v.MessageLimits.TotalArtifactBytes() < v.MessageLimits.MaxArtifactBytes {
+		return errors.New("backlog_v2: max_total_artifact_bytes must be positive, at most 1 GiB, and at least max_artifact_bytes")
+	}
 	if v.Freshness.WorkerMaxAge.D() <= 0 || v.Freshness.QuotaMaxAge.D() <= 0 {
 		return errors.New("backlog_v2: freshness limits must be positive")
 	}
@@ -316,12 +319,18 @@ func (c *Config) validateCoordinatorClient() error {
 	if client.MessageLimits.MaxArtifactBytes == 0 {
 		client.MessageLimits.MaxArtifactBytes = c.BacklogV2.MessageLimits.MaxArtifactBytes
 	}
+	if client.MessageLimits.MaxTotalArtifactBytes == 0 {
+		client.MessageLimits.MaxTotalArtifactBytes = c.BacklogV2.MessageLimits.MaxTotalArtifactBytes
+	}
 	if client.MessageLimits.MaxFiles == 0 {
 		client.MessageLimits.MaxFiles = c.BacklogV2.MessageLimits.MaxFiles
 	}
 	if client.MessageLimits.MaxBytes <= 0 || client.MessageLimits.MaxArtifactBytes <= 0 ||
 		client.MessageLimits.MaxFiles <= 0 {
 		return errors.New("backlog_v2: coordinator_client.message_limits byte and file limits must be positive")
+	}
+	if client.MessageLimits.TotalArtifactBytes() <= 0 || client.MessageLimits.TotalArtifactBytes() > 1<<30 || client.MessageLimits.TotalArtifactBytes() < client.MessageLimits.MaxArtifactBytes {
+		return errors.New("backlog_v2: coordinator_client.message_limits max_total_artifact_bytes must be positive, at most 1 GiB, and at least max_artifact_bytes")
 	}
 	return nil
 }

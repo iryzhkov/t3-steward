@@ -767,9 +767,20 @@ type V2Transport struct {
 }
 
 type V2MessageLimits struct {
-	MaxBytes         int64 `yaml:"max_bytes"`
-	MaxFiles         int   `yaml:"max_files"`
-	MaxArtifactBytes int64 `yaml:"max_artifact_bytes"`
+	MaxBytes              int64 `yaml:"max_bytes"`
+	MaxFiles              int   `yaml:"max_files"`
+	MaxArtifactBytes      int64 `yaml:"max_artifact_bytes"`
+	MaxTotalArtifactBytes int64 `yaml:"max_total_artifact_bytes"`
+}
+
+// TotalArtifactBytes preserves the former aggregate bound for callers that
+// construct legacy settings directly. Loaded configuration uses the explicit,
+// validated aggregate default.
+func (limits V2MessageLimits) TotalArtifactBytes() int64 {
+	if limits.MaxTotalArtifactBytes == 0 {
+		return limits.MaxArtifactBytes
+	}
+	return limits.MaxTotalArtifactBytes
 }
 
 type V2Freshness struct {
@@ -949,6 +960,7 @@ func Default() Config {
 	c.BacklogV2.MessageLimits.MaxBytes = 4 << 20
 	c.BacklogV2.MessageLimits.MaxFiles = 1000
 	c.BacklogV2.MessageLimits.MaxArtifactBytes = 1 << 30
+	c.BacklogV2.MessageLimits.MaxTotalArtifactBytes = 1 << 30
 	c.BacklogV2.Freshness.WorkerMaxAge = Duration(1 * time.Minute)
 	c.BacklogV2.Freshness.QuotaMaxAge = Duration(1 * time.Minute)
 	c.BacklogV2.Leases.Duration = Duration(2 * time.Minute)

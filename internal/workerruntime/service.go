@@ -112,6 +112,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 	if err != nil {
 		return nil, fmt.Errorf("worker service: %w", err)
 	}
+	maxTotalArtifactBytes := options.Settings.MessageLimits.TotalArtifactBytes()
 	custody, err := OpenCustodyStore(CustodyConfig{
 		Root:             artifactRoot,
 		SecretScan:       SecretScanConfig{MaxBytes: options.Settings.ResultSecretScan.MaxObjectBytes, PatternPolicy: options.Settings.ResultSecretScan.PatternPolicy, Canaries: serviceScanCanaries(options, credentials, journalRoot), Log: options.Logger},
@@ -120,7 +121,7 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 		WorkerID:         options.WorkerID,
 		WorkerEpoch:      options.WorkerEpoch,
 		MaxArtifactBytes: options.Settings.MessageLimits.MaxArtifactBytes,
-		MaxTotalBytes:    options.Settings.MessageLimits.MaxArtifactBytes,
+		MaxTotalBytes:    maxTotalArtifactBytes,
 		Now:              options.Now,
 	})
 	if err != nil {

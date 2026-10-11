@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -44,7 +45,7 @@ func TestExecutionPackageObjectsIncludeCommitBundles(t *testing.T) {
 			{WorkflowRunID: "run-1", TaskID: "task-producer", Name: "followup", Omitted: "over the total"},
 		},
 	})
-	if len(objects) != 2 || objects[1] != bundle {
+	if len(objects) != 2 || !reflect.DeepEqual(objects[1], bundle) {
 		t.Fatalf("delivered objects = %+v", objects)
 	}
 }

@@ -94,6 +94,20 @@ func TestArtifactGetRejectsOversizedInlineContent(t *testing.T) {
 	}
 }
 
+func TestArtifactGetDownloadsLargeLogicalOutput(t *testing.T) {
+	raw := bytes.Repeat([]byte("x"), 26929544)
+	fake := &fakeArtifactService{content: backlogadmin.ArtifactContent{Metadata: backlogadmin.ArtifactMetadata{ID: "artifact-large", MediaType: "application/json", Size: int64(len(raw))}, Content: io.NopCloser(bytes.NewReader(raw))}}
+	destination := filepath.Join(testutil.RealTempDir(t), "metrics.json")
+	cli := backlogAdminCLI{artifacts: fake, principal: backlogadmin.Principal{ID: "operator"}, stdout: io.Discard}
+	if err := cli.runBacklog(context.Background(), []string{"artifact", "get", "artifact-large", "--output", destination}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("large download changed: %v", err)
+	}
+}
+
 func TestArtifactDownloadRejectsSymlinkDirectory(t *testing.T) {
 	content := "download"
 	fake := &fakeArtifactService{content: backlogadmin.ArtifactContent{

@@ -124,7 +124,11 @@ func (s *WorkerService) ServeArtifactSendEnvelope(ctx context.Context, envelope 
 	if err != nil {
 		return err
 	}
-	for _, object := range pending.Manifest.Objects {
+	objects, err := workerproto.SelectedArtifactObjects(pending.Manifest, request.Selection)
+	if err != nil {
+		return err
+	}
+	for _, object := range objects {
 		if err := ctx.Err(); err != nil {
 			return err
 		}

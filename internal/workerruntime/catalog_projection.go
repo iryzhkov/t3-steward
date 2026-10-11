@@ -94,7 +94,7 @@ func (p CatalogProjection) Settings(bootstrap WorkerBootstrap, home string) (con
 	}
 	root := config.WorkerStorageRoot(home)
 	settings.Storage = config.V2Storage{Bundles: filepath.Join(root, "bundles"), Artifacts: filepath.Join(root, "artifacts"), Workspaces: filepath.Join(root, "workspaces")}
-	if p.MessageLimits.MaxBytes > 8<<20 || p.MessageLimits.MaxArtifactBytes > 16<<20 || p.Transport.RequestTimeout.D() > 2*time.Minute || p.Freshness.WorkerMaxAge.D() > 5*time.Minute {
+	if p.MessageLimits.MaxBytes > 8<<20 || p.MessageLimits.MaxArtifactBytes > 16<<20 || p.MessageLimits.TotalArtifactBytes() <= 0 || p.MessageLimits.TotalArtifactBytes() > 1<<30 || p.MessageLimits.TotalArtifactBytes() < p.MessageLimits.MaxArtifactBytes || p.Transport.RequestTimeout.D() > 2*time.Minute || p.Freshness.WorkerMaxAge.D() > 5*time.Minute {
 		return config.BacklogV2{}, errors.New("catalog exceeds host runtime bounds")
 	}
 	c := config.Default()

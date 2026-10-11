@@ -104,12 +104,12 @@ func cmdCoordinatorExchange(g globalFlags, operation string) error {
 			Path:               socketPath,
 			CoordinatorID:      cfg.BacklogV2.Coordinator.ID,
 			MaxResponseBytes:   cfg.BacklogV2.MessageLimits.MaxBytes,
-			MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.MaxArtifactBytes,
+			MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.TotalArtifactBytes(),
 			MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
 			RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
 		},
 		MaxRequestBytes:    cfg.BacklogV2.MessageLimits.MaxBytes,
-		MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.MaxArtifactBytes,
+		MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.TotalArtifactBytes(),
 		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
 	})
 	if err != nil {

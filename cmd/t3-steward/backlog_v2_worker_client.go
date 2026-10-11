@@ -290,6 +290,10 @@ func importCoordinatorWorkerResult(ctx context.Context, session coordinatorWorke
 	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
 		return report, fmt.Errorf("coordinator worker result import requires control, artifact transport, and a positive limit")
 	}
+	maxTotalBytes := session.Importer.MaxTotalBytes
+	if maxTotalBytes == 0 {
+		maxTotalBytes = maxArtifactBytes
+	}
 	// Uploads are discovered one at a time. A result that cannot be imported
 	// yet is skipped for the rest of this pass so it does not hide the results
 	// behind it; discarded uploads are acknowledged and the poll continues.
@@ -327,7 +331,7 @@ func importCoordinatorWorkerResult(ctx context.Context, session coordinatorWorke
 	if upload == nil {
 		return report, nil
 	}
-	fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
+	fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxTotalBytes)
 	if err != nil {
 		return report, err
 	}
@@ -402,6 +406,10 @@ func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWo
 	if session.Client == nil || session.ArtifactClient == nil || maxArtifactBytes < 1 {
 		return report, fmt.Errorf("coordinator worker checkpoint import requires control, artifact transport, and a positive limit")
 	}
+	maxTotalBytes := session.CheckpointImporter.MaxTotalBytes
+	if maxTotalBytes == 0 {
+		maxTotalBytes = maxArtifactBytes
+	}
 	excluded := session.CheckpointSkips.excluded()
 	finished := func() {
 		if !continuationsOnly {
@@ -433,7 +441,7 @@ func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWo
 			excluded = append(excluded, id)
 			continue
 		}
-		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxArtifactBytes)
+		fetched, err := session.ArtifactClient.FetchArtifact(ctx, *upload, maxArtifactBytes, maxTotalBytes)
 		if err != nil && !session.ArtifactClient.Usable() {
 			session.CheckpointSkips.add(id)
 			return report, err
@@ -674,26 +682,27 @@ func newCoordinatorWorkerSession(
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 			Store: store, Artifacts: artifacts,
 			MaxArtifactBytes: settings.MessageLimits.MaxArtifactBytes,
-			MaxTotalBytes:    settings.MessageLimits.MaxArtifactBytes,
+			MaxTotalBytes:    settings.MessageLimits.TotalArtifactBytes(),
 		},
 		CheckpointImporter: backlog.CoordinatorCheckpointImporter{
 			CoordinatorID: settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 			Store: store, Artifacts: artifacts,
 			MaxArtifactBytes: settings.MessageLimits.MaxArtifactBytes,
-			MaxTotalBytes:    settings.MessageLimits.MaxArtifactBytes,
+			MaxTotalBytes:    settings.MessageLimits.TotalArtifactBytes(),
 		},
 		Builder: coordinatorDeliveringOfferBuilder{
 			Base: backlog.CoordinatorOfferBuilder{
 				Authorization: &binding.Inventory,
 				Store:         store, Catalog: binding.Catalog, CatalogRevision: binding.CatalogRevision,
 				ActivationEvidence: &artifacts,
+				Artifacts:          &artifacts,
 				CoordinatorID:      settings.Coordinator.ID, CoordinatorEpoch: coordinatorEpoch,
 				VerificationTimeout: settings.Verification.CommandTimeout.D(),
 				// An overseer activation's preparation is a protocol-sized step;
 				// it keeps the request timeout it always had.
 				ActivationPrepareTimeout: requestTimeout,
 				MaxArtifactBytes:         settings.MessageLimits.MaxArtifactBytes,
-				MaxTotalBytes:            settings.MessageLimits.MaxArtifactBytes,
+				MaxTotalBytes:            settings.MessageLimits.TotalArtifactBytes(),
 				// WorkerCapabilities stays nil on purpose: the builder then reads
 				// what the worker reported about itself, which is the only source
 				// that knows which build is running on that host.
@@ -714,7 +723,7 @@ func newCoordinatorWorkerSession(
 			RequestTimeout:   requestTimeout,
 			RetryPolicy:      workerproto.RetryPolicy{MaxAttempts: 3, BaseDelay: 250 * time.Millisecond, MaxDelay: 2 * time.Second},
 			MaxArtifactBytes: settings.MessageLimits.MaxArtifactBytes,
-			MaxTotalBytes:    settings.MessageLimits.MaxArtifactBytes,
+			MaxTotalBytes:    settings.MessageLimits.TotalArtifactBytes(),
 			Now:              time.Now,
 		},
 	}, nil

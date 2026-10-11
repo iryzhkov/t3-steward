@@ -57,37 +57,28 @@ func (b coordinatorDeliveringOfferBuilder) BuildAssignmentOffer(ctx context.Cont
 
 func (b coordinatorDeliveringOfferBuilder) deliver(ctx context.Context, offer workerproto.AssignmentOffer) error {
 	objects := executionPackageObjects(offer.Package.Package)
-	now := b.Now().UTC()
-	manifest := workerproto.ArtifactTransferManifest{
-		Version: workerproto.ArtifactManifestVersion, Direction: "download",
-		CoordinatorEpoch: b.CoordinatorEpoch, WorkerID: b.WorkerID, WorkerEpoch: b.WorkerEpoch,
-		AssignmentID: offer.Assignment.ID, AssignmentEpoch: offer.Assignment.Epoch,
-		Objects: objects, CreatedAt: now, ExpiresAt: offer.ExpiresAt,
-	}
+	var total int64
+	hasParts := false
 	for _, object := range objects {
-		if object.Size > b.MaxTotalBytes-manifest.TotalBytes {
+		if object.Size > b.MaxTotalBytes-total {
 			return errors.New("artifact download exceeds aggregate limit")
 		}
-		manifest.TotalBytes += object.Size
+		if len(object.Parts) == 0 && object.Size > min(b.MaxArtifactBytes, workerproto.StreamArtifactLimit) {
+			return fmt.Errorf("artifact %q requires bounded transfer parts", object.ID)
+		}
+		if err := workerproto.ValidateArtifactObject(object, b.MaxArtifactBytes); err != nil {
+			return err
+		}
+		total += object.Size
+		hasParts = hasParts || len(object.Parts) != 0
 	}
-	identity, err := json.Marshal(manifest)
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(identity)
-	manifest.ID = "download-" + hex.EncodeToString(sum[:16])
-	if err := workerproto.ValidateArtifactTransferManifest(manifest, b.MaxArtifactBytes, b.MaxTotalBytes, now); err != nil {
-		return err
-	}
-
 	stage, err := os.CreateTemp("", "t3-steward-artifact-download-*")
 	if err != nil {
 		return err
 	}
-	stagePath := stage.Name()
 	defer func() {
 		_ = stage.Close()
-		_ = os.Remove(stagePath)
+		_ = os.Remove(stage.Name())
 	}()
 	for _, object := range objects {
 		artifact, content, err := b.Artifacts.Open(ctx, object.ID)
@@ -98,25 +89,61 @@ func (b coordinatorDeliveringOfferBuilder) deliver(ctx context.Context, offer wo
 			content.Close()
 			return fmt.Errorf("artifact %q metadata changed before delivery", object.ID)
 		}
-		written, copyErr := io.CopyN(stage, content, object.Size)
+		verifyErr := workerproto.VerifyArtifact(io.TeeReader(content, stage), object, b.MaxArtifactBytes)
 		closeErr := content.Close()
-		if copyErr != nil {
-			return copyErr
+		if verifyErr != nil {
+			return verifyErr
 		}
 		if closeErr != nil {
 			return closeErr
-		}
-		if written != object.Size {
-			return fmt.Errorf("artifact %q was truncated", object.ID)
 		}
 	}
 	if err := stage.Sync(); err != nil {
 		return err
 	}
-	if _, err := stage.Seek(0, io.SeekStart); err != nil {
+	// Retain the original single manifest for packages that fit the suffix.
+	if total <= workerproto.StreamArtifactLimit && !hasParts {
+		return b.deliverManifest(ctx, offer, objects, io.NewSectionReader(stage, 0, total), total)
+	}
+	var offset int64
+	for _, object := range objects {
+		physical := []workerproto.ArtifactObject{object}
+		if len(object.Parts) != 0 {
+			physical = make([]workerproto.ArtifactObject, len(object.Parts))
+			for index := range object.Parts {
+				physical[index] = workerproto.ArtifactPartObject(object, index)
+			}
+		}
+		for _, part := range physical {
+			if part.Size > min(b.MaxArtifactBytes, workerproto.StreamArtifactLimit) {
+				return fmt.Errorf("artifact %q requires bounded transfer parts", object.ID)
+			}
+			if err := b.deliverManifest(ctx, offer, []workerproto.ArtifactObject{part}, io.NewSectionReader(stage, offset, part.Size), part.Size); err != nil {
+				return err
+			}
+			offset += part.Size
+		}
+	}
+	return nil
+}
+
+func (b coordinatorDeliveringOfferBuilder) deliverManifest(ctx context.Context, offer workerproto.AssignmentOffer, objects []workerproto.ArtifactObject, raw io.ReadSeeker, total int64) error {
+	now := b.Now().UTC()
+	manifest := workerproto.ArtifactTransferManifest{
+		Version: workerproto.ArtifactManifestVersion, Direction: "download",
+		CoordinatorEpoch: b.CoordinatorEpoch, WorkerID: b.WorkerID, WorkerEpoch: b.WorkerEpoch,
+		AssignmentID: offer.Assignment.ID, AssignmentEpoch: offer.Assignment.Epoch,
+		Objects: objects, TotalBytes: total, CreatedAt: now, ExpiresAt: offer.ExpiresAt,
+	}
+	identity, err := json.Marshal(manifest)
+	if err != nil {
 		return err
 	}
-
+	sum := sha256.Sum256(identity)
+	manifest.ID = "download-" + hex.EncodeToString(sum[:16])
+	if err := workerproto.ValidateArtifactTransferManifest(manifest, min(b.MaxArtifactBytes, workerproto.StreamArtifactLimit), min(b.MaxTotalBytes, workerproto.StreamArtifactLimit), now); err != nil {
+		return err
+	}
 	sessionID, err := newCoordinatorWorkerSessionID(b.CoordinatorID, b.WorkerID)
 	if err != nil {
 		return err
@@ -136,7 +163,7 @@ func (b coordinatorDeliveringOfferBuilder) deliver(ctx context.Context, offer wo
 	if err := workerproto.SignEnvelope(&request, b.SignerPrincipal, b.SignerKeyID, b.SignerSecret); err != nil {
 		return err
 	}
-	response, err := b.Transport.RoundTripArtifactDownloadWithRetry(ctx, request, b.RetryPolicy, stage, manifest.TotalBytes)
+	response, err := b.Transport.RoundTripArtifactDownloadWithRetry(ctx, request, b.RetryPolicy, raw, manifest.TotalBytes)
 	if err != nil {
 		return err
 	}

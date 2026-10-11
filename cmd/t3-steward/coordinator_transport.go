@@ -265,7 +265,7 @@ func newCoordinatorTransportAs(cfg config.Config, identity supervisorIdentity) (
 			Credentials:        credentials,
 			RequestTimeout:     client.RequestTimeout.D(),
 			MaxResponseBytes:   client.MessageLimits.MaxBytes,
-			MaxArtifactBytes:   client.MessageLimits.MaxArtifactBytes,
+			MaxArtifactBytes:   client.MessageLimits.TotalArtifactBytes(),
 			MaxSubmissionBytes: client.MessageLimits.MaxBytes,
 			ControlDir:         controlDir,
 		})
@@ -299,7 +299,7 @@ func newCoordinatorTransportAs(cfg config.Config, identity supervisorIdentity) (
 			Path:               socketPath,
 			CoordinatorID:      cfg.BacklogV2.Coordinator.ID,
 			MaxResponseBytes:   cfg.BacklogV2.MessageLimits.MaxBytes,
-			MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.MaxArtifactBytes,
+			MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.TotalArtifactBytes(),
 			MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
 			RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
 		},

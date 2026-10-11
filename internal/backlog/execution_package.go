@@ -57,6 +57,8 @@ type CoordinatorOfferBuilder struct {
 	Supervision SupervisionOfferSource
 	// ActivationEvidence retains and retrieves immutable activation snapshots.
 	ActivationEvidence *CoordinatorArtifactStore
+	// Artifacts retrieves dependency content to bind bounded transfer parts.
+	Artifacts *CoordinatorArtifactStore
 	// SupervisorPrincipal and SupervisorCredentialReference describe the admin
 	// client an overseer authenticates as on the worker host. See the
 	// co-tenancy limitation recorded on workerproto.SupervisionActivation.
@@ -163,6 +165,27 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if err != nil {
 		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependencies: %w", err)
 	}
+	inputBytes := prompt.Size
+	for _, object := range staticInputs {
+		if object.Size > b.MaxTotalBytes-inputBytes {
+			return workerproto.AssignmentOffer{}, errors.New("execution package builder: aggregate artifact limit exceeded")
+		}
+		inputBytes += object.Size
+	}
+	for _, dependency := range dependencies {
+		for _, object := range dependency.Artifacts {
+			if object.Size > b.MaxTotalBytes-inputBytes {
+				return workerproto.AssignmentOffer{}, errors.New("execution package builder: aggregate artifact limit exceeded")
+			}
+			inputBytes += object.Size
+		}
+	}
+	if inputBytes > b.MaxTotalBytes {
+		return workerproto.AssignmentOffer{}, errors.New("execution package builder: aggregate artifact limit exceeded")
+	}
+	if err := b.splitDependencyArtifacts(ctx, dependencies); err != nil {
+		return workerproto.AssignmentOffer{}, fmt.Errorf("execution package builder: dependency parts: %w", err)
+	}
 	// Bundles are budgeted after every other input, so that they can never
 	// make an otherwise valid package exceed its total byte limit.
 	budget := commitBundleBudget{Remaining: b.MaxTotalBytes - prompt.Size, MaxTotalBytes: b.MaxTotalBytes, MaxArtifactBytes: b.MaxArtifactBytes}
@@ -266,6 +289,41 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 // build one the selected worker cannot honour. Capability negotiation happens
 // before dispatch: a worker that does not understand preflight is never handed
 // a package whose evidence it would silently never produce.
+// splitDependencyArtifacts binds transfer metadata to the immutable complete
+// dependency artifact without changing its logical identity or input path.
+func (b CoordinatorOfferBuilder) splitDependencyArtifacts(ctx context.Context, dependencies []workerproto.DependencyInput) error {
+	limit := min(b.MaxArtifactBytes, workerproto.StreamArtifactLimit)
+	for dependencyIndex := range dependencies {
+		for objectIndex := range dependencies[dependencyIndex].Artifacts {
+			object := &dependencies[dependencyIndex].Artifacts[objectIndex]
+			if object.Size <= limit {
+				continue
+			}
+			if b.Artifacts == nil {
+				return fmt.Errorf("artifact %q requires content storage for bounded parts", object.ID)
+			}
+			artifact, content, err := b.Artifacts.Open(ctx, object.ID)
+			if err != nil {
+				return err
+			}
+			if artifact.ID != object.ID || artifact.Size != object.Size || artifact.SHA256 != object.SHA256 {
+				content.Close()
+				return fmt.Errorf("artifact %q metadata changed before splitting", object.ID)
+			}
+			split, splitErr := workerproto.SplitArtifact(content, *object, limit)
+			closeErr := content.Close()
+			if splitErr != nil {
+				return splitErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+			*object = split
+		}
+	}
+	return nil
+}
+
 type recoverySupplementStore interface {
 	LoadRecoverySupplement(context.Context, string) (domain.RepairAttemptSupplement, bool, error)
 }

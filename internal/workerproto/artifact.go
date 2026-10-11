@@ -15,13 +15,14 @@ import (
 const ArtifactManifestVersion = 1
 
 type ArtifactObject struct {
-	ID            string `json:"id"`
-	Path          string `json:"path"`
-	Kind          string `json:"kind"`
-	MediaType     string `json:"mediaType"`
-	Size          int64  `json:"size"`
-	SHA256        string `json:"sha256"`
-	ArchiveFormat string `json:"archiveFormat,omitempty"`
+	ID            string         `json:"id"`
+	Path          string         `json:"path"`
+	Kind          string         `json:"kind"`
+	MediaType     string         `json:"mediaType"`
+	Size          int64          `json:"size"`
+	SHA256        string         `json:"sha256"`
+	ArchiveFormat string         `json:"archiveFormat,omitempty"`
+	Parts         []ArtifactPart `json:"parts,omitempty"`
 }
 
 type ArtifactTransferManifest struct {
@@ -45,8 +46,9 @@ type ArtifactUploadRequest struct {
 }
 
 type ArtifactDownloadRequest struct {
-	ManifestID string   `json:"manifestId"`
-	ObjectIDs  []string `json:"objectIds"`
+	ManifestID string             `json:"manifestId"`
+	ObjectIDs  []string           `json:"objectIds"`
+	Selection  *ArtifactSelection `json:"selection,omitempty"`
 }
 
 // ArtifactDownloadReceipt proves a complete manifest entered worker custody.
@@ -118,6 +120,9 @@ func ValidateArtifactObject(object ArtifactObject, maxBytes int64) error {
 	}
 	if object.ArchiveFormat != "" && object.ArchiveFormat != "tar" {
 		return errors.New("artifact: unsupported archive format")
+	}
+	if len(object.Parts) > 0 {
+		return validateArtifactParts(object, maxBytes)
 	}
 	if object.Size > maxBytes {
 		return NewArtifactSizeError("object", maxBytes, uint64(object.Size), object)
@@ -192,6 +197,9 @@ func ValidateArtifactTransferManifest(manifest ArtifactTransferManifest, maxArti
 func VerifyArtifact(reader io.Reader, object ArtifactObject, maxBytes int64) error {
 	if err := ValidateArtifactObject(object, maxBytes); err != nil {
 		return err
+	}
+	if len(object.Parts) > 0 {
+		return verifyArtifactParts(reader, object, maxBytes)
 	}
 	hash := sha256.New()
 	n, err := io.Copy(hash, io.LimitReader(reader, maxBytes+1))

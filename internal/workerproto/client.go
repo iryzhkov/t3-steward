@@ -244,45 +244,15 @@ func (c *Client) FetchArtifact(ctx context.Context, announced ArtifactUploadResp
 	if err := ctx.Err(); err != nil {
 		return FetchedArtifactUpload{}, err
 	}
-	c.sequence++
-	now := c.config.Now().UTC()
-	requestID := c.config.SessionID + "-" + strconv.FormatInt(c.sequence, 10)
 	objectIDs := make([]string, 0, len(manifest.Objects))
 	for _, object := range manifest.Objects {
 		objectIDs = append(objectIDs, object.ID)
 	}
-	request, err := NewEnvelope(
-		MessageArtifactUpload, c.config.SessionID, requestID,
-		c.config.CoordinatorID, c.config.WorkerID,
-		c.config.CoordinatorEpoch, c.config.WorkerEpoch, c.sequence,
-		now, now.Add(c.config.RequestTimeout),
-		ArtifactDownloadRequest{ManifestID: manifest.ID, ObjectIDs: objectIDs},
-	)
+	raw, err := c.fetchArtifactBytes(ctx, transport, announced, objectIDs, maxTotalBytes)
 	if err != nil {
 		return FetchedArtifactUpload{}, err
 	}
-	if err := SignEnvelope(&request, c.config.SignerPrincipal, c.config.SignerKeyID, c.config.SignerSecret); err != nil {
-		return FetchedArtifactUpload{}, err
-	}
-	responseEnvelope, raw, err := transport.RoundTripArtifactWithRetry(ctx, request, c.config.RetryPolicy, maxTotalBytes)
-	if err != nil {
-		c.unusable = true
-		return FetchedArtifactUpload{}, fmt.Errorf("worker protocol client: artifact exchange %s: %w", requestID, err)
-	}
-	if responseEnvelope.Type == MessageError {
-		var protocolErr ProtocolError
-		if err := DecodePayload(responseEnvelope, MessageError, &protocolErr); err != nil {
-			return FetchedArtifactUpload{}, err
-		}
-		return FetchedArtifactUpload{}, &protocolErr
-	}
-	var response ArtifactUploadResponse
-	if err := DecodePayload(responseEnvelope, MessageArtifactUpload, &response); err != nil {
-		return FetchedArtifactUpload{}, err
-	}
-	if !reflect.DeepEqual(response, announced) {
-		return FetchedArtifactUpload{}, errors.New("worker protocol client: fetched artifact metadata changed after announcement")
-	}
+	response := announced
 	if int64(len(raw)) != manifest.TotalBytes {
 		return FetchedArtifactUpload{}, errors.New("worker protocol client: fetched artifact payload size mismatch")
 	}

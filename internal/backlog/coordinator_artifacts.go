@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
 // ArtifactCatalog is the coordinator persistence seam for immutable artifact
@@ -124,12 +125,22 @@ func (s CoordinatorArtifactStore) Publish(ctx context.Context, publication domai
 		keepStage = true
 		createdObject = true
 	}
+	if artifact.Producer != "submission" && artifact.Size > workerproto.StreamArtifactLimit {
+		if err := retainArtifactParts(objectPath, objectPath, artifact); err != nil {
+			if createdObject {
+				_ = os.Remove(objectPath)
+				_ = removeArtifactParts(objectPath + ".parts")
+			}
+			return domain.Artifact{}, fmt.Errorf("publish artifact parts: %w", err)
+		}
+	}
 	committed, err := s.Catalog.CommitArtifactPublication(ctx, publication)
 	if err != nil {
 		if createdObject {
 			referenced, referenceErr := s.Catalog.ArtifactStoragePathReferenced(ctx, artifact.StoragePath)
 			if referenceErr == nil && !referenced {
 				_ = os.Remove(objectPath)
+				_ = removeArtifactParts(objectPath + ".parts")
 			}
 		}
 		return domain.Artifact{}, fmt.Errorf("publish artifact metadata: %w", err)
@@ -184,6 +195,34 @@ func (s CoordinatorArtifactStore) Open(ctx context.Context, artifactID string) (
 	}
 	if size != artifact.Size || !strings.EqualFold(hex.EncodeToString(digest.Sum(nil)), artifact.SHA256) {
 		return domain.Artifact{}, nil, errors.New("open artifact: checksum mismatch")
+	}
+	if artifact.Producer != "submission" && artifact.Size > workerproto.StreamArtifactLimit {
+		expected := workerproto.ArtifactObject{
+			ID: "retained", Path: "content", Kind: "blob",
+			MediaType: "application/octet-stream", Size: artifact.Size, SHA256: strings.ToLower(artifact.SHA256),
+		}
+		// Objects retained by an older release have no sidecar. Rebuild it
+		// only from the already verified whole file, under the publication lock.
+		// An existing sidecar (including a missing/corrupt part) is never repaired.
+		if _, statErr := os.Lstat(objectPath + ".parts"); errors.Is(statErr, os.ErrNotExist) {
+			lock, lockErr := acquireFileLock(ctx, root, "artifact-object:"+artifact.StoragePath)
+			if lockErr != nil {
+				return domain.Artifact{}, nil, lockErr
+			}
+			retainErr := retainArtifactParts(objectPath, objectPath, artifact)
+			closeErr := lock.Close()
+			if retainErr != nil {
+				return domain.Artifact{}, nil, fmt.Errorf("open artifact: migrate retained parts: %w", retainErr)
+			}
+			if closeErr != nil {
+				return domain.Artifact{}, nil, closeErr
+			}
+		} else if statErr != nil {
+			return domain.Artifact{}, nil, statErr
+		}
+		if err := verifyRetainedArtifactParts(objectPath, expected); err != nil {
+			return domain.Artifact{}, nil, fmt.Errorf("open artifact: verify retained parts: %w", err)
+		}
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return domain.Artifact{}, nil, fmt.Errorf("open artifact: rewind content: %w", err)
@@ -279,6 +318,12 @@ func (s CoordinatorArtifactStore) Prune(
 		}
 		if !referenced {
 			err = os.Remove(path)
+			if err == nil || errors.Is(err, os.ErrNotExist) {
+				if partsErr := removeArtifactParts(path + ".parts"); partsErr != nil {
+					_ = lifecycleLock.Close()
+					return expired, skipped, fmt.Errorf("prune artifacts: remove parts for blob %q: %w", artifact.StoragePath, partsErr)
+				}
+			}
 		}
 		closeErr := lifecycleLock.Close()
 		if err != nil && !errors.Is(err, os.ErrNotExist) {

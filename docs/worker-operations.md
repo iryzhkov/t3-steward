@@ -44,9 +44,23 @@ worker socket. `connection: unix` uses the address as a local socket path,
 with the same signed protocol. Neither transport grants coordinator admin
 authority.
 
-Persistent connections require message limits at most 8 MiB, artifact transfers
-at most 16 MiB, request timeouts at most two minutes, and snapshot freshness at
-most five minutes. The coordinator supplies a scoped execution catalog over
+Persistent connections require message limits at most 8 MiB, physical artifact
+parts and transfers at most 16 MiB, request timeouts at most two minutes, and
+snapshot freshness at most five minutes. Oversized declared outputs carry an
+ordered part manifest with SHA-256 for each part and for the complete file.
+Workers and the coordinator reconstruct and verify one logical artifact for
+retrieval and `.t3/dependencies`. `message_limits.max_total_artifact_bytes`
+bounds each task result upload and input download separately (default and maximum
+1 GiB; zero retains the previous `max_artifact_bytes` aggregate for legacy
+settings); `max_artifact_bytes` still bounds each physical object. A tighter configured
+per-object limit below 16 MiB remains an explicit collection policy for ordinary
+outputs. Outputs at or below 16 MiB retain their existing representation.
+Pause scheduling, upgrade the coordinator and all producing and consuming workers,
+then regenerate and activate their authenticated catalogs before resuming work.
+Mixed-release catalogs are not supported; complete this upgrade before scheduling
+oversized outputs. No database schema migration is required. Coordinator retention keeps
+verified parts and a whole-file copy for existing file-based consumers, so allow
+up to twice the logical retained bytes on disk for split outputs. The coordinator supplies a scoped execution catalog over
 the authenticated connection. Catalog and execution sessions have independent
 replay sequences. Lost responses retry the identical signed intent.
 

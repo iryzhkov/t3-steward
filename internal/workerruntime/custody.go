@@ -148,6 +148,9 @@ func (s *CustodyStore) ReceiveDownload(ctx context.Context, manifest workerproto
 
 // OpenArtifact opens a verified content-addressed object for workspace materialization.
 func (s *CustodyStore) OpenArtifact(_ context.Context, object workerproto.ArtifactObject) (io.ReadCloser, error) {
+	if len(object.Parts) > 0 {
+		return s.openSplitArtifact(object)
+	}
 	if err := workerproto.ValidateArtifactObject(object, s.config.MaxArtifactBytes); err != nil {
 		return nil, err
 	}
@@ -332,6 +335,11 @@ func (s *CustodyStore) AdmitResult(pkg workerproto.ExecutionPackage, result Publ
 }
 
 func (s *CustodyStore) admitPlannedResult(ctx context.Context, pkg workerproto.ExecutionPackage, result PublishedResult, planned []resultObject) error {
+	var err error
+	planned, err = s.splitResultObjects(pkg, result.Finalized, planned)
+	if err != nil {
+		return err
+	}
 	objects := make([]workerproto.ArtifactObject, 0, len(planned))
 	for _, entry := range planned {
 		objects = append(objects, entry.object)
@@ -368,6 +376,10 @@ func (s *CustodyStore) PublishResult(ctx context.Context, pkg workerproto.Execut
 			"attempt", pkg.Identity.AttemptID, "size", len(full), "compacted", len(result.ThreadArchive), "retained", retained)
 	}
 	planned, err := resultObjects(pkg, result)
+	if err != nil {
+		return err
+	}
+	planned, err = s.splitResultObjects(pkg, result.Finalized, planned)
 	if err != nil {
 		return err
 	}
@@ -427,11 +439,18 @@ func boundThreadArchive(pkg workerproto.ExecutionPackage, result PublishedResult
 	for _, entry := range planned[:len(planned)-1] {
 		others = append(others, entry.object)
 	}
-	total, err := workerproto.ValidateUploadObjects(others, limits.object, limits.total)
+	objectLimit := limits.total
+	if limits.object < workerproto.StreamArtifactLimit {
+		objectLimit = limits.object
+	}
+	total, err := workerproto.ValidateUploadObjects(others, objectLimit, limits.total)
 	if err != nil {
 		return result
 	}
-	room := min(limits.object, limits.total-total)
+	room := limits.total - total
+	if limits.object < workerproto.StreamArtifactLimit {
+		room = min(room, limits.object)
+	}
 	if int64(len(result.ThreadArchive)) <= room {
 		return result
 	}
@@ -609,6 +628,9 @@ func (s *CustodyStore) PendingUploadFor(request workerproto.ArtifactDownloadRequ
 		want := make([]string, 0, len(upload.Manifest.Objects))
 		for _, object := range upload.Manifest.Objects {
 			want = append(want, object.ID)
+		}
+		if _, err := workerproto.SelectedArtifactObjects(upload.Manifest, request.Selection); err != nil {
+			return PendingUpload{}, err
 		}
 		if !slices.Equal(want, request.ObjectIDs) {
 			return PendingUpload{}, errors.New("pending upload: request must name every object in manifest order")
@@ -850,6 +872,9 @@ func (s *CustodyStore) validateManifest(manifest workerproto.ArtifactTransferMan
 }
 
 func (s *CustodyStore) storeObject(reader io.Reader, object workerproto.ArtifactObject) error {
+	if len(object.Parts) > 0 {
+		return s.storeSplitArtifact(reader, object)
+	}
 	if err := workerproto.ValidateArtifactObject(object, s.config.MaxArtifactBytes); err != nil {
 		return err
 	}

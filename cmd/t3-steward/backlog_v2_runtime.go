@@ -1105,7 +1105,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		CoordinatorID:      cfg.BacklogV2.Coordinator.ID,
 		Approvers:          approvers,
 		MaxRequestBytes:    int64(cfg.BacklogV2.MessageLimits.MaxBytes),
-		MaxArtifactBytes:   int64(cfg.BacklogV2.MessageLimits.MaxArtifactBytes),
+		MaxArtifactBytes:   cfg.BacklogV2.MessageLimits.TotalArtifactBytes(),
 		MaxSubmissionBytes: cfg.BacklogV2.MessageLimits.MaxBytes,
 		RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
 		MaxConcurrent:      16,
