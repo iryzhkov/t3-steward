@@ -74,12 +74,14 @@ type PlanningAttemptOrdering struct {
 }
 
 type PlanningOrder struct {
-	DeadlineRisk         bool      `json:"deadlineRisk"`
-	DeadlineSlackSeconds *int64    `json:"deadlineSlackSeconds,omitempty"`
-	Importance           int       `json:"importance"`
-	ReadySince           time.Time `json:"readySince"`
-	PriorDeferrals       int       `json:"priorDeferrals"`
-	WorkflowRound        int       `json:"workflowRound"`
+	DeadlineRisk         bool   `json:"deadlineRisk"`
+	DeadlineSlackSeconds *int64 `json:"deadlineSlackSeconds,omitempty"`
+	Importance           int    `json:"importance"`
+	// InFlight means this workflow run already has a succeeded task.
+	InFlight       bool      `json:"inFlight"`
+	ReadySince     time.Time `json:"readySince"`
+	PriorDeferrals int       `json:"priorDeferrals"`
+	WorkflowRound  int       `json:"workflowRound"`
 	// NestedUnder names the live parent attempt this task's run was submitted
 	// from. Its ready time is no later than that parent's start.
 	NestedUnder string `json:"nestedUnder,omitempty"`
@@ -308,6 +310,13 @@ func orderedPlanningTasks(input PlanInput) ([]planningTaskEntry, error) {
 			return nil, fmt.Errorf("plan workflow run %q: %w", workflow.State.Run.ID, err)
 		}
 		state := execution.Snapshot()
+		inFlight := false
+		for _, attempt := range state.Attempts {
+			if attempt.Progress == domain.ProgressSucceeded {
+				inFlight = true
+				break
+			}
+		}
 		for _, task := range state.Tasks {
 			attempt := currentPlanningAttempt(state.Attempts, task.ID)
 			if attempt.Progress.Terminal() {
@@ -327,6 +336,7 @@ func orderedPlanningTasks(input PlanInput) ([]planningTaskEntry, error) {
 				return nil, fmt.Errorf("plan attempt %q prior deferrals must not be negative", attempt.ID)
 			}
 			order := planningOrder(input, task, history)
+			order.InFlight = inFlight
 			entries = append(entries, planningTaskEntry{
 				workflow: workflow.Workflow,
 				state:    state,
@@ -388,6 +398,10 @@ func planningOrder(input PlanInput, task domain.Task, history PlanningAttemptOrd
 	return order
 }
 
+// InFlightDeferralBound limits the finish-first preference to fewer than eight
+// planning deferrals. At this bound, existing fairness ordering takes precedence.
+const InFlightDeferralBound = 8
+
 func comparePlanningPriority(left, right planningTaskEntry) int {
 	if left.ready != right.ready {
 		if left.ready {
@@ -419,6 +433,17 @@ func comparePlanningPriority(left, right planningTaskEntry) int {
 		}
 		return 1
 	}
+	// Once either task reaches the bound, the existing deferral order wins.
+	// A bounded task always has more deferrals than an unbounded one, keeping
+	// this exception transitive across in-flight and fresh tasks.
+	if left.order.PriorDeferrals < InFlightDeferralBound &&
+		right.order.PriorDeferrals < InFlightDeferralBound &&
+		left.order.InFlight != right.order.InFlight {
+		if left.order.InFlight {
+			return -1
+		}
+		return 1
+	}
 	if left.order.PriorDeferrals != right.order.PriorDeferrals {
 		if left.order.PriorDeferrals > right.order.PriorDeferrals {
 			return -1
@@ -441,6 +466,11 @@ func planningOrderReason(order PlanningOrder) string {
 	}
 	reason := fmt.Sprintf("%s; importance %d; prior deferrals %d; ready since %s; workflow round %d",
 		prefix, order.Importance, order.PriorDeferrals, order.ReadySince.UTC().Format(time.RFC3339Nano), order.WorkflowRound)
+	if order.PriorDeferrals >= InFlightDeferralBound {
+		reason += fmt.Sprintf("; in-flight preference bypassed at deferral bound %d", InFlightDeferralBound)
+	} else if order.InFlight {
+		reason += fmt.Sprintf("; in-flight preference before fairness below %d deferrals", InFlightDeferralBound)
+	}
 	if order.NestedUnder != "" {
 		reason += fmt.Sprintf("; nested under live attempt %s", order.NestedUnder)
 	}
