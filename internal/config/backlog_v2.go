@@ -22,6 +22,9 @@ const (
 
 func (c *Config) validateBacklogV2() error {
 	v := &c.BacklogV2
+	if err := v.Coordinator.Alerts.validate(); err != nil {
+		return err
+	}
 	if v.ResultSecretScan.MaxObjectBytes < 0 {
 		return errors.New("backlog_v2.result_secret_scan.max_object_bytes must be nonnegative")
 	}

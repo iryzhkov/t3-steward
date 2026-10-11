@@ -539,6 +539,7 @@ type V2Verification struct {
 }
 
 type V2Coordinator struct {
+	Alerts            V2CoordinatorAlerts `yaml:"alerts"`
 	ID                string              `yaml:"id"`
 	ResourcePlacement V2ResourcePlacement `yaml:"resource_placement"`
 	// LegacyFileIntakeEnabled is a compatibility boolean. False/default is accepted;

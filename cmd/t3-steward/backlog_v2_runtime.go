@@ -1203,6 +1203,11 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	stopOwnerNotifier := startOwnerNotifier(ctx, cfg.Notifications, store,
 		ownerNotificationWorkers(service, cfg.Notifications.WorkerDownAfter.D(), appliedAt), logger)
 	defer stopOwnerNotifier()
+	stopAlerts, err := startCoordinatorAlerts(ctx, cfg, store)
+	if err != nil {
+		return fmt.Errorf("start coordinator alerts: %w", err)
+	}
+	defer stopAlerts.Close()
 	ready()
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }
