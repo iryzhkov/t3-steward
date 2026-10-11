@@ -91,6 +91,7 @@ func TestBusyWorkerAcceptsCapacityOnlyCatalogChange(t *testing.T) {
 	}
 	worker := settings.Workers["normandy"]
 	worker.CPUClass = "high"
+	worker.AcceptBacklog = false
 	worker.Executors.Slots = 6
 	worker.Executors.CPUUnits = 9
 	worker.Executors.MemoryMB = 30000
@@ -115,7 +116,7 @@ func TestBusyWorkerAcceptsCapacityOnlyCatalogChange(t *testing.T) {
 	}
 	runtime := host.service.Exchange.Runtime
 	inventory := runtime.desiredInventory
-	if inventory.CatalogRevision != changed.Revision || inventory.CPUClass != "high" ||
+	if inventory.CatalogRevision != changed.Revision || inventory.AcceptBacklog || inventory.CPUClass != "high" ||
 		inventory.Allocatable.ExecutorSlots != 6 || inventory.Allocatable.CPUUnits != 9 || inventory.Allocatable.MemoryMB != 30000 {
 		t.Fatalf("inventory did not adopt the new capacity: %+v", inventory)
 	}

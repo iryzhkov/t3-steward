@@ -295,10 +295,10 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 	if projection.Worker.Epoch != envelope.WorkerEpoch {
 		return refuse(errors.New("catalog worker epoch mismatch"))
 	}
-	// capacityOnly marks a change a busy worker adopts without draining: its
-	// cpu class and executor capacity are coordinator admission data, and no
-	// execution package depends on them.
-	capacityOnly := false
+	// capacityOnly marks admission data a worker adopts without replacing
+	// execution. Admission-only changes keep the revision, even while idle.
+	capacityOnly := h.retained != nil && h.retained.Projection.Revision == projection.Revision &&
+		capacityOnlyChange(h.retained.Projection, projection)
 	var pinned map[string]bool
 	if h.retained != nil && h.retained.Projection.Revision != projection.Revision {
 		attempts, err := h.retainedAttempts(settings)
@@ -330,18 +330,18 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		return nil, err
 	}
 	response, err := server.Handle(ctx, envelope, func(ctx context.Context, _ workerproto.Envelope) (workerproto.MessageType, any, error) {
-		if h.service != nil && h.retained != nil && h.retained.Projection.Revision == projection.Revision && h.Options.CoordinatorEpoch == envelope.CoordinatorEpoch && reflect.DeepEqual(credentials, h.activeCredentials) {
+		if h.service != nil && h.retained != nil && reflect.DeepEqual(h.retained.Projection, projection) && h.Options.CoordinatorEpoch == envelope.CoordinatorEpoch && reflect.DeepEqual(credentials, h.activeCredentials) {
 			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
 		}
 		next := retainedCatalog{Projection: projection, CoordinatorEpoch: envelope.CoordinatorEpoch, AppliedAt: time.Now().UTC()}
 		switch {
-		case capacityOnly:
+		case capacityOnly && h.retained.Projection.Revision != projection.Revision:
 			next.PreviousRevisions = appendPreviousRevision(h.retained.PreviousRevisions, h.retained.Projection.Revision, projection.Revision, pinned)
 		case h.retained != nil && h.retained.Projection.Revision == projection.Revision:
 			next.PreviousRevisions = slices.Clone(h.retained.PreviousRevisions)
 		}
 		if capacityOnly && h.Options.CoordinatorEpoch == envelope.CoordinatorEpoch && reflect.DeepEqual(credentials, h.activeCredentials) && h.service.canAdoptCatalogInPlace() {
-			// The running service adopts the new capacity in place: its
+			// The running service adopts the admission settings in place: its
 			// journal, packages and assignments are untouched, and packages of
 			// the previous revision stay executable.
 			raw, err := json.Marshal(next)
@@ -360,7 +360,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 			settings.ResultSecretScan = h.Options.Settings.ResultSecretScan
 			h.Options.Settings = settings
 			h.Options.CompatibleCatalogRevisions = slices.Clone(next.PreviousRevisions)
-			h.logger().Info("catalog capacity adopted while busy", "worker", h.Bootstrap.WorkerID, "revision", projection.Revision, "previous", next.PreviousRevisions)
+			h.logger().Info("catalog admission settings adopted in place", "worker", h.Bootstrap.WorkerID, "revision", projection.Revision, "previous", next.PreviousRevisions)
 			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
 		}
 		// Validate the complete runtime before publishing its durable pointer.

@@ -20,15 +20,16 @@ import (
 const maxPreviousCatalogRevisions = 32
 
 // capacityOnlyChange reports whether next differs from current only in the
-// worker's cpu class and executor capacity. Those are coordinator admission
-// data: the worker executes nothing differently because of them, so a busy
-// worker can adopt them without draining.
+// worker's admission flag, cpu class and executor capacity. Those are coordinator
+// admission data: execution packages do not depend on them, so a busy worker
+// can adopt them without draining.
 func capacityOnlyChange(current, next CatalogProjection) bool {
-	if current.Revision == next.Revision {
+	if reflect.DeepEqual(current, next) {
 		return false
 	}
 	neutral := func(p CatalogProjection) CatalogProjection {
 		p.Revision = ""
+		p.Worker.AcceptBacklog = false
 		p.Worker.CPUClass = ""
 		p.Worker.Executors = config.V2Executors{}
 		return p
@@ -181,9 +182,9 @@ func (s *WorkerService) canAdoptCatalogInPlace() bool {
 	return ok
 }
 
-// adoptCapacityCatalog applies a capacity-only catalog change to the running
+// adoptCapacityCatalog applies admission and capacity settings to the running
 // service in place: execution packages, the journal and every assignment stay
-// as they are, and the new capacity is what the next snapshot reports.
+// as they are, and the next snapshot reports the new settings.
 func (s *WorkerService) adoptCapacityCatalog(projection CatalogProjection, previous []string) error {
 	runtime := s.Exchange.Runtime
 	if runtime == nil {
@@ -194,6 +195,8 @@ func (s *WorkerService) adoptCapacityCatalog(projection CatalogProjection, previ
 		return errors.New("worker runtime cannot adopt a catalog in place")
 	}
 	driver.adoptCatalogRevision(projection.Revision, previous)
+	runtime.desiredInventory.AcceptBacklog = projection.Worker.AcceptBacklog
+	runtime.config.Inventory.AcceptBacklog = projection.Worker.AcceptBacklog
 	runtime.adoptCapacity(projection.Revision, domain.CPUClass(projection.Worker.CPUClass), domain.AllocatableCapacity{
 		ExecutorSlots: projection.Worker.Executors.Slots,
 		CPUUnits:      projection.Worker.Executors.CPUUnits,
