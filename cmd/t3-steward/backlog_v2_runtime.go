@@ -57,6 +57,10 @@ type coordinatorLocalService struct {
 	schedules   *backlog.ScheduleDefinitionService
 }
 
+func (s coordinatorLocalService) ExportCommit(ctx context.Context, p backlogadmin.Principal, r backlogadmin.CommitExportRequest) (backlogadmin.ArtifactContent, error) {
+	return s.admin.ExportCommit(ctx, p, r)
+}
+
 func (s coordinatorLocalService) EnrollWorker(ctx context.Context, p backlogadmin.Principal, r domain.WorkerEnrollmentRequest) (domain.WorkerEnrollment, error) {
 	return s.admin.EnrollWorker(ctx, p, r)
 }
