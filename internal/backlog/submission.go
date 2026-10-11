@@ -72,6 +72,7 @@ type SubmissionService struct {
 	DirectoryCatalogs map[string][]directoryresource.Binding
 	StorageRoot       string
 	Store             SubmissionStore
+	Artifacts         *CoordinatorArtifactStore
 	MaxBytes          int64
 	MaxFiles          int
 	Now               func() time.Time
@@ -234,6 +235,7 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		RegisterOnly:      request.RegisterOnly,
 		DirectoryCatalogs: s.DirectoryCatalogs,
 		StorageRoot:       s.StorageRoot,
+		Artifacts:         s.Artifacts,
 		Store:             s.Store,
 		// Reuse the exact successful permanent verdict without dialing again.
 		// A changed manifest cannot use this private validation receipt.

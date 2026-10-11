@@ -65,6 +65,8 @@ type BundleIngester struct {
 	DirectoryCatalogs map[string][]directoryresource.Binding
 	StorageRoot       string
 	Store             CoordinatorRecordStore
+	// Artifacts verifies cross-run inputs through coordinator artifact custody.
+	Artifacts *CoordinatorArtifactStore
 	// Permanent, when set, refuses a permanently impossible manifest before any
 	// record is built or any file is staged.
 	Roles     ManifestRoleResolver

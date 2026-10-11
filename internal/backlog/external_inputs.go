@@ -104,7 +104,7 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 				if len(found) != 1 {
 					return fmt.Errorf("external input %s/%s has %d retained successful artifacts; want exactly one", producer, name, len(found))
 				}
-				if err := i.verifyExternalArtifact(found[0]); err != nil {
+				if err := i.verifyExternalArtifact(ctx, found[0]); err != nil {
 					return fmt.Errorf("external input %s/%s is not retrievable: %w", producer, name, err)
 				}
 				reference := found[0]
@@ -312,7 +312,14 @@ func externalProducerNamespace(runID string, task domain.Task) string {
 	return fmt.Sprintf("%s--%x", task.Name, sum[:6])
 }
 
-func (i BundleIngester) verifyExternalArtifact(artifact domain.Artifact) error {
+func (i BundleIngester) verifyExternalArtifact(ctx context.Context, artifact domain.Artifact) error {
+	if i.Artifacts != nil {
+		_, file, err := i.Artifacts.Open(ctx, artifact.ID)
+		if err != nil {
+			return err
+		}
+		return file.Close()
+	}
 	if i.StorageRoot == "" {
 		return nil
 	}

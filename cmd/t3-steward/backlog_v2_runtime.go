@@ -1046,6 +1046,7 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	submissions := &backlog.SubmissionService{
 		DirectoryCatalogs: directoryCatalogs,
 		StorageRoot:       cfg.BacklogV2.Storage.Bundles,
+		Artifacts:         &artifactStore,
 		Store:             store,
 		MaxBytes:          cfg.BacklogV2.MessageLimits.MaxBytes,
 		MaxFiles:          cfg.BacklogV2.MessageLimits.MaxFiles,
