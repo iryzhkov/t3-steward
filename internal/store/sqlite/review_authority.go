@@ -45,6 +45,16 @@ var (
 	ErrReviewAuthorityLimit    = errors.New("frozen review round limit exhausted")
 )
 
+// reviewAuthorityTxError keeps cancellation identifiable when database/sql has
+// already rolled back a canceled BeginTx context. A live-context ErrTxDone is
+// still a transaction lifetime error; successful commits remain successful.
+func reviewAuthorityTxError(ctx context.Context, err error) error {
+	if errors.Is(err, sql.ErrTxDone) && ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+		return errors.Join(err, ctx.Err())
+	}
+	return err
+}
+
 // reviewAuthorityWriteTx acquires SQLite's writer before reading the allocation
 // count. Independent connections serialize rather than upgrading stale snapshots.
 // The zero-row parent write takes the writer lock but deliberately changes no
@@ -52,7 +62,8 @@ var (
 // It and the attempt CAS share the allocation transaction.
 // A coordinator epoch fence bound to ctx is compared under that writer lock, so
 // an epoch advance either precedes the comparison or follows the commit.
-func (s *Store) reviewAuthorityWriteTx(ctx context.Context, p review.ParentBinding) (*sql.Tx, error) {
+func (s *Store) reviewAuthorityWriteTx(ctx context.Context, p review.ParentBinding) (result *sql.Tx, err error) {
+	defer func() { err = reviewAuthorityTxError(ctx, err) }()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -149,8 +160,9 @@ func (s *Store) FreezeReviewAuthority(ctx context.Context, expected review.Froze
 func (s *Store) FreezeDeclaredReviewAuthority(ctx context.Context, expected review.FrozenAuthority) (review.FrozenAuthority, error) {
 	return s.freezeReviewAuthority(ctx, expected, true)
 }
-func (s *Store) freezeReviewAuthority(ctx context.Context, expected review.FrozenAuthority, declared bool) (review.FrozenAuthority, error) {
-	expected, err := expected.Canonical()
+func (s *Store) freezeReviewAuthority(ctx context.Context, expected review.FrozenAuthority, declared bool) (result review.FrozenAuthority, err error) {
+	defer func() { err = reviewAuthorityTxError(ctx, err) }()
+	expected, err = expected.Canonical()
 	if err != nil {
 		return review.FrozenAuthority{}, err
 	}
@@ -190,8 +202,9 @@ func (s *Store) freezeReviewAuthority(ctx context.Context, expected review.Froze
 
 // AllocateReviewCheckpoint atomically reserves a numbered round and pending
 // member identities from STORED requirements. It does not submit/park a child.
-func (s *Store) AllocateReviewCheckpoint(ctx context.Context, expected review.FrozenAuthority, checkpoint review.Checkpoint) (review.CheckpointAuthority, error) {
-	expected, err := expected.Canonical()
+func (s *Store) AllocateReviewCheckpoint(ctx context.Context, expected review.FrozenAuthority, checkpoint review.Checkpoint) (result review.CheckpointAuthority, err error) {
+	defer func() { err = reviewAuthorityTxError(ctx, err) }()
+	expected, err = expected.Canonical()
 	if err != nil {
 		return review.CheckpointAuthority{}, err
 	}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -126,7 +127,15 @@ func TestReviewChildStagingFix2InitialCustody(t *testing.T) {
 	for _, conflict := range []bool{false, true} {
 		t.Run(map[bool]string{false: "identical", true: "conflicting"}[conflict], func(t *testing.T) {
 			f, o, req := newStageOwner(t)
+			watchdog, stop := context.WithTimeout(context.Background(), testtiming.Bound(10*time.Second))
+			var workers sync.WaitGroup
+			var releaseOnce sync.Once
 			locked, release := make(chan struct{}), make(chan struct{})
+			t.Cleanup(func() {
+				stop()
+				releaseOnce.Do(func() { close(release) })
+				workers.Wait()
+			})
 			o.fault = func(phase string) error {
 				if phase == "owner-locked" {
 					close(locked)
@@ -139,8 +148,17 @@ func TestReviewChildStagingFix2InitialCustody(t *testing.T) {
 				err error
 			}
 			firstCh := make(chan outcome, 1)
-			go func() { got, err := o.StageDeclared(context.Background(), req); firstCh <- outcome{got, err} }()
-			<-locked
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				got, err := o.StageDeclared(watchdog, req)
+				firstCh <- outcome{got, err}
+			}()
+			select {
+			case <-locked:
+			case <-watchdog.Done():
+				t.Fatal("owner did not reach held-lock boundary", watchdog.Err())
+			}
 			namespace := filepath.Join(o.admission.Artifacts.SubmissionRoot, childStageNamespace)
 			entries, err := os.ReadDir(filepath.Join(namespace, ".locks"))
 			if err != nil || len(entries) != 1 {
@@ -151,18 +169,41 @@ func TestReviewChildStagingFix2InitialCustody(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// Actual exclusive flock, before the first intent exists. Timeout cannot
-			// create or replace the lock, owner, metadata or SQL.
+			// Cancel only after observing actual exclusive flock contention, before
+			// the first intent exists. Cancellation must leave evidence unchanged.
 			evidence := stageFix1Evidence(t, namespace)
 			before := independentDeclaredTables(t, stagingSQL(t, f))
 			fresh, err := NewDeclaredReviewStaging(o.admission, o.store, time.Now)
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-			_, err = fresh.StageDeclared(ctx, req)
+			waiting := make(chan struct{})
+			var waitingOnce sync.Once
+			fresh.fault = func(phase string) error {
+				if phase == "lock-waiting" {
+					waitingOnce.Do(func() { close(waiting) })
+				}
+				return nil
+			}
+			ctx, cancel := context.WithCancel(watchdog)
+			defer cancel()
+			waitingCh := make(chan error, 1)
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				_, err := fresh.StageDeclared(ctx, req)
+				waitingCh <- err
+			}()
+			select {
+			case <-waiting:
+			case err := <-waitingCh:
+				t.Fatal("caller returned before lock contention", err)
+			case <-watchdog.Done():
+				t.Fatal("caller did not reach lock contention", watchdog.Err())
+			}
 			cancel()
-			if !errors.Is(err, context.DeadlineExceeded) {
+			err = <-waitingCh
+			if !errors.Is(err, context.Canceled) {
 				t.Fatal("first owner not excluded", err)
 			}
 			if evidence != stageFix1Evidence(t, namespace) || before != independentDeclaredTables(t, stagingSQL(t, f)) {
@@ -173,8 +214,13 @@ func TestReviewChildStagingFix2InitialCustody(t *testing.T) {
 				other.Deadline = other.Deadline.Add(time.Minute)
 			}
 			secondCh := make(chan outcome, 1)
-			go func() { got, err := fresh.StageDeclared(context.Background(), other); secondCh <- outcome{got, err} }()
-			close(release)
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				got, err := fresh.StageDeclared(watchdog, other)
+				secondCh <- outcome{got, err}
+			}()
+			releaseOnce.Do(func() { close(release) })
 			first, second := <-firstCh, <-secondCh
 			if first.err != nil {
 				t.Fatal(first.err)
@@ -200,6 +246,30 @@ func TestReviewChildStagingFix2InitialCustody(t *testing.T) {
 				t.Fatal("exact winner replay mutated evidence")
 			}
 		})
+	}
+}
+
+func TestReviewChildStagingAllocationCancellationIdentity(t *testing.T) {
+	f, o, req := newStageOwner(t)
+	if _, err := o.admission.FreezeDeclared(context.Background(), req.Parent); err != nil {
+		t.Fatal(err)
+	}
+	before := independentDeclaredTables(t, stagingSQL(t, f))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reached := false
+	o.store.SetClock(func() time.Time {
+		reached = true
+		cancel()
+		return time.Now()
+	})
+	defer o.store.SetClock(nil)
+	_, err := o.StageDeclared(ctx, req)
+	if !reached || !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "phase allocate:") {
+		t.Fatalf("allocate phase lost cancellation: reached=%v err=%v", reached, err)
+	}
+	if before != independentDeclaredTables(t, stagingSQL(t, f)) {
+		t.Fatal("canceled staging allocation changed SQL evidence")
 	}
 }
 
