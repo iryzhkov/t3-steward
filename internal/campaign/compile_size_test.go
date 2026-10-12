@@ -70,6 +70,23 @@ func TestCompileSizeBudgets(t *testing.T) {
 		t.Fatal("unit annotations leaked")
 	}
 }
+func TestCompileSizeIndentedHeading(t *testing.T) {
+	for _, indent := range []string{" ", "  ", "   "} {
+		got := EstimateCompileSize(sizeUnit("- code [changed-lines: 1]\n"+indent+"#### Detail\n- extra [changed-lines: 2]", "- tests [changed-lines: 1]"), SizeCalibration{})
+		if len(got.Diagnostics) > 0 || got.Raw != 4 || got.Estimate != 5 {
+			t.Fatalf("indent %q: %+v", indent, got)
+		}
+	}
+}
+func TestCompileSizeMalformedMarkers(t *testing.T) {
+	for _, marker := range []string{"[changed-lines: nope]", "[changed-lines: 0]", "[changed-lines: 9223372036854775808]", "[changed-lines"} {
+		input := append(sizeUnit("- code [changed-lines: 1]", "- tests [changed-lines: 1]"), []byte("Example "+marker+" [changed-lines: 1]\n")...)
+		got := EstimateCompileSize(input, SizeCalibration{})
+		if !got.Available || got.Estimate != 0 || len(got.Diagnostics) == 0 || !strings.Contains(got.Diagnostics[0], "unit line 8:") {
+			t.Fatalf("marker %q: %+v", marker, got)
+		}
+	}
+}
 func TestSizeCalibration(t *testing.T) {
 	sample := sizeSample{Raw: 1, Observed: 1, Base: strings.Repeat("a", 40), Head: strings.Repeat("b", 40), AcceptRef: "retained ACCEPT", GateRef: "passing gate"}
 	encode := func(samples []sizeSample) []byte {

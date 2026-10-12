@@ -124,6 +124,10 @@ func EstimateCompileSize(section []byte, calibration SizeCalibration) CompileSiz
 	}
 	result.Available = true
 	headings := planHeadings(visible, 1)
+	headingStarts := map[int]bool{}
+	for _, heading := range headings {
+		headingStarts[heading.start] = true
+	}
 	seenSections, seenText := map[string]bool{}, map[string]bool{}
 	for _, name := range []string{"Code map", "Tests to add"} {
 		for _, heading := range headings {
@@ -148,6 +152,9 @@ func EstimateCompileSize(section []byte, calibration SizeCalibration) CompileSiz
 				}
 				contributionText := bullet[1]
 				for index+1 < len(lines) && lines[index+1].start < end {
+					if headingStarts[lines[index+1].start] {
+						break
+					}
 					next := planLineText(visible, lines[index+1])
 					if strings.TrimSpace(next) == "" || len(next)-len(strings.TrimLeft(next, " \t")) <= len(planLineText(visible, line))-len(strings.TrimLeft(planLineText(visible, line), " \t")) || sizeBullet.MatchString(strings.TrimSpace(next)) {
 						break
@@ -190,8 +197,21 @@ func EstimateCompileSize(section []byte, calibration SizeCalibration) CompileSiz
 	// Malformed markers outside contribution bullets must also opt in and fail.
 	for index, line := range lines {
 		text := strings.TrimSpace(planLineText(visible, line))
-		if strings.Contains(text, "[changed-lines") && sizeBudget.FindStringSubmatch(text) == nil {
-			result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("unit line %d: invalid changed-lines marker", index+1))
+		for _, part := range strings.Split(text, "[changed-lines")[1:] {
+			marker := "[changed-lines" + part
+			end := strings.IndexByte(marker, ']')
+			var annotation []string
+			if end >= 0 {
+				annotation = sizeBudget.FindStringSubmatch(marker[:end+1])
+			}
+			var budget int64
+			var err error
+			if annotation != nil {
+				budget, err = strconv.ParseInt(annotation[1], 10, 64)
+			}
+			if annotation == nil || err != nil || budget <= 0 {
+				result.Diagnostics = append(result.Diagnostics, fmt.Sprintf("unit line %d: invalid changed-lines marker", index+1))
+			}
 		}
 	}
 	sort.SliceStable(result.Contributors, func(i, j int) bool {
