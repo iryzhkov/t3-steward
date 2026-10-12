@@ -12,7 +12,7 @@ import (
 func TestStagedConfigNotificationSemantics(t *testing.T) {
 	stagedTestHome(t)
 	cfg := Default()
-	cfg.Notifications.Discord = &DiscordNotifications{WebhookURLFile: filepath.Join(testutil.RealTempDir(t), "missing-credential")}
+	cfg.Notifications.Discord = &DiscordNotifications{WebhookURLFile: filepath.Join(testutil.PrivateTempDir(t), "missing-credential")}
 	path, _ := stagedConfig(t, cfg)
 	if _, err := ValidateStagedFile(path); err != nil {
 		t.Fatal("non-coordinator notification settings need no credential read:", err)

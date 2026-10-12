@@ -15,7 +15,7 @@ import (
 func TestStagedAbsentInputEventsWithoutTimestampSignal(t *testing.T) {
 	for _, kind := range []string{"create/remove", "move in/out", "missing ancestor", "parent move", "unrelated"} {
 		t.Run(kind, func(t *testing.T) {
-			parent := testutil.RealTempDir(t)
+			parent := testutil.PrivateTempDir(t)
 			path := filepath.Join(parent, "optional")
 			if kind == "missing ancestor" {
 				path = filepath.Join(path, "projection")
@@ -78,7 +78,7 @@ func TestStagedAbsentInputEventsWithoutTimestampSignal(t *testing.T) {
 }
 
 func TestStagedAbsentInputWatchFailsClosed(t *testing.T) {
-	input, err := observeStagedInput(filepath.Join(testutil.RealTempDir(t), "optional"), 1024, true)
+	input, err := observeStagedInput(filepath.Join(testutil.PrivateTempDir(t), "optional"), 1024, true)
 	if err != nil {
 		t.Fatal(err)
 	}

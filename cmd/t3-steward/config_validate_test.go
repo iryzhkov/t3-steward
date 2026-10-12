@@ -27,7 +27,7 @@ import (
 
 func configValidationFixture(t *testing.T) (string, string, []byte) {
 	t.Helper()
-	root := testutil.RealTempDir(t)
+	root := testutil.PrivateTempDir(t)
 	for _, dir := range []string{"home", "state", "feedback", "tools"} {
 		if err := os.Mkdir(filepath.Join(root, dir), 0700); err != nil {
 			t.Fatal(err)
@@ -55,6 +55,9 @@ func configValidationFixture(t *testing.T) (string, string, []byte) {
 	}
 	path := filepath.Join(root, "SECRET-staged.yaml")
 	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0600); err != nil {
 		t.Fatal(err)
 	}
 	// Unsafe input controls exercise the same production invoke/binary matrix.

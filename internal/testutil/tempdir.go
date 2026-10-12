@@ -23,6 +23,17 @@ func RealTempDir(t testing.TB) string {
 	return resolved
 }
 
+// PrivateTempDir returns a symlink-resolved, owned fixture directory with exact
+// mode 0700, independent of the caller's umask. Only this new directory is chmod'd.
+func PrivateTempDir(t testing.TB) string {
+	t.Helper()
+	dir := RealTempDir(t)
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // symlinkedTempDirChild is set in the environment of a test binary that
 // RerunWithSymlinkedTempDir started, so that the child does not start another.
 const symlinkedTempDirChild = "T3_STEWARD_TEST_SYMLINKED_TMPDIR"

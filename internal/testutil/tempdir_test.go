@@ -30,5 +30,5 @@ func TestTempDirIsALinkInTheChild(t *testing.T) {
 }
 
 func TestRerunWithSymlinkedTempDir(t *testing.T) {
-	RerunWithSymlinkedTempDir(t, "^Test(RealTempDirHasNoSymlinks|TempDirIsALinkInTheChild)$")
+	RerunWithSymlinkedTempDir(t, "^Test(RealTempDirHasNoSymlinks|PrivateTempDirHasNoSymlinks|TempDirIsALinkInTheChild)$")
 }
