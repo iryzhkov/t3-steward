@@ -156,6 +156,20 @@ level: unknown keys are startup errors. Backlog-v2 is disabled by default.
 - `backlog_v2.mode` is `disabled`, `coordinator`, or `worker`. Worker mode
   exposes only the fixed exchange endpoint and never acquires coordinator authority.
 - `backlog_v2.coordinator.id` is the durable coordinator identity.
+- `backlog_v2.coordinator.audit_event_retention` is a nonnegative duration
+  (for example `720h`). Absent or `0s` means 30 days. Each coordinator
+  boundary deletes at most 1,000 events strictly older than this period;
+  worker exchange retries do not run extra batches. A partial timestamp index
+  bounds candidate selection without scanning protected history.
+  The following kinds are retained indefinitely because code reads them by ID
+  for replay or authority: `admin-command-*` (submission and outcome),
+  `assignment-released` (including activation-offer supersession),
+  `assignment-dispatch-*`, `assignment-lease-renewed`, `worker-state-*`,
+  `artifact-published`, `checkpoint-import-rejected`,
+  `unknown-assignment-recovered`, `native-question`, `native-answer`,
+  `schedule-definition-created`, and `schedule-definition-updated`.
+  Retention changes only the audit table; it does not run `VACUUM` or
+  immediately reduce the database file size.
 - Worker mode requires `backlog_v2.local_worker.id`, `epoch`, and a positive
   `coordinator_epoch`. The ID must name an entry in `workers`. Rotate these
   durable values only while coordinator admission is closed and reconcile the

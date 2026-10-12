@@ -539,6 +539,9 @@ type V2Verification struct {
 }
 
 type V2Coordinator struct {
+	// AuditEventRetention defaults to 30 days when absent or zero.
+	AuditEventRetention Duration `yaml:"audit_event_retention"`
+
 	Alerts            V2CoordinatorAlerts `yaml:"alerts"`
 	ID                string              `yaml:"id"`
 	ResourcePlacement V2ResourcePlacement `yaml:"resource_placement"`
@@ -553,6 +556,14 @@ type V2Coordinator struct {
 	// AutomaticRetries bounds the automatic retries of infrastructure
 	// failures this coordinator performs.
 	AutomaticRetries V2AutomaticRetries `yaml:"automatic_retries"`
+}
+
+// AuditRetention is the effective retention period for historical audit events.
+func (c V2Coordinator) AuditRetention() time.Duration {
+	if c.AuditEventRetention == 0 {
+		return 30 * 24 * time.Hour
+	}
+	return c.AuditEventRetention.D()
 }
 
 // V2AutomaticRetries is the coordinator's ceiling on automatic retries.

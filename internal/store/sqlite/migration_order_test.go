@@ -9,7 +9,7 @@ import (
 )
 
 // The synthetic versions below are placed above the real registry (which ends
-// at V42), so that they never collide with a registered migration.
+// at V43), so that they never collide with a registered migration.
 type testMigration = schemaMigration
 
 func setTestMigrations(t *testing.T, extra ...testMigration) {

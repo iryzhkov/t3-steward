@@ -693,13 +693,19 @@ type coordinatorCampaignRefTicker interface {
 	Tick(context.Context) backlog.CampaignRefReleaseReport
 }
 
+type coordinatorAuditPruner interface {
+	PruneAuditEvents(context.Context, time.Time) (int64, error)
+}
+
 type coordinatorBoundaryCycle struct {
-	reviews    *backlog.ReviewCollector
-	projection backlog.ProjectionStore
-	quota      coordinatorQuotaTicker
-	schedules  coordinatorScheduleTicker
-	planning   coordinatorPlanningTicker
-	admin      coordinatorAdminExecutor
+	auditPruner    coordinatorAuditPruner
+	auditRetention time.Duration
+	reviews        *backlog.ReviewCollector
+	projection     backlog.ProjectionStore
+	quota          coordinatorQuotaTicker
+	schedules      coordinatorScheduleTicker
+	planning       coordinatorPlanningTicker
+	admin          coordinatorAdminExecutor
 	// retries classifies failed attempts and submits automatic retries of
 	// infrastructure failures, up to retryCeiling per task. A nil value, or
 	// a zero ceiling, retries nothing automatically.
@@ -749,6 +755,11 @@ func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err er
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) backlog.QuotaBridgeReport {
 	ctx = sqlite.WithReviewChildrenReconciledOncePerTick(ctx)
 	started := time.Now()
+	if c.auditPruner != nil {
+		if _, err := c.auditPruner.PruneAuditEvents(ctx, started.UTC().Add(-c.auditRetention)); err != nil {
+			logTickFailure(ctx, c.logger, "coordinator audit retention failed", err)
+		}
+	}
 	ctx, snapshot := sqlite.WithCoordinatorRecordsSnapshot(ctx)
 	defer func() {
 		c.logger.Info("backlog-v2 coordinator tick completed",
@@ -1194,6 +1205,8 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 	ledgers := newCoordinatorLedger(cfg, store, reviewArtifacts, logger)
 	defer ledgers.stop()
 	cycle := coordinatorBoundaryCycle{
+		auditPruner:    store,
+		auditRetention: cfg.BacklogV2.Coordinator.AuditRetention(),
 		reviews: &backlog.ReviewCollector{Store: store, Results: resultsDir, Open: func(ctx context.Context, id string) (domain.Artifact, io.ReadCloser, error) {
 			a, f, err := reviewArtifacts.Open(ctx, id)
 			return a, f, err

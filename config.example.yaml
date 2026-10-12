@@ -159,6 +159,9 @@ backlog_v2:
   mode: disabled
   coordinator:
     id: ""
+    # Historical audit events: absent/0s defaults to 30 days (720h).
+    # One batch of at most 1,000 rows per boundary; replay evidence is exempt.
+    audit_event_retention: 720h
     # Compatibility boolean: false/default accepted; true is a startup error.
     # Use t3-steward task run / campaign submit; historical files remain untouched.
     legacy_file_intake_enabled: false

@@ -514,6 +514,7 @@ var versionedMigrations = []schemaMigration{
 	// order, which the gap-filling runner applies.
 	{version: 39, ddl: coordinatorMigrationV39},
 	{version: 42, ddl: coordinatorMigrationV42},
+	{version: 43, ddl: coordinatorMigrationV43, downgradeDDL: coordinatorMigrationV43Downgrade},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {

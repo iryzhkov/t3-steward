@@ -32,8 +32,8 @@ func TestMigrationDowngradeSchemaParity(t *testing.T) {
 	}
 }
 
-// No production migration above 42 exists yet. This fixture exercises table,
-// index, view, trigger and existing-table changes through the same runner.
+// This fixture exercises table, index, view, trigger and existing-table
+// changes beyond the production migrations through the same runner.
 func syntheticReversibleMigration() schemaMigration {
 	return schemaMigration{
 		version: currentSchemaVersion + 1,
@@ -104,6 +104,7 @@ func checkMigrationDowngrade(t *testing.T, m schemaMigration) error {
 	}
 	expected := migrationDowngradeFixture(t, m.version-1, m.version)
 	actual := migrationDowngradeFixture(t, m.version, m.version)
+	upgradedSchema := normalizedMigrationSchema(t, actual)
 	if err := actual.applyMigrationDowngrade(m); err != nil {
 		return err
 	}
@@ -127,6 +128,9 @@ func checkMigrationDowngrade(t *testing.T, m schemaMigration) error {
 	}
 	if version, err := actual.SchemaVersion(context.Background()); err != nil || version != m.version {
 		return fmt.Errorf("re-upgrade version=%d error=%v", version, err)
+	}
+	if got := normalizedMigrationSchema(t, actual); !reflect.DeepEqual(got, upgradedSchema) {
+		return fmt.Errorf("re-upgrade %d did not restore the upgraded schema", m.version)
 	}
 	return nil
 }
