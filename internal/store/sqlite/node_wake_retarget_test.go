@@ -146,8 +146,9 @@ func TestRetargetClaimOrderingAndRollback(t *testing.T) {
 			audits, _ := s.LoadAuditEvents(ctx, "")
 			result, err := s.RetargetNodeWakes(ctx, req, now)
 			if mode == "retarget-first" {
-				if err != nil || len(result.Moved) != 2 || claim(false) || claim(true) {
-					t.Fatal(result, err)
+				rejected, rejectErr := s.TransitionNodeWake(ctx, "pending", "pending", "rejected", now)
+				if err != nil || len(result.Moved) != 2 || rejectErr != nil || rejected || claim(false) || claim(true) {
+					t.Fatal(result, err, "stale old-thread rejection", rejected, rejectErr)
 				}
 				ok, err := s.ClaimNodeWakeGroupGenerations(ctx, "pending", "pending", "group", "payload", []string{"held", "pending"}, now, map[string]uint64{"held": 1})
 				if err != nil || ok {
@@ -155,8 +156,8 @@ func TestRetargetClaimOrderingAndRollback(t *testing.T) {
 				}
 				waits, _ := s.ListNodeWaits(ctx)
 				for _, w := range waits {
-					if w.Delivery == "sending" {
-						t.Fatal("partial claim committed")
+					if w.Delivery != w.Request.ID || w.Request.ThreadID != req.ThreadID || w.Host != req.Host || w.RecipientGeneration != 1 {
+						t.Fatal("stale rejection or partial claim changed successor wake", w)
 					}
 				}
 				ok, err = s.TransitionNodeWakeGeneration(ctx, "pending", "pending", "sending", now, 1)

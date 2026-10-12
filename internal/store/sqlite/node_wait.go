@@ -432,8 +432,8 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 	return s.TransitionNodeWakeGeneration(ctx, id, from, to, now, 0)
 }
 
-// TransitionNodeWakeGeneration fences sending, including individual fallback
-// claims. Legacy callers expect generation zero.
+// TransitionNodeWakeGeneration fences sending and recipient-dependent rejection.
+// Individual fallback claims and legacy callers expect generation zero.
 func (s *Store) TransitionNodeWakeGeneration(ctx context.Context, id, from, to string, now time.Time, generation uint64) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -448,7 +448,7 @@ func (s *Store) TransitionNodeWakeGeneration(ctx context.Context, id, from, to s
 	if err = json.Unmarshal(raw, &w); err != nil {
 		return false, err
 	}
-	if w.Delivery != from || to == "sending" && w.RecipientGeneration != generation {
+	if w.Delivery != from || (to == "sending" || to == "rejected") && w.RecipientGeneration != generation {
 		return false, nil
 	}
 	settled, allowed := w.SettledAt != nil, false
