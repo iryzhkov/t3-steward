@@ -74,6 +74,8 @@ func TestCampaignRoleCheckReceiptTextAndJSON(t *testing.T) {
 			args := []string{"check", root}
 			if asJSON {
 				args = append(args, "--json")
+			} else {
+				args = append(args, "--verbose")
 			}
 			if err := cli.run(context.Background(), args); err != nil {
 				t.Fatal(err)

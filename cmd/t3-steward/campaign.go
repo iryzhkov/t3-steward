@@ -33,7 +33,8 @@ Offline (no configuration or coordinator):
     Writes one campaign directory per plan unit; never submits.
     --check adds the live readiness check of every unit (coordinator).
 Read-only (coordinator):
-  check <directory|workflow.yaml> [--json] [--task NAME]
+  check <directory|workflow.yaml> [--json] [--task NAME] [--verbose]
+    Text defaults to a headline and one line per task; --verbose prints the full matrix.
   list [--state open|terminal] [--project P] [--class C] [--json]
     [--thread current|ID] lists the runs that notify that thread.
     --limit N and --since DURATION select the list window; --limit 0 lists all.
@@ -797,13 +798,14 @@ func (c campaignCLI) prepare(source string) (campaign.Bundle, campaign.Plan, err
 
 // campaignArgs is one parsed authoring command line.
 type campaignArgs struct {
-	group  string
-	source string
-	key    string
-	task   string
-	reason string
-	asJSON bool
-	asDOT  bool
+	group   string
+	source  string
+	key     string
+	task    string
+	reason  string
+	asJSON  bool
+	asDOT   bool
+	verbose bool
 	// unverified skips the client-side readiness check. It never skips the
 	// coordinator's own permanent validation at acceptance.
 	unverified bool
@@ -836,6 +838,14 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 				return campaignArgs{}, errors.New("--register-only is accepted once by submit only; next: t3-steward campaign submit --help full")
 			}
 			parsed.registerOnly = true
+		case "--verbose":
+			if command != "check" {
+				return campaignArgs{}, fmt.Errorf("unknown campaign %s option %q", command, argument)
+			}
+			if parsed.verbose {
+				return campaignArgs{}, errors.New("--verbose may be supplied only once")
+			}
+			parsed.verbose = true
 		case "--json":
 			if parsed.asJSON {
 				return campaignArgs{}, errors.New("--json may be supplied only once")

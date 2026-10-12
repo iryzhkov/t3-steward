@@ -11,7 +11,8 @@ import "strings"
 // recognises the whole authoring vocabulary and refuses, by name, the options
 // that belong to a sibling verb. Naming them here is what makes this page a
 // complete account of what that parser will do with this command line.
-const campaignAuthoringNote = "validate, plan, check and submit share one option parser. It also recognises " +
+const campaignAuthoringNote = "--verbose is accepted by check only; other authoring verbs refuse it as an unknown option. " +
+	"validate, plan, check and submit share one option parser. It also recognises " +
 	"--dot, --group (submit only), --register-only, --idempotency-key, --task, --allow-unverified, --reason, --notify-thread and --no-notify, and refuses the ones " +
 	"that belong to a sibling verb with \"campaign <verb> does not accept <option>\". Any other option is refused " +
 	"as unknown."
@@ -49,10 +50,11 @@ func campaignHelpPages() []helpPage {
 		{
 			Path:    "campaign check",
 			Purpose: "ask the coordinator whether a campaign could run now, creating nothing.",
-			Usage:   []string{"t3-steward campaign check <directory|workflow.yaml> [--task NAME] [--json]"},
+			Usage:   []string{"t3-steward campaign check <directory|workflow.yaml> [--task NAME] [--json] [--verbose]"},
 			Flags: []helpFlag{
 				{Name: "--task", Value: "NAME", Default: "every task", Text: "Report one task of the campaign only."},
 				jsonFlag("the readiness matrix"),
+				{Name: "--verbose", Default: "off", Text: "Print the full per-worker matrix, including telemetry and repository observations. Default text is a headline and one line per task, with shared warnings printed once."},
 			},
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"schemaVersion", "outcome", "tasks", "workers", "reasons"},

@@ -61,7 +61,7 @@ func TestCampaignCheckShowsTheRoleSelectionOfACompiledRoleUnit(t *testing.T) {
 		}
 		return matrix
 	})
-	if err := cli.run(context.Background(), []string{"check", dir}); err != nil {
+	if err := cli.run(context.Background(), []string{"check", dir, "--verbose"}); err != nil {
 		t.Fatalf("%v:\n%s", err, checked.String())
 	}
 	if len(*requests) != 1 {

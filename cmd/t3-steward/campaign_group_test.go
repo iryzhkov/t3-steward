@@ -41,3 +41,30 @@ func TestCampaignGroupArgumentsAndFixInheritance(t *testing.T) {
 		}
 	}
 }
+
+func TestCampaignGroupAndVerboseScopes(t *testing.T) {
+	submit, err := parseCampaignArgs("submit", []string{"dir", "--idempotency-key", "key", "--group", "wave-1"}, false, true)
+	if err != nil || submit.group != "wave-1" {
+		t.Fatalf("submit group: %+v, %v", submit, err)
+	}
+	registered, err := parseCampaignArgs("submit", []string{"dir", "--idempotency-key", "key", "--register-only"}, false, true)
+	if err != nil || !registered.registerOnly {
+		t.Fatalf("submit register-only: %+v, %v", registered, err)
+	}
+	check, err := parseCampaignArgs("check", []string{"dir", "--verbose"}, false, false)
+	if err != nil || !check.verbose {
+		t.Fatalf("check verbose: %+v, %v", check, err)
+	}
+	for _, command := range []string{"validate", "plan", "check"} {
+		args := []string{"dir", "--group", "wave-1"}
+		if command == "check" {
+			args = append(args, "--verbose")
+		}
+		if _, err := parseCampaignArgs(command, args, false, false); err == nil {
+			t.Fatalf("accepted group on %s", command)
+		}
+	}
+	if _, err := parseCampaignArgs("submit", []string{"dir", "--idempotency-key", "key", "--group", "wave-1", "--verbose"}, false, true); err == nil {
+		t.Fatal("accepted verbose on grouped submit")
+	}
+}

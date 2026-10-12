@@ -238,8 +238,14 @@ func (c campaignCLI) runCheck(ctx context.Context, args []string) error {
 		if err := encodeCampaignJSON(c.stdout, document); err != nil {
 			return err
 		}
-	} else if err := renderCampaignCheck(c.stdout, document); err != nil {
-		return err
+	} else {
+		render := renderCampaignCheckSummary
+		if parsed.verbose {
+			render = renderCampaignCheck
+		}
+		if err := render(c.stdout, document); err != nil {
+			return err
+		}
 	}
 	if matrix.Outcome == backlogadmin.ViabilityImpossible {
 		// The document above is the whole --json answer; the refusal is the
@@ -460,6 +466,61 @@ func candidateNotes(candidate backlogadmin.ViabilityCandidate) []string {
 		notes = append(notes, "unchecked   "+note)
 	}
 	return notes
+}
+
+// renderCampaignCheckSummary keeps the headline and one row per task. The
+// full matrix remains available through --verbose and --json.
+func renderCampaignCheckSummary(out interface{ Write([]byte) (int, error) }, document campaignCheck) error {
+	lines := []string{campaignOutcomeHeadline(document.Name, document.Matrix)}
+	var warnings []string
+	warningTasks := map[string][]string{}
+	for _, task := range document.Matrix.Tasks {
+		line := fmt.Sprintf("  %s  %s", task.Task, task.Outcome)
+		if task.Outcome == backlogadmin.ViabilityReady {
+			if task.SelectedWorker != "" {
+				line += "  selected worker: " + task.SelectedWorker
+			}
+		} else {
+			reasons := append([]backlogadmin.ViabilityReason(nil), task.Reasons...)
+			for _, candidate := range task.Candidates {
+				reasons = append(reasons, candidate.Reasons...)
+			}
+			reasons = append(reasons, document.Matrix.Reasons...)
+			for _, permanent := range []bool{true, false} {
+				found := false
+				for _, reason := range reasons {
+					if reason.Permanent == permanent {
+						line += fmt.Sprintf("  %s  %s: %s", permanenceLabel(permanent), reason.Code, reason.Detail)
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+		}
+		lines = append(lines, line)
+		for _, candidate := range task.Candidates {
+			for _, warning := range candidate.Unchecked {
+				if _, exists := warningTasks[warning]; !exists {
+					warnings = append(warnings, warning)
+				}
+				if !slices.Contains(warningTasks[warning], task.Task) {
+					warningTasks[warning] = append(warningTasks[warning], task.Task)
+				}
+			}
+		}
+	}
+	for _, warning := range warnings {
+		scope := strings.Join(warningTasks[warning], ", ")
+		if len(warningTasks[warning]) == len(document.Matrix.Tasks) {
+			scope = "every task"
+		}
+		lines = append(lines, fmt.Sprintf("  %s: unchecked   %s", scope, warning))
+	}
+	_, err := fmt.Fprint(out, strings.Join(lines, "\n")+"\n")
+	return err
 }
 
 // renderCampaignCheck prints the matrix for a reader. Two things are folded
