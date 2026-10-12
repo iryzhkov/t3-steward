@@ -228,7 +228,7 @@ func TestCoordinatorRetryCountsRealRecordLoads(t *testing.T) {
 	before := loads.Load()
 	cycle.retryWorkers(ctx, backlog.QuotaBridgeReport{})
 	k := loads.Load() - before
-	if k < 1 || !strings.Contains(logs.String(), "coordinator worker retry completed") || !strings.Contains(logs.String(), fmt.Sprintf("record_loads=%d", k)) || !strings.Contains(logs.String(), "workers=1") || !strings.Contains(logs.String(), "duration=") {
+	if k != 0 || !strings.Contains(logs.String(), "coordinator worker retry completed") || !strings.Contains(logs.String(), fmt.Sprintf("record_loads=%d", k)) || !strings.Contains(logs.String(), "workers=1") || !strings.Contains(logs.String(), "duration=") {
 		t.Fatalf("loads=%d logs=%s", k, &logs)
 	}
 	if r.pending || counts["B"] != 1 {

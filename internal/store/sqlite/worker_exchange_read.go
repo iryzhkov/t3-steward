@@ -47,6 +47,14 @@ func (s *Store) LoadWorkerExchangeRecords(ctx context.Context, workerID string, 
 	if r.Assignments, err = loadJSONQuery[domain.Assignment](ctx, tx, "coordinator_assignments", workerAssignmentsQuery, workerID); err != nil {
 		return r, err
 	}
+	// Offer failures need the offered activation's current graph revision.
+	if !titles {
+		r.WorkflowRuns, err = loadJSONQuery[domain.WorkflowRun](ctx, tx, "coordinator_workflow_runs",
+			"SELECT record FROM coordinator_workflow_runs WHERE id IN (SELECT a.workflow_run_id FROM coordinator_attempts a JOIN coordinator_assignments x ON x.attempt_id = a.id WHERE json_extract(x.record, '$.workerId') = ? AND json_extract(x.record, '$.state') = 'offered' AND COALESCE(json_extract(a.record, '$.supervisionActivationId'), '') != '') ORDER BY id", workerID)
+		if err != nil {
+			return r, err
+		}
+	}
 	query := workerAttemptsQuery
 	args := []any{workerID}
 	if titles {

@@ -2,6 +2,7 @@ package backlog
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,6 +13,16 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
+
+// Fail even cache hits, so a tick snapshot cannot mask a full-record fallback.
+type scopedExchangeStore struct{ *sqlite.Store }
+
+func (scopedExchangeStore) LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error) {
+	return sqlite.CoordinatorRecords{}, errors.New("full exchange record load")
+}
+func (scopedExchangeStore) LoadCoordinatorActiveRecords(context.Context) (sqlite.CoordinatorRecords, error) {
+	return sqlite.CoordinatorRecords{}, errors.New("active exchange record load")
+}
 
 func TestFleetCoordinatorReconcilesOfferClaimAndDurablePrepare(t *testing.T) {
 	ctx := context.Background()
@@ -40,7 +51,7 @@ func TestFleetCoordinatorReconcilesOfferClaimAndDurablePrepare(t *testing.T) {
 	if err := store.SaveWorkerSnapshot(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	coordinator := FleetCoordinator{Store: store, Now: func() time.Time { return coordinatorTestTime }}
+	coordinator := FleetCoordinator{Store: scopedExchangeStore{store}, Now: func() time.Time { return coordinatorTestTime }}
 	planned, err := coordinator.PlanAndCommit(ctx, input)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +156,7 @@ func TestFleetCoordinatorRenewsLeaseAndDeliversDurableThrottle(t *testing.T) {
 		ID: "directive-1", QuotaPoolID: "pool", AdmissionRevision: 1,
 		Severity: domain.ThrottleWarn, Reason: "quota warning", CreatedAt: coordinatorTestTime,
 	}
-	report, err := (FleetCoordinator{Store: store, Now: func() time.Time { return coordinatorTestTime }}).ReconcileWorker(
+	report, err := (FleetCoordinator{Store: scopedExchangeStore{store}, Now: func() time.Time { return coordinatorTestTime }}).ReconcileWorker(
 		ctx, transport, testOfferBuilder{}, WorkerAdmissionPolicy{}, []domain.ThrottleDirective{directive},
 		[]domain.QuotaPool{{ID: "pool", Admission: domain.AdmissionOpen, MaxConcurrent: 1}}, time.Minute, time.Hour,
 	)
@@ -204,7 +215,7 @@ func TestFleetCoordinatorSkipsAutomaticThrottleForForcedAttempt(t *testing.T) {
 	transport := &exchangeTransport{}
 	report := WorkerExchangeReport{}
 	err = (FleetCoordinator{}).reconcileWorkerThrottle(
-		ctx, store, transport, snapshot, []domain.ThrottleDirective{directive},
+		ctx, scopedExchangeStore{store}, transport, snapshot, []domain.ThrottleDirective{directive},
 		[]domain.QuotaPool{{ID: "pool", Admission: domain.AdmissionClosed, MaxConcurrent: 1}},
 		coordinatorTestTime, &report,
 	)
@@ -260,7 +271,7 @@ func TestFleetCoordinatorIgnoresHistoricalReleasedAssignmentForThrottle(t *testi
 	transport := &exchangeTransport{}
 	report := WorkerExchangeReport{}
 	err = (FleetCoordinator{}).reconcileWorkerThrottle(
-		ctx, store, transport, snapshot, []domain.ThrottleDirective{directive},
+		ctx, scopedExchangeStore{store}, transport, snapshot, []domain.ThrottleDirective{directive},
 		[]domain.QuotaPool{{ID: "pool", Admission: domain.AdmissionClosed, MaxConcurrent: 1}},
 		coordinatorTestTime, &report,
 	)

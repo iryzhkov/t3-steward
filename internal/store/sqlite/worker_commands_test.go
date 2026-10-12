@@ -72,6 +72,13 @@ func TestWorkerCommandsPersistBeforeDeliveryAndAcknowledgeIdempotently(t *testin
 	}
 	assertNativeAuditEvent(t, store, "worker-command:command-1:committed", "coordinator", "prepare")
 	assertNativeAuditEvent(t, store, "worker-command:command-1:acknowledged", "worker:normandy", "accepted")
+	if _, err := store.AdvanceCoordinatorEpoch(context.Background(), 1); err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.LoadWorkerCommandRecordsFor(context.Background(), "normandy")
+	if err != nil || len(history) != 1 || !reflect.DeepEqual(history[0].Acknowledgement, &delayedAcknowledgement) {
+		t.Fatalf("scoped history lost old authority receipt: %+v, %v", history, err)
+	}
 }
 
 func TestWorkerCommandsAreFencedAcrossWorkerAndCoordinatorRestarts(t *testing.T) {
@@ -114,6 +121,10 @@ func TestWorkerCommandsAreFencedAcrossWorkerAndCoordinatorRestarts(t *testing.T)
 	pending, err = store.LoadPendingWorkerCommands(context.Background(), "normandy", "worker-epoch-2", 2, 2, fleetTestTime.Add(7*time.Second))
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("new coordinator received old command: commands=%#v error=%v", pending, err)
+	}
+	history, err := store.LoadWorkerCommandRecordsFor(context.Background(), "normandy")
+	if err != nil || len(history) != 1 || history[0].Command != command || history[0].Acknowledgement != nil {
+		t.Fatalf("scoped history lost obsolete unacknowledged command: %+v, %v", history, err)
 	}
 }
 

@@ -23,7 +23,8 @@ type FleetCoordinatorStore interface {
 	CommitAssignmentPlan(context.Context, domain.AssignmentPlanCommit) ([]domain.Assignment, error)
 	CommitWorkerStateTransitions(context.Context, []domain.WorkerStateTransition) ([]domain.Assignment, error)
 	CommitWorkerCommands(context.Context, []domain.WorkerCommand) ([]domain.WorkerCommand, error)
-	LoadWorkerCommandRecords(context.Context) ([]domain.WorkerCommandRecord, error)
+	LoadWorkerExchangeRecords(context.Context, string, bool) (sqlite.CoordinatorRecords, error)
+	LoadWorkerCommandRecordsFor(context.Context, string) ([]domain.WorkerCommandRecord, error)
 	LoadPendingWorkerCommands(context.Context, string, string, int64, int64, time.Time) ([]domain.WorkerCommand, error)
 	AcknowledgeWorkerCommand(context.Context, domain.WorkerAcknowledgement) (domain.WorkerAcknowledgement, error)
 }
@@ -203,11 +204,11 @@ func (c FleetCoordinator) reconcileWorkerCommands(
 	if err := c.Store.ReconcileMaterializedReviewChildren(ctx); err != nil {
 		return WorkerDeliveryReport{}, fmt.Errorf("automatic review cancellation before worker planning: %w", err)
 	}
-	records, err := c.Store.LoadCoordinatorRecords(ctx)
+	records, err := c.Store.LoadWorkerExchangeRecords(ctx, snapshot.WorkerID, false)
 	if err != nil {
 		return WorkerDeliveryReport{}, err
 	}
-	commandRecords, err := c.Store.LoadWorkerCommandRecords(ctx)
+	commandRecords, err := c.Store.LoadWorkerCommandRecordsFor(ctx, snapshot.WorkerID)
 	if err != nil {
 		return WorkerDeliveryReport{}, err
 	}
@@ -221,7 +222,7 @@ func (c FleetCoordinator) reconcileWorkerCommands(
 		if err != nil {
 			return WorkerDeliveryReport{}, err
 		}
-		records, err = c.Store.LoadCoordinatorRecords(ctx)
+		records, err = c.Store.LoadWorkerExchangeRecords(ctx, snapshot.WorkerID, false)
 		if err != nil {
 			return WorkerDeliveryReport{}, err
 		}

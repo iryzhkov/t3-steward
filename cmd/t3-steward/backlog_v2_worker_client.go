@@ -229,6 +229,15 @@ func newCoordinatorWorkerSessions(
 	}, nil
 }
 
+// exchangeCoordinatorWorker is callable without a CoordinatorRecordsSnapshot.
+// Empty polls and reconciliation use scoped reads; eventful importers may load
+// named campaign records and hydrate artifacts. This is not a U8 clean probe:
+// imports/commands/claims/usage/expiry may establish change, but an error,
+// reconnect, incomplete import (including handOnErr), or unclassified maintenance
+// is unknown and must force future full work. Neither a skipped observation write
+// nor an empty assignment list proves unchanged. U8 must separately account for
+// lease, quota, wait, review, liveness and other maintenance deadlines.
+//
 // exchangeCoordinatorWorker runs one exchange with a worker. The
 // continuation.md snapshots the worker holds are imported first, before
 // reconcile expires leases and freezes the continuation decision of any

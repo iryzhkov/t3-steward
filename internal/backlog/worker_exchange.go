@@ -26,6 +26,7 @@ type WorkerExchangeStore interface {
 	RenewAssignmentLease(context.Context, domain.AssignmentLeaseRenewal) (domain.Assignment, error)
 	ExpireAssignmentLeases(context.Context, int64, time.Time) ([]domain.Assignment, error)
 	ThrottleDeliveryStore
+	LoadThrottleAttemptRecordsFor(context.Context, string) ([]domain.ThrottleAttemptRecord, error)
 	LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdmissionRecord, error)
 	ReceiveWorkerUsage(context.Context, string, []domain.UsageSample) (sqlite.WorkerUsageReceipt, error)
 	WorkerUsageAcknowledgements(context.Context, string) ([]string, error)
@@ -374,7 +375,7 @@ func (c FleetCoordinator) ReconcileWorker(
 		return WorkerExchangeReport{}, err
 	}
 	report := WorkerExchangeReport{Snapshot: snapshot, Expired: expired}
-	records, err := store.LoadCoordinatorRecords(ctx)
+	records, err := store.LoadWorkerExchangeRecords(ctx, snapshot.WorkerID, false)
 	if err != nil {
 		return report, err
 	}
@@ -488,7 +489,7 @@ func (c FleetCoordinator) ReconcileWorker(
 			return report, err
 		}
 	}
-	records, err = store.LoadCoordinatorRecords(ctx)
+	records, err = store.LoadWorkerExchangeRecords(ctx, snapshot.WorkerID, false)
 	if err != nil {
 		return report, err
 	}
@@ -583,17 +584,7 @@ type workerThrottleStore struct {
 }
 
 func (s workerThrottleStore) LoadThrottleAttemptRecords(ctx context.Context) ([]domain.ThrottleAttemptRecord, error) {
-	records, err := s.WorkerExchangeStore.LoadThrottleAttemptRecords(ctx)
-	if err != nil {
-		return nil, err
-	}
-	filtered := records[:0]
-	for _, record := range records {
-		if record.Command.WorkerID == s.workerID {
-			filtered = append(filtered, record)
-		}
-	}
-	return filtered, nil
+	return s.WorkerExchangeStore.LoadThrottleAttemptRecordsFor(ctx, s.workerID)
 }
 
 func (t workerThrottleTransport) DeliverThrottleCommands(ctx context.Context, workerID string, commands []domain.ThrottleCommand) ([]domain.ThrottleAcknowledgement, error) {
@@ -611,7 +602,7 @@ func (c FleetCoordinator) reconcileWorkerThrottle(ctx context.Context, store Wor
 	if err != nil {
 		return err
 	}
-	records, err := store.LoadCoordinatorRecords(ctx)
+	records, err := store.LoadWorkerExchangeRecords(ctx, snapshot.WorkerID, false)
 	if err != nil {
 		return err
 	}

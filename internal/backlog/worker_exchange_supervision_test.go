@@ -224,7 +224,7 @@ func reconcileActivationOfferWithBuilder(t *testing.T, capable bool, builder Ass
 		t.Fatal(err)
 	}
 	transport := &exchangeTransport{snapshots: []domain.WorkerSnapshot{snapshot, snapshot}}
-	report, err := (FleetCoordinator{Store: store, Now: func() time.Time { return coordinatorTestTime }}).ReconcileWorker(
+	report, err := (FleetCoordinator{Store: scopedExchangeStore{store}, Now: func() time.Time { return coordinatorTestTime }}).ReconcileWorker(
 		ctx, transport, builder, WorkerAdmissionPolicy{QuotaChecksDisabled: true},
 		nil, nil, time.Minute, time.Hour,
 	)
@@ -276,7 +276,7 @@ func TestWorkerExchangePersistsAndSuppressesDeterministicActivationFailure(t *te
 	snapshot.Inventory.ObservedAt = snapshot.ObservedAt
 	snapshot.ValidUntil = snapshot.ObservedAt.Add(time.Hour)
 	transport := &exchangeTransport{snapshots: []domain.WorkerSnapshot{snapshot, snapshot}}
-	second, err := (FleetCoordinator{Store: store, Now: func() time.Time { return coordinatorTestTime.Add(time.Minute) }}).ReconcileWorker(
+	second, err := (FleetCoordinator{Store: scopedExchangeStore{store}, Now: func() time.Time { return coordinatorTestTime.Add(time.Minute) }}).ReconcileWorker(
 		context.Background(), transport, builder, WorkerAdmissionPolicy{QuotaChecksDisabled: true},
 		nil, nil, time.Minute, time.Hour,
 	)

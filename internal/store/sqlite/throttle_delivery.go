@@ -34,8 +34,20 @@ var ErrStaleThrottleAttemptRevision = errors.New("stale throttle attempt revisio
 // LoadThrottleAttemptRecords returns affected-attempt records in canonical
 // directive/attempt order.
 func (s *Store) LoadThrottleAttemptRecords(ctx context.Context) ([]domain.ThrottleAttemptRecord, error) {
+	return s.loadThrottleAttemptRecords(ctx, "", nil)
+}
+
+// LoadThrottleAttemptRecordsFor filters ownership before decoding history.
+func (s *Store) LoadThrottleAttemptRecordsFor(ctx context.Context, workerID string) ([]domain.ThrottleAttemptRecord, error) {
+	if workerID == "" {
+		return nil, errors.New("worker identity is required")
+	}
+	return s.loadThrottleAttemptRecords(ctx, "WHERE json_extract(record, '$.command.workerId') = ?", []any{workerID})
+}
+
+func (s *Store) loadThrottleAttemptRecords(ctx context.Context, predicate string, args []any) ([]domain.ThrottleAttemptRecord, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT record FROM coordinator_throttle_attempts ORDER BY directive_id, attempt_id`)
+		"SELECT record FROM coordinator_throttle_attempts "+predicate+" ORDER BY directive_id, attempt_id", args...)
 	if err != nil {
 		return nil, fmt.Errorf("query throttle attempt records: %w", err)
 	}

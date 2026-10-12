@@ -326,13 +326,26 @@ func insertWorkerAcknowledgementAuditEvent(ctx context.Context, tx *sql.Tx, ackn
 // LoadWorkerCommandRecords returns every durable command with its optional
 // immutable acknowledgement in command ID order.
 func (s *Store) LoadWorkerCommandRecords(ctx context.Context) ([]domain.WorkerCommandRecord, error) {
+	return s.loadWorkerCommandRecords(ctx, "", nil)
+}
+
+// LoadWorkerCommandRecordsFor retains receipts across worker and authority epochs.
+func (s *Store) LoadWorkerCommandRecordsFor(ctx context.Context, workerID string) ([]domain.WorkerCommandRecord, error) {
+	if workerID == "" {
+		return nil, errors.New("worker identity is required")
+	}
+	return s.loadWorkerCommandRecords(ctx, "WHERE command.worker_id = ?", []any{workerID})
+}
+
+func (s *Store) loadWorkerCommandRecords(ctx context.Context, predicate string, args []any) ([]domain.WorkerCommandRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT command.id, command.record, acknowledgement.record
 		FROM coordinator_worker_commands AS command
 		LEFT JOIN coordinator_worker_acknowledgements AS acknowledgement
 		  ON acknowledgement.command_id = command.id
+		`+predicate+`
 		ORDER BY command.id
-	`)
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load worker command records: %w", err)
 	}
