@@ -154,6 +154,8 @@ func (o *coordinatorRepositoryObserver) ObserveRepository(ctx context.Context, k
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	// A second candidate may have filled the entry while this one waited.
+	// Lookup rejects missing refs here too: a waiter's request must re-probe
+	// even when the preceding request just stored a confirmed missing ref.
 	if observation, found := o.cache.Lookup(key); found {
 		return observation, nil
 	}

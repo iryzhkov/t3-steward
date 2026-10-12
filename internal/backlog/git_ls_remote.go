@@ -359,7 +359,9 @@ func (c *RepositoryProbeCache) now() time.Time {
 	return time.Now()
 }
 
-// Lookup returns a retained observation for key that is still inside its TTL.
+// Lookup returns reusable evidence for key that is still inside its TTL.
+// Missing refs are retained only as history: a fetch can make a named ref or
+// object ID available without changing the key, so every request must re-probe.
 func (c *RepositoryProbeCache) Lookup(key RepositoryProbeKey) (RepositoryProbeObservation, bool) {
 	if c == nil {
 		return RepositoryProbeObservation{}, false
@@ -372,6 +374,9 @@ func (c *RepositoryProbeCache) Lookup(key RepositoryProbeKey) (RepositoryProbeOb
 	}
 	if !c.now().Before(entry.expiresAt) {
 		delete(c.entries, key.Digest())
+		return RepositoryProbeObservation{}, false
+	}
+	if entry.observation.Class == RepositoryRefNotFound {
 		return RepositoryProbeObservation{}, false
 	}
 	return entry.observation, true
@@ -437,8 +442,8 @@ func (c *RepositoryProbeCache) Len() int {
 }
 
 // ObserveRepository runs the built-in probe for key through runner and retains
-// the classified result. A retained observation inside its TTL is returned
-// without running anything.
+// the classified result. Reusable evidence inside its TTL is returned without
+// running anything; a retained missing ref always requires a fresh bounded probe.
 //
 // The detail is the first line of the redacted output. Credentials never reach
 // it: the output is redacted before it is stored, and the probe reports that a

@@ -160,3 +160,13 @@ unchanged reference does not: the key is identical and a positive observed befor
 stays usable until it expires. That is a bounded staleness of at most the retention window, not
 an invalidation, and it is the reason the window is ten minutes rather than an hour. An earlier
 draft of this record claimed the key invalidated on rotation, which it cannot.
+
+Missing-ref observations are the narrower exception: they remain retained as historical
+evidence but are never reused by a readiness request, even inside the TTL. A fetch can make
+a named ref or object ID available without changing any key component. Both coordinator
+lookups, including the lookup under its observer mutex, therefore require a fresh bounded
+worker probe for a missing ref. A fresh confirmed missing ref still permits a permanent
+refusal; an unavailable, cancelled, timed out or failed refresh follows the existing temporary
+or unobserved path. Successful observations and other classifications keep their usual TTL.
+Repeated missing-ref checks can cost more bounded worker probes. This adds no polling,
+retry loop, fetch generation or cross-machine clock comparison.
