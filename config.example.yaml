@@ -55,6 +55,10 @@ t3:
 quota_checks: true
 
 wait:
+  # Host opt-in for same-thread node wakes. Unset window is 2m; 0s disables.
+  coalesce:
+    enabled: false
+    window: 2m
   dry_run: false
   quota_checks: true
   # The relay thread that shows a task's "t3-steward ask" in T3 as Awaiting

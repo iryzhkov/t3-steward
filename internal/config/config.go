@@ -844,7 +844,8 @@ type Config struct {
 	Wait        struct {
 		// DryRun holds shell and node wake delivery; nil defaults to false.
 		// It does not inherit watchdog policy.dry_run.
-		DryRun *bool `yaml:"dry_run"`
+		DryRun   *bool          `yaml:"dry_run"`
+		Coalesce CoalesceConfig `yaml:"coalesce"`
 		// QuotaChecks gates wake delivery on quota health; nil defaults to true.
 		QuotaChecks *bool `yaml:"quota_checks"`
 		// AskRelay is the route of the relay threads that put a task's
@@ -1156,6 +1157,9 @@ func (c *Config) applyEnv() error {
 
 // Validate rejects configurations the daemon must not run with.
 func (c *Config) Validate() error {
+	if c.Wait.Coalesce.Window != nil && *c.Wait.Coalesce.Window < 0 {
+		return errors.New("wait.coalesce.window must not be negative")
+	}
 	if c.Backlog.Enabled {
 		return errors.New("backlog.enabled: legacy Markdown runner is retired; set false and use t3-steward task run or campaign submit")
 	}

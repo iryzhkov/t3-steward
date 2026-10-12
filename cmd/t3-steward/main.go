@@ -841,7 +841,8 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store) 
 			logger.Error("task wakes and ask relays for tasks on this host will not be delivered", "err", err)
 		}
 	}
-	configureNodeWaitTransport(waits, cfg, logger)
+	waits.NodeCoalesceWindow = cfg.Wait.Coalesce.EffectiveWindow()
+	configureNodeWaitTransport(waits, cfg, logger, waits.NodeCoalesceWindow > 0)
 	waits.NodeSummary = newNodeSummarySource(cfg)
 	waits.NodeSummaryRecord = recordNodeSummary(store)
 	// What this daemon is doing about node wakes, written where a command that

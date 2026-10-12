@@ -200,6 +200,9 @@ type Runner struct {
 	DryRun     bool
 	NodeDryRun bool
 	NodeHost   string
+	// NodeCoalesceWindow delays eligible node wakes; nonpositive disables it.
+	NodeCoalesceWindow   time.Duration
+	nextNodeWakeDeadline time.Time
 	// NodeDelivery, when set, is called on every tick on which this runner read
 	// the node waits of the host it names and is in a position to send their
 	// wakes. It is how a steward records, where something other than itself can

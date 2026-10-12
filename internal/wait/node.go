@@ -169,6 +169,7 @@ func nodeWakeObservation(w domain.NodeWait) string {
 // effect before sending, retries only outcomes known to have had no effect, and
 // never treats absence from a bounded observation window as non-delivery.
 func (r *Runner) tickNodes(ctx context.Context) {
+	r.nextNodeWakeDeadline = time.Time{}
 	store := r.nodeStore()
 	if store == nil {
 		return
@@ -192,7 +193,30 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		r.NodeDelivery(ctx, host)
 	}
 	groups := nodeWaitGroups(waits, host)
+	batches := r.coalesceNodes(waits, host, now)
+	if r.NodeCoalesceWindow > 0 {
+		sort.SliceStable(waits, func(i, j int) bool {
+			a, b := waits[i].SettledAt, waits[j].SettledAt
+			if a == nil || b == nil {
+				return a != nil
+			}
+			if a.Equal(*b) {
+				return waits[i].Request.ID < waits[j].Request.ID
+			}
+			return a.Before(*b)
+		})
+	}
+	skipped := map[string]bool{}
+	unsupported := false
 	for _, w := range waits {
+		if skipped[w.Request.ID] {
+			continue
+		}
+		// Frozen riders share their leader's send, including known-no-effect retries.
+		if w.DeliveryPayload != "" && len(w.DeliveryGroupMembers) > 0 &&
+			w.DeliveryGroupMembers[0] != w.Request.ID && w.Delivery != "sending" && w.Delivery != "recovery-required" {
+			continue
+		}
 		if w.Host != host || w.SettledAt == nil || w.Delivery == "delivered" || w.Delivery == "rejected" || w.Delivery == "cancelled" {
 			continue
 		}
@@ -241,6 +265,29 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		}
 		if w.DeliveryNextAttemptAt != nil && now.Before(*w.DeliveryNextAttemptAt) {
 			continue
+		}
+		coalesced := false
+		if batch := batches[w.Request.ThreadID]; len(batch) > 0 && w.DeliveryPayload == "" && !grouped && w.Request.Quota == nil {
+			if now.Before(batch[0].SettledAt.Add(r.NodeCoalesceWindow)) {
+				continue
+			}
+			if _, canClaim := store.(NodeGroupClaimer); canClaim && !unsupported {
+				if batch[0].Request.ID != w.Request.ID {
+					continue
+				}
+				members, grouped, coalesced = batch, len(batch) > 1, len(batch) > 1
+			}
+		}
+		if len(w.DeliveryGroupMembers) > 1 && w.DeliveryPayload != "" {
+			members = nil
+			for _, candidate := range waits {
+				for _, id := range w.DeliveryGroupMembers {
+					if candidate.Request.ID == id {
+						members = append(members, candidate)
+					}
+				}
+			}
+			grouped = true
 		}
 		thread, presence := r.lookupThread(ctx, w.Request.ThreadID)
 		switch presence {
@@ -301,7 +348,9 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			summaries := buildNodeSummaries(ctx, r.NodeSummary, wake)
 			builtSummaries, summaryMembers = summaries, wake
 			text = nodeWakeMessage(w, summaries[0])
-			if grouped {
+			if coalesced {
+				text = coalescedNodeMessage(members, summaries)
+			} else if grouped {
 				text = nodeGroupMessageWith(members, summaries)
 			}
 		}
@@ -310,6 +359,12 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			claimed, err = freezer.ClaimNodeWakeGroup(ctx, w.Request.ID, w.Delivery, w.DeliveryID, text, memberIDs, now)
 			frozen = !errors.Is(err, ErrNodeGroupClaimUnsupported)
 			if !frozen {
+				unsupported = true
+				if coalesced {
+					grouped = false
+					builtSummaries, summaryMembers = builtSummaries[:1], summaryMembers[:1]
+					text = nodeWakeMessage(w, builtSummaries[0])
+				}
 				claimed, err = store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", now)
 			}
 		} else {
@@ -321,6 +376,11 @@ func (r *Runner) tickNodes(ctx context.Context) {
 		}
 		if !claimed {
 			continue
+		}
+		if coalesced && frozen {
+			for _, id := range memberIDs {
+				skipped[id] = true
+			}
 		}
 		if r.NodeSummaryRecord != nil {
 			for i, summary := range builtSummaries {
