@@ -134,7 +134,7 @@ func planWorkerStateTransition(
 				return assignment, attempt, "", false, fmt.Errorf("assignment %q has invalid observed control %q", assignment.ID, control)
 			}
 			nextAssignment := assignment
-			nextAssignment.State = domain.AssignmentClaimed
+			nextAssignment.SetState(domain.AssignmentClaimed, now)
 			nextAssignment.WorkerEpoch = snapshot.WorkerEpoch
 			nextAssignment.ThreadID = observation.ThreadID
 			nextAssignment.UpdatedAt = now
@@ -204,7 +204,7 @@ func planWorkerStateTransition(
 				return assignment, attempt, "", false, nil
 			}
 			nextAssignment := assignment
-			nextAssignment.State = domain.AssignmentUnknown
+			nextAssignment.SetState(domain.AssignmentUnknown, now)
 			nextAssignment.WorkerEpoch = snapshot.WorkerEpoch
 			nextAssignment.ThreadID = observation.ThreadID
 			nextAssignment.UpdatedAt = now
@@ -269,7 +269,7 @@ func releasedWorkerState(
 	reason string,
 ) (domain.Assignment, domain.Attempt, string, bool, error) {
 	nextAssignment := assignment
-	nextAssignment.State = domain.AssignmentReleased
+	nextAssignment.SetState(domain.AssignmentReleased, now)
 	nextAssignment.LeaseExpiresAt = time.Time{}
 	nextAssignment.UpdatedAt = now
 	nextAttempt := attempt
@@ -305,7 +305,7 @@ func observedCompletedWorkerState(
 	now time.Time,
 ) (domain.Assignment, domain.Attempt, string, bool, error) {
 	nextAssignment := assignment
-	nextAssignment.State = domain.AssignmentClaimed
+	nextAssignment.SetState(domain.AssignmentClaimed, now)
 	nextAssignment.WorkerEpoch = snapshot.WorkerEpoch
 	nextAssignment.LeaseExpiresAt = snapshot.ValidUntil
 	if threadID != "" {
@@ -340,7 +340,7 @@ func completedWorkerState(
 	reason string,
 ) (domain.Assignment, domain.Attempt, string, bool, error) {
 	nextAssignment := assignment
-	nextAssignment.State = domain.AssignmentCompleted
+	nextAssignment.SetState(domain.AssignmentCompleted, now)
 	nextAssignment.WorkerEpoch = workerEpoch
 	nextAssignment.LeaseExpiresAt = time.Time{}
 	if threadID != "" {

@@ -432,6 +432,7 @@ type Assignment struct {
 	Route               ProviderRoute          `json:"route"`
 	Estimate            *TaskAdmissionEstimate `json:"estimate,omitempty"`
 	State               AssignmentState        `json:"state"`
+	UnknownSince        *time.Time             `json:"unknownSince,omitempty"`
 	Epoch               int64                  `json:"epoch"`
 	LeaseToken          string                 `json:"leaseToken"`
 	LeaseExpiresAt      time.Time              `json:"leaseExpiresAt"`
@@ -446,6 +447,16 @@ type Assignment struct {
 	DispatchError       string                 `json:"dispatchError,omitempty"`
 	CreatedAt           time.Time              `json:"createdAt"`
 	UpdatedAt           time.Time              `json:"updatedAt"`
+}
+
+// SetState records episode entry, preserving missing legacy origins while unknown.
+func (a *Assignment) SetState(state AssignmentState, now time.Time) {
+	if state != AssignmentUnknown {
+		a.UnknownSince = nil
+	} else if a.State != AssignmentUnknown {
+		a.UnknownSince = &now
+	}
+	a.State = state
 }
 
 // Schedule overlap, misfire, and failure policies.

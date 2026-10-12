@@ -1,5 +1,14 @@
 # Persistent worker operations
 
+Triage reads retained assignments, including disconnected workers, terminal runs and sink tasks.
+`triage --unknown-after DURATION` accepts positive durations (default 10m); `assignment-unknown`
+action items appear strictly after that age, keyed by assignment ID/epoch. Durable `unknownSince`
+survives repeated uncertainty and restart. Missing legacy, zero or future origins show age unavailable.
+Recovery removes attention on the next read; a new unknown episode starts a fresh origin.
+Inspect `backlog show RUN` and `backlog recover --help`: recovery requires reviewed stop/custody
+evidence. Triage is read-only; it neither releases custody nor retries execution.
+
+
 The persistent worker connection is opt-in. Existing workers without a
 `connection` setting retain the restricted one-shot protocol.
 

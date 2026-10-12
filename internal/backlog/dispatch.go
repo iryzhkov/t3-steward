@@ -96,7 +96,7 @@ func ReconcileAssignmentDispatch(
 	}
 
 	creatingInput := current
-	creatingInput.State = domain.AssignmentClaimed
+	creatingInput.SetState(domain.AssignmentClaimed, now)
 	creating, err := advanceDispatch(ctx, store, creatingInput, domain.DispatchCreating, now, "")
 	if err != nil {
 		return domain.Assignment{}, err
@@ -142,7 +142,7 @@ func markDispatchConfirmed(
 		return current, nil
 	}
 	next := current
-	next.State = domain.AssignmentClaimed
+	next.SetState(domain.AssignmentClaimed, now)
 	if next.DispatchConfirmedAt == nil {
 		confirmedAt := now
 		next.DispatchConfirmedAt = &confirmedAt
@@ -157,7 +157,7 @@ func markDispatchStopped(
 	now time.Time,
 ) (domain.Assignment, error) {
 	next := current
-	next.State = domain.AssignmentReleased
+	next.SetState(domain.AssignmentReleased, now)
 	return advanceDispatch(ctx, store, next, domain.DispatchStopped, now, "")
 }
 
@@ -169,7 +169,7 @@ func markDispatchUnknown(
 	cause error,
 ) (domain.Assignment, error) {
 	next := current
-	next.State = domain.AssignmentUnknown
+	next.SetState(domain.AssignmentUnknown, now)
 	next, err := advanceDispatch(ctx, store, next, domain.DispatchUnknown, now, cause.Error())
 	if err != nil {
 		return domain.Assignment{}, err

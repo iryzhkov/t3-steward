@@ -72,7 +72,7 @@ func (s *Store) RecoverUnknownAssignment(ctx context.Context, recovery domain.Un
 	if attempt.Revision != recovery.ExpectedAttemptRevision || attempt.AssignmentID != assignment.ID {
 		return domain.UnknownAssignmentRecoveryDecision{}, fmt.Errorf("%w: attempt %q changed", ErrStaleUnknownRecovery, attempt.ID)
 	}
-	assignment.State = domain.AssignmentReleased
+	assignment.SetState(domain.AssignmentReleased, recovery.RecoveredAt)
 	assignment.LeaseExpiresAt = time.Time{}
 	assignment.UpdatedAt = recovery.RecoveredAt
 	attempt.AssignmentID = ""

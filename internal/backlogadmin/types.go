@@ -566,6 +566,7 @@ type Assignment struct {
 	WorkerID            string                 `json:"workerId"`
 	Route               domain.ProviderRoute   `json:"route"`
 	State               domain.AssignmentState `json:"state"`
+	UnknownSince        *time.Time             `json:"unknownSince,omitempty"`
 	Epoch               int64                  `json:"epoch"`
 	LeaseExpiresAt      time.Time              `json:"leaseExpiresAt"`
 	ThreadID            string                 `json:"threadId,omitempty"`

@@ -1074,7 +1074,6 @@ func (v view) taskDetail(runID, taskID string) (TaskDetail, bool) {
 	detail := TaskDetail{Task: task, ResourceLocks: append([]string(nil), task.ResourceLocks...)}
 	if sink := v.runs[runID].Sink; sink != nil && task.ID == sink.ID {
 		detail.Sink = domain.CloneSink(sink)
-		return detail, true
 	}
 	detail.Checkpoint = v.continuationCheckpoint(runID, task.ID)
 	if attempt := latestAttempt(v.attempts[runID+"\x00"+task.ID]); attempt != nil {
@@ -1544,7 +1543,7 @@ func artifactDTO(metadata domain.Artifact) Artifact {
 func assignmentDTO(assignment domain.Assignment) Assignment {
 	return Assignment{
 		ID: assignment.ID, AttemptID: assignment.AttemptID, WorkerID: assignment.WorkerID,
-		Route: assignment.Route, State: assignment.State, Epoch: assignment.Epoch,
+		Route: assignment.Route, State: assignment.State, Epoch: assignment.Epoch, UnknownSince: assignment.UnknownSince,
 		LeaseExpiresAt: assignment.LeaseExpiresAt, ThreadID: assignment.ThreadID,
 		DispatchState: assignment.DispatchState, DispatchRevision: assignment.DispatchRevision,
 		DispatchConfirmedAt: assignment.DispatchConfirmedAt, DispatchError: assignment.DispatchError,

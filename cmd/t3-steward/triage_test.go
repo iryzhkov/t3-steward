@@ -60,6 +60,8 @@ func (f *triageFixture) sources() triageSources {
 				run("run-sup", domain.ProgressActive, ago(time.Hour), 21, true),
 				run("run-settled-sup", domain.ProgressCancelled, ago(48*time.Hour), 30, true),
 			}
+		case backlogadmin.QueryWorkflow:
+			response.Workflow = &backlogadmin.WorkflowDetail{}
 		case backlogadmin.QueryQuarantine:
 			response.Quarantine = []backlogadmin.QuarantinedIntake{{Key: "intake-7", Reason: "manifest invalid", QuarantinedAt: ago(time.Hour)}}
 		default:
@@ -321,6 +323,9 @@ func TestTriageReadsEveryLiveSupervisedRunAndSaysWhenItStopped(t *testing.T) {
 			if q.Kind == backlogadmin.QueryWorkflows {
 				response.Workflows = runs
 			}
+			if q.Kind == backlogadmin.QueryWorkflow {
+				response.Workflow = &backlogadmin.WorkflowDetail{}
+			}
 			return response, nil
 		},
 		nodeWait: func(context.Context, backlogadmin.NodeWaitOperation) (backlogadmin.NodeWaitResponse, error) {
@@ -385,14 +390,14 @@ func TestTriageNamesAFailedStatusQuery(t *testing.T) {
 // The flags are the two thresholds and --json, and a positional argument is
 // refused rather than ignored.
 func TestParseTriageArgs(t *testing.T) {
-	options, err := parseTriageArgs([]string{"--stale-days", "3", "--json"})
-	if err != nil || options.staleAfter != 3*24*time.Hour || !options.asJSON {
+	options, err := parseTriageArgs([]string{"--stale-days", "3", "--unknown-after", "2m", "--json"})
+	if err != nil || options.staleAfter != 3*24*time.Hour || !options.asJSON || options.unknownAfter != 2*time.Minute {
 		t.Fatalf("options = %+v, %v", options, err)
 	}
-	if options, err := parseTriageArgs(nil); err != nil || options.staleAfter != 7*24*time.Hour {
+	if options, err := parseTriageArgs(nil); err != nil || options.staleAfter != 7*24*time.Hour || options.unknownAfter != 10*time.Minute || !strings.Contains(triageUsage, "--unknown-after") {
 		t.Fatalf("defaults = %+v, %v", options, err)
 	}
-	for _, args := range [][]string{{"run-1"}, {"--stale-days", "0"}, {"--stale-days"}, {"--bogus"}} {
+	for _, args := range [][]string{{"run-1"}, {"--stale-days", "0"}, {"--stale-days"}, {"--bogus"}, {"--unknown-after"}, {"--unknown-after", "garbage"}, {"--unknown-after", "0"}, {"--unknown-after", "-1m"}} {
 		if _, err := parseTriageArgs(args); err == nil {
 			t.Fatalf("%q was accepted", args)
 		}

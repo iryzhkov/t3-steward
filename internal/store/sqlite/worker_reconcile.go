@@ -220,7 +220,7 @@ func unfinishedWorkerPark(attempt domain.Attempt) bool {
 // the attempt revision/time; every other field remains durable evidence.
 // No worker epoch transfer is required for a historical release receipt.
 func durableParkReleaseHandoff(current domain.Attempt, custody domain.Assignment, transition domain.WorkerStateTransition) bool {
-	if !unfinishedWorkerPark(current) || current.AssignmentID != custody.ID ||
+	if transition.Assignment.UnknownSince != nil || !unfinishedWorkerPark(current) || current.AssignmentID != custody.ID ||
 		transition.Attempt.AssignmentID != custody.ID || !transition.Assignment.LeaseExpiresAt.IsZero() ||
 		!transition.Attempt.UpdatedAt.Equal(transition.TransitionedAt) ||
 		!transition.Assignment.UpdatedAt.Equal(transition.TransitionedAt) {
@@ -231,6 +231,7 @@ func durableParkReleaseHandoff(current domain.Attempt, custody domain.Assignment
 	nextAttempt.UpdatedAt = current.UpdatedAt
 	nextCustody := transition.Assignment
 	nextCustody.State = custody.State
+	nextCustody.UnknownSince = custody.UnknownSince
 	nextCustody.LeaseExpiresAt = custody.LeaseExpiresAt
 	nextCustody.UpdatedAt = custody.UpdatedAt
 	return reflect.DeepEqual(nextAttempt, current) && reflect.DeepEqual(nextCustody, custody)

@@ -598,6 +598,7 @@ func (s *Store) CommitAssignmentPlan(ctx context.Context, commit domain.Assignme
 			releasedExists = true
 			assignment.ID = released.ID
 			assignment.Epoch = released.Epoch + 1
+			assignment.UnknownSince = nil
 			assignment.LeaseToken = fmt.Sprintf("%s-e%d", released.LeaseToken, assignment.Epoch)
 			assignment.DispatchToken = fmt.Sprintf("%s-e%d", released.DispatchToken, assignment.Epoch)
 			assignment.ThreadID = fmt.Sprintf("thread-%s-e%d", assignment.ID, assignment.Epoch)
@@ -816,7 +817,7 @@ func (s *Store) ClaimAssignment(ctx context.Context, request domain.AssignmentCl
 			return domain.Assignment{}, fmt.Errorf("%w: %v", ErrAssignmentClaim, err)
 		}
 	}
-	assignment.State = domain.AssignmentClaimed
+	assignment.SetState(domain.AssignmentClaimed, request.ClaimedAt)
 	assignment.LeaseExpiresAt = request.LeaseExpiresAt
 	assignment.UpdatedAt = request.ClaimedAt
 	raw, err := json.Marshal(assignment)

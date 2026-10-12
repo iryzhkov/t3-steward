@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
@@ -88,5 +89,15 @@ func TestSinkVisibleWithoutExecutableAttemptAndCountsOptIn(t *testing.T) {
 	}
 	if explanation.Explanation.Eligible || !strings.Contains(explanation.Explanation.Summary, "coordinator sink") {
 		t.Fatalf("explanation=%+v", explanation)
+	}
+	origin := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	v := newView(sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{run},
+		Attempts:    []domain.Attempt{{ID: "sink-attempt", WorkflowRunID: run.ID, TaskID: run.Sink.ID, AssignmentID: "sink-assignment"}},
+		Assignments: []domain.Assignment{{ID: "sink-assignment", State: domain.AssignmentUnknown, UnknownSince: &origin}}},
+		nil, nil, RuntimeInfo{}, origin)
+	detail, ok := v.taskDetail(run.ID, run.Sink.ID)
+	raw, err := json.Marshal(detail.Assignment)
+	if !ok || err != nil || detail.Assignment == nil || !strings.Contains(string(raw), origin.Format(time.RFC3339)) {
+		t.Fatalf("sink origin projection: %+v %s %v", detail, raw, err)
 	}
 }

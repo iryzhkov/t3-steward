@@ -8,6 +8,32 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
+func TestWorkerUnknownEpisode(t *testing.T) {
+	now := coordinatorTestTime
+	a := domain.Assignment{ID: "a", Epoch: 1, State: domain.AssignmentClaimed, WorkerEpoch: "w"}
+	attempt := domain.Attempt{Progress: domain.ProgressActive, Control: domain.ControlRunning}
+	observation := domain.WorkerAssignmentObservation{AssignmentID: "a", AssignmentEpoch: 1, State: domain.AssignmentUnknown}
+	snapshot := domain.WorkerSnapshot{WorkerEpoch: "w"}
+	a, attempt, _, _, err := planWorkerStateTransition(a, attempt, observation, true, snapshot, nil, now)
+	if err != nil || a.UnknownSince == nil || !a.UnknownSince.Equal(now) {
+		t.Fatalf("entry: %#v, %v", a, err)
+	}
+	repeated, _, _, changed, err := planWorkerStateTransition(a, attempt, observation, true, snapshot, nil, now.Add(time.Minute))
+	if err != nil || changed || !repeated.UnknownSince.Equal(now) {
+		t.Fatal("repeated observation changed episode")
+	}
+	attempt.Progress, attempt.Control = domain.ProgressSucceeded, domain.ControlRunning
+	terminal, _, _, _, err := planWorkerStateTransition(a, attempt, observation, false, snapshot, nil, now.Add(time.Minute))
+	if err != nil || !terminal.UnknownSince.Equal(now) || !terminal.UpdatedAt.Equal(now.Add(time.Minute)) {
+		t.Fatal("terminal update changed origin")
+	}
+	observation.State = domain.AssignmentClaimed
+	recovered, _, _, _, err := planWorkerStateTransition(a, attempt, observation, true, snapshot, nil, now.Add(2*time.Minute))
+	if err != nil || recovered.UnknownSince != nil {
+		t.Fatal("recovery retained origin")
+	}
+}
+
 func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *testing.T) {
 	now := coordinatorTestTime.Add(10 * time.Minute)
 	baseSnapshot := coordinatorSnapshot(2)

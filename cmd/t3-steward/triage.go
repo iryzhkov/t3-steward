@@ -16,7 +16,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
-const triageUsage = `Usage: t3-steward triage [--stale-days N] [--json]
+const triageUsage = `Usage: t3-steward triage [--stale-days N] [--unknown-after DURATION] [--json]
 
 Everything on the fleet that is waiting for an operator, in one list, each
 item with commands that can be run as printed: ids, revisions and idempotency
@@ -77,6 +77,7 @@ commands carry a --reason that says triage proposed them; replace it with your
 own reason if you have one.
 
 Flags:
+  --unknown-after DURATION  unknown custody age before attention (default 10m)
   --stale-days N   days without a change before a run is listed (default 7)
   --json           print one versioned document, t3-steward.triage/v1, with
                    the same items: kind, severity (action, warn, info),
@@ -126,6 +127,7 @@ type triageSources struct {
 }
 
 type triageOptions struct {
+	unknownAfter    time.Duration
 	staleAfter      time.Duration
 	workerDownAfter time.Duration
 	asJSON          bool
@@ -212,16 +214,26 @@ func cmdTriage(g globalFlags, args []string) error {
 	return runTriage(ctx, sources, options, os.Stdout)
 }
 
-// parseTriageArgs takes --stale-days and --json, and refuses anything else by
+// parseTriageArgs takes duration, age and output flags, and refuses anything else by
 // name rather than ignoring it.
 func parseTriageArgs(args []string) (triageOptions, error) {
 	clean, asJSON, err := takeJSONFlag(args)
 	if err != nil {
 		return triageOptions{}, err
 	}
-	options := triageOptions{staleAfter: 7 * 24 * time.Hour, asJSON: asJSON}
+	options := triageOptions{staleAfter: 7 * 24 * time.Hour, unknownAfter: 10 * time.Minute, asJSON: asJSON}
 	for i := 0; i < len(clean); i++ {
 		switch clean[i] {
+		case "--unknown-after":
+			if i+1 >= len(clean) {
+				return triageOptions{}, errors.New("--unknown-after needs a positive duration")
+			}
+			duration, err := time.ParseDuration(clean[i+1])
+			if err != nil || duration <= 0 {
+				return triageOptions{}, fmt.Errorf("--unknown-after needs a positive duration, got %q", clean[i+1])
+			}
+			options.unknownAfter = duration
+			i++
 		case "--stale-days":
 			if i+1 >= len(clean) {
 				return triageOptions{}, errors.New("--stale-days needs a whole number of days, for example --stale-days 7")
@@ -233,7 +245,7 @@ func parseTriageArgs(args []string) (triageOptions, error) {
 			options.staleAfter = time.Duration(days) * 24 * time.Hour
 			i++
 		default:
-			return triageOptions{}, fmt.Errorf("triage usage: t3-steward triage [--stale-days N] [--json] (got %q); it takes no run or worker, it lists the whole fleet", clean[i])
+			return triageOptions{}, fmt.Errorf("triage usage: t3-steward triage [--stale-days N] [--unknown-after DURATION] [--json] (got %q); it takes no run or worker, it lists the whole fleet", clean[i])
 		}
 	}
 	return options, nil
@@ -331,6 +343,23 @@ func collectTriage(ctx context.Context, sources triageSources, options triageOpt
 		report.Sources = append(report.Sources, "runs")
 		triageStalledRuns(&report, workflows.Workflows, now, options.staleAfter)
 		triageCapacityDeadlocks(&report, workflows.Workflows)
+		// Share this collection's detail snapshot with the review attention reader.
+		queryDetail := sources.query
+		details := map[string]backlogadmin.Response{}
+		detailErrors := map[string]error{}
+		sources.query = func(ctx context.Context, q backlogadmin.Query) (backlogadmin.Response, error) {
+			if q.Kind == backlogadmin.QueryWorkflow {
+				if response, ok := details[q.WorkflowRunID]; ok {
+					return response, detailErrors[q.WorkflowRunID]
+				}
+			}
+			response, err := queryDetail(ctx, q)
+			if q.Kind == backlogadmin.QueryWorkflow {
+				details[q.WorkflowRunID], detailErrors[q.WorkflowRunID] = response, err
+			}
+			return response, err
+		}
+		triageUnknownAssignments(ctx, &report, sources, workflows.Workflows, options.unknownAfter)
 		triageSupervision(ctx, &report, sources, workflows.Workflows)
 		triageReviewRoundLimits(ctx, &report, sources, workflows.Workflows)
 	}

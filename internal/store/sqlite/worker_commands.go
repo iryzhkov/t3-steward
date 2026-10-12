@@ -487,7 +487,7 @@ func (s *Store) ExpireAssignmentLeases(ctx context.Context, coordinatorEpoch int
 		return nil, err
 	}
 	for index := range expired {
-		expired[index].State = domain.AssignmentUnknown
+		expired[index].SetState(domain.AssignmentUnknown, now)
 		if expired[index].DispatchState == domain.DispatchCreating ||
 			expired[index].DispatchState == domain.DispatchConfirmed {
 			expired[index].DispatchState = domain.DispatchUnknown

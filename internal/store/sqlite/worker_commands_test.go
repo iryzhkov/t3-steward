@@ -153,6 +153,9 @@ func TestAssignmentLeaseRenewalAndExpiryFailClosed(t *testing.T) {
 	if err != nil || len(expired) != 1 || expired[0].State != domain.AssignmentUnknown {
 		t.Fatalf("expired assignments = %#v, error=%v", expired, err)
 	}
+	if expired[0].UnknownSince == nil || !expired[0].UnknownSince.Equal(fleetTestTime.Add(3*time.Minute)) {
+		t.Fatalf("expiry origin = %v", expired[0].UnknownSince)
+	}
 	again, err := store.ExpireAssignmentLeases(context.Background(), 1, fleetTestTime.Add(4*time.Minute))
 	if err != nil || len(again) != 0 {
 		t.Fatalf("repeated lease expiry = %#v, error=%v", again, err)
