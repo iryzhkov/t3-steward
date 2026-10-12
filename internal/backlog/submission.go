@@ -30,6 +30,7 @@ type SubmissionStore interface {
 // DirectorySubmission is a bounded request whose content is copied before the
 // accepted result is returned.
 type DirectorySubmission struct {
+	Group string
 	// RegisterOnly retains an immutable schedule definition without starting a run.
 	RegisterOnly   bool
 	IdempotencyKey string
@@ -136,6 +137,12 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 	if s.MaxBytes < 1 || s.MaxFiles < 1 {
 		return SubmissionResult{}, errors.New("positive submission byte and file limits are required")
 	}
+	if err := domain.ValidateCampaignGroup(request.Group); err != nil {
+		return SubmissionResult{}, err
+	}
+	if request.RegisterOnly && request.Group != "" {
+		return SubmissionResult{}, errors.New("register-only creates no run for a group")
+	}
 	key := request.IdempotencyKey
 	if key == "" {
 		if s.NewKey != nil {
@@ -172,7 +179,8 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		createdAt = s.Now().UTC()
 	}
 	proposed := domain.SubmissionRecord{
-		Key: key, Digest: digest, WorkflowID: workflowID, RunID: runID, RegisterOnly: request.RegisterOnly,
+		Group: request.Group,
+		Key:   key, Digest: digest, WorkflowID: workflowID, RunID: runID, RegisterOnly: request.RegisterOnly,
 		State: domain.SubmissionPending, CreatedAt: createdAt,
 	}
 
@@ -231,6 +239,7 @@ func (s *SubmissionService) SubmitDirectory(ctx context.Context, request Directo
 		}
 	}
 	ingester := BundleIngester{
+		Group:             record.Group,
 		Lineage:           lineage,
 		RegisterOnly:      request.RegisterOnly,
 		DirectoryCatalogs: s.DirectoryCatalogs,

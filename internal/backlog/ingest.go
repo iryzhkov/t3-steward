@@ -56,6 +56,7 @@ type PermanentValidator interface {
 // BundleIngester copies a validated version 2 submission into coordinator-owned
 // storage and persists the corresponding immutable domain records.
 type BundleIngester struct {
+	Group          string
 	roleSelections map[string]domain.RoleSelection
 	// Lineage is the checked parent attempt of a run submitted from inside a
 	// task, recorded on the new run; nil for root work.
@@ -386,6 +387,7 @@ func (i BundleIngester) buildRecords(manifest Manifest, workflowID, runID string
 	records.WorkflowRuns = []domain.WorkflowRun{{
 		ID: runID, WorkflowID: workflowID, Progress: domain.ProgressQueued,
 		InputArtifactIDs: append([]string(nil), workflowInputIDs...), Revision: 1, CreatedAt: now, UpdatedAt: now,
+		Group:   i.Group,
 		Lineage: domain.CloneRunLineage(i.Lineage),
 	}}
 

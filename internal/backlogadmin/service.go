@@ -819,6 +819,9 @@ func (v view) workflowSummaries(filter Filter) []WorkflowSummary {
 }
 
 func matchesWorkflowFilter(v view, run domain.WorkflowRun, workflow domain.Workflow, filter Filter) bool {
+	if filter.Group != "" && run.Group != filter.Group {
+		return false
+	}
 	if filter.Project != "" && workflow.Project != filter.Project {
 		return false
 	}

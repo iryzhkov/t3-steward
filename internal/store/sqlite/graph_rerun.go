@@ -70,6 +70,10 @@ func (s *Store) CommitGraphRerun(ctx context.Context, c GraphCommit) (domain.Gra
 		GraphRevision: 1, Revision: 1, Progress: domain.ProgressQueued,
 		CreatedAt: c.Now.UTC(), UpdatedAt: c.Now.UTC(),
 	}
+	run.Group = source.Run.Group
+	if c.Request.Group != "" {
+		run.Group = c.Request.Group
+	}
 	if err = domain.ValidateGraphTasks(run, c.Tasks); err != nil {
 		return result, err
 	}

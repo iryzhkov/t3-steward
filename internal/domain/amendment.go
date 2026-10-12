@@ -11,6 +11,7 @@ import (
 )
 
 type GraphAmendment struct {
+	Group            string             `json:"group,omitempty"`
 	ID               string             `json:"id"`
 	RunID            string             `json:"runId"`
 	ExpectedRevision int64              `json:"expectedRevision"`
@@ -36,6 +37,12 @@ type GraphAmendmentResult struct {
 var graphName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 func ValidateGraphAmendment(r GraphAmendment) error {
+	if err := ValidateCampaignGroup(r.Group); err != nil {
+		return err
+	}
+	if r.Group != "" && r.Operation != "rerun" {
+		return errors.New("group is only valid for rerun")
+	}
 	if r.UseCommit && r.Operation != "rerun" {
 		return errors.New("useCommit is only valid for rerun")
 	}

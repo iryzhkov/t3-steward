@@ -43,6 +43,7 @@ type QuarantineRelease struct {
 // SubmissionRecord is the durable idempotency decision for one accepted client
 // request. The request digest and result identities are immutable.
 type SubmissionRecord struct {
+	Group string `json:"group,omitempty"`
 	// RegisterOnly fixes the mode of a definition-only submission; RunID is empty.
 	RegisterOnly bool            `json:"registerOnly,omitempty"`
 	Key          string          `json:"key"`

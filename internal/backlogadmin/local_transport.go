@@ -95,6 +95,7 @@ type LocalService interface {
 }
 
 type LocalSubmissionRequest struct {
+	Group          string `json:"group,omitempty"`
 	RegisterOnly   bool   `json:"registerOnly,omitempty"`
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 	// ArchiveSHA256 is the digest of the archive bytes that follow the
@@ -122,6 +123,7 @@ type LocalSubmissionRequest struct {
 }
 
 type LocalSubmissionResponse struct {
+	Group      string `json:"group,omitempty"`
 	Key        string `json:"key"`
 	Digest     string `json:"digest"`
 	WorkflowID string `json:"workflowId"`

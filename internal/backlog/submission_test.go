@@ -30,7 +30,7 @@ func TestSubmissionServiceSimultaneousReplayAndChangedRequest(t *testing.T) {
 		StorageRoot: storage, Store: store,
 		MaxBytes: 1 << 20, MaxFiles: 16, Now: func() time.Time { return now },
 	}
-	request := DirectorySubmission{IdempotencyKey: "client-request-1", BundleDir: bundle}
+	request := DirectorySubmission{Group: "wave-1", IdempotencyKey: "client-request-1", BundleDir: bundle}
 
 	start := make(chan struct{})
 	results := make(chan SubmissionResult, 2)
@@ -72,6 +72,15 @@ func TestSubmissionServiceSimultaneousReplayAndChangedRequest(t *testing.T) {
 	}
 	if len(records.Workflows) != 1 || len(records.WorkflowRuns) != 1 {
 		t.Fatalf("coordinator records = %d workflows, %d runs", len(records.Workflows), len(records.WorkflowRuns))
+	}
+
+	if records.WorkflowRuns[0].Group != "wave-1" || got[0].Record.Group != "wave-1" {
+		t.Fatal("group not retained", records.WorkflowRuns, got)
+	}
+	request.Group = "wave-2"
+	replayed, err := service.SubmitDirectory(ctx, request)
+	if err != nil || !replayed.Replay || replayed.Record.Group != "wave-1" {
+		t.Fatalf("group replay: %+v %v", replayed, err)
 	}
 
 	writeBundleFile(t, bundle, "prompts/inspect.md", "changed")

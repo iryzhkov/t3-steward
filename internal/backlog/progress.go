@@ -16,6 +16,7 @@ import (
 
 // ProgressFilter selects a read-only mirror. Since is an inclusive UTC timestamp.
 type ProgressFilter struct {
+	Group  string    `json:"group,omitempty"`
 	RunIDs []string  `json:"runIds,omitempty"`
 	Owner  string    `json:"owner,omitempty"`
 	Since  time.Time `json:"since,omitempty"`
@@ -24,6 +25,15 @@ type ProgressDocument struct {
 	SchemaVersion int           `json:"schemaVersion"`
 	GeneratedAt   time.Time     `json:"generatedAt"`
 	Runs          []ProgressRun `json:"runs"`
+
+	Group *GroupProgress `json:"group,omitempty"`
+}
+type GroupProgress struct {
+	ID             string `json:"id"`
+	Done           int    `json:"done"`
+	Total          int    `json:"total"`
+	Open           int    `json:"open"`
+	NeedsAttention int    `json:"needsAttention"`
 }
 type ProgressRun struct {
 	ID           string               `json:"id"`
@@ -35,6 +45,9 @@ type ProgressRun struct {
 	CurrentState domain.ProgressState `json:"currentState"`
 	LastChange   time.Time            `json:"lastChange"`
 	Tasks        []ProgressTask       `json:"tasks"`
+
+	Verdict        string `json:"verdict,omitempty"`
+	NeedsAttention bool   `json:"needsAttention,omitempty"`
 }
 type ProgressTask struct {
 	ID             string               `json:"id"`
@@ -90,7 +103,13 @@ func progressTerminal(state domain.ProgressState) bool {
 // BuildProgress reads only supplied facts. Explicit IDs bypass the default
 // recent-terminal window; owner and since still apply. Runs are newest first.
 func BuildProgress(records sqlite.CoordinatorRecords, rounds []review.Round, reported bool, waits []domain.NodeWait, filter ProgressFilter, now time.Time) (ProgressDocument, error) {
+	if err := domain.ValidateCampaignGroup(filter.Group); err != nil {
+		return ProgressDocument{}, err
+	}
 	doc := ProgressDocument{SchemaVersion: 1, GeneratedAt: now.UTC(), Runs: []ProgressRun{}}
+	if filter.Group != "" {
+		doc.Group = &GroupProgress{ID: filter.Group}
+	}
 	workflows := map[string]domain.Workflow{}
 	for _, w := range records.Workflows {
 		workflows[w.ID] = w
@@ -117,6 +136,9 @@ func BuildProgress(records sqlite.CoordinatorRecords, rounds []review.Round, rep
 			if !owned {
 				continue
 			}
+		}
+		if filter.Group != "" && run.Group != filter.Group {
+			continue
 		}
 		view := newLedgerRunView(records, workflows[run.WorkflowID], run)
 		last := run.UpdatedAt
@@ -162,7 +184,7 @@ func BuildProgress(records sqlite.CoordinatorRecords, rounds []review.Round, rep
 		if run.Sink != nil && run.Sink.CompletedAt != nil {
 			terminalAt = *run.Sink.CompletedAt
 		}
-		if len(requested) == 0 && filter.Since.IsZero() && progressTerminal(run.Progress) && terminalAt.Before(now.Add(-24*time.Hour)) {
+		if filter.Group == "" && len(requested) == 0 && filter.Since.IsZero() && progressTerminal(run.Progress) && terminalAt.Before(now.Add(-24*time.Hour)) {
 			continue
 		}
 		p := ProgressRun{ID: run.ID, Name: view.workflow.Name, State: run.Progress, Total: len(view.tasks), LastChange: last.UTC(), Tasks: []ProgressTask{}}
@@ -176,6 +198,48 @@ func BuildProgress(records sqlite.CoordinatorRecords, rounds []review.Round, rep
 			} else if p.CurrentTask == "" || (progressCurrentPriority(task.State) > progressCurrentPriority(p.CurrentState)) {
 				p.CurrentTask = t.Name
 				p.CurrentState = task.State
+			}
+		}
+		if doc.Group != nil {
+			p.NeedsAttention = run.Progress == domain.ProgressFailed || run.Progress == domain.ProgressNeedsInput
+			var verdicts []string
+			for _, task := range p.Tasks {
+				a := latest[task.ID]
+				verdict := ""
+				if a.ReviewVerdict != nil {
+					verdict = a.ReviewVerdict.Verdict
+				} else {
+					var recorded []string
+					for _, round := range ownRounds {
+						for _, reviewer := range round.Reviewers {
+							if reviewer.TaskID == task.ID && reviewer.Verdict != nil {
+								recorded = append(recorded, reviewer.Verdict.Verdict)
+							}
+						}
+					}
+					verdict = strings.Join(recorded, "; ")
+				}
+				if verdict != "" {
+					verdicts = append(verdicts, verdict)
+				}
+				if strings.Contains(verdict, "changes-requested") {
+					p.NeedsAttention = true
+				}
+			}
+			p.Verdict = strings.Join(verdicts, "; ")
+			for _, loop := range domain.SummarizeFixLoops(view.tasks, view.attempts) {
+				if loop.Exhausted {
+					p.NeedsAttention = true
+				}
+			}
+			doc.Group.Total++
+			if progressTerminal(run.Progress) {
+				doc.Group.Done++
+			} else {
+				doc.Group.Open++
+			}
+			if p.NeedsAttention {
+				doc.Group.NeedsAttention++
 			}
 		}
 		doc.Runs = append(doc.Runs, p)
@@ -225,6 +289,21 @@ func progressVerdictLabel(facts string) string {
 }
 
 func RenderProgress(out io.Writer, doc ProgressDocument) error {
+	if doc.Group != nil {
+		if _, err := fmt.Fprintf(out, "group %s: %d/%d done, open=%d needs-attention=%d\n", doc.Group.ID, doc.Group.Done, doc.Group.Total, doc.Group.Open, doc.Group.NeedsAttention); err != nil {
+			return err
+		}
+		for _, run := range doc.Runs {
+			line := fmt.Sprintf("%s %s %s", run.ID, run.Name, run.State)
+			if run.Verdict != "" {
+				line += " verdict=" + run.Verdict
+			}
+			if _, err := fmt.Fprintln(out, progressLine(line)); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if len(doc.Runs) == 0 {
 		_, err := fmt.Fprintln(out, "No campaign runs match.")
 		return err

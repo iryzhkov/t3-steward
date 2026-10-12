@@ -53,6 +53,7 @@ func (c campaignCLI) runFix(ctx context.Context, args []string) error {
 
 type campaignFixArgs struct {
 	node                             domain.NodeRef
+	group                            string
 	key, commit, out, notify         string
 	roundLimit                       int
 	gate                             []string
@@ -83,7 +84,7 @@ func parseCampaignFixArgs(args []string) (campaignFixArgs, error) {
 			case "--no-notify":
 				a.noNotify = true
 			}
-		case "--idempotency-key", "--round-limit", "--gate", "--gate-timeout", "--commit", "--context", "--out", "--notify-thread":
+		case "--group", "--idempotency-key", "--round-limit", "--gate", "--gate-timeout", "--commit", "--context", "--out", "--notify-thread":
 			if i+1 >= len(args) || strings.TrimSpace(args[i+1]) == "" {
 				return a, fmt.Errorf("%s needs one nonempty value", flag)
 			}
@@ -94,6 +95,11 @@ func parseCampaignFixArgs(args []string) (campaignFixArgs, error) {
 			i++
 			v := args[i]
 			switch flag {
+			case "--group":
+				if err := domain.ValidateCampaignGroup(v); err != nil {
+					return a, err
+				}
+				a.group = v
 			case "--idempotency-key":
 				a.key = v
 			case "--round-limit":
@@ -231,6 +237,7 @@ type campaignFixDocument struct {
 	Submission    campaignSubmission `json:"submission"`
 }
 type resolvedCampaignFix struct {
+	Group   string
 	Source  campaign.FixSource
 	Options campaign.FixOptions
 	Commit  fixReviewedCommit
@@ -760,6 +767,10 @@ func (c campaignFixCLI) resolve(ctx context.Context, a campaignFixArgs) (resolve
 			}
 		}
 	}
+	out.Group = d.Summary.Run.Group
+	if a.group != "" {
+		out.Group = a.group
+	}
 	out.Source = campaign.FixSource{RunID: a.node.RunID, ProducerRunID: p.run, Workflow: d.Summary.Workflow, Producer: p.task.Task, Review: r.Task, ReviewedCommit: provenance.Commit}
 	out.Options = campaign.FixOptions{Name: "fix-" + r.Task.Name, Lineage: lineage, Gate: gate, Brief: brief}
 	return out, nil
@@ -870,6 +881,9 @@ func (c campaignFixCLI) run(ctx context.Context, args []string) error {
 		replayWake.ProgressUnavailable = "coordinator query transport is unavailable"
 	}
 	submitArgs := []string{target, "--idempotency-key", a.key, "--json"}
+	if resolved.Group != "" {
+		submitArgs = append(submitArgs, "--group", resolved.Group)
+	}
 	if a.noNotify {
 		submitArgs = append(submitArgs, "--no-notify")
 	} else if a.notify != "" {

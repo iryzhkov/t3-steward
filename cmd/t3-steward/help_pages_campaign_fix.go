@@ -7,6 +7,7 @@ func campaignFixHelpPages() []helpPage {
 		Purpose: "create a bounded fix campaign from a succeeded review that requested changes.",
 		Usage:   []string{"t3-steward campaign fix <run>/<review-task> --idempotency-key KEY [--round-limit N] [--gate CMD]... [--gate-timeout DUR] [--no-gate] [--commit RUN/TASK/NAME] [--context FILE]... [--out DIR] [--dry-run] [--json] [--notify-thread current|ID|--no-notify]"},
 		Flags: []helpFlag{
+			{Name: "--group", Value: "ID", Default: "source run group", Text: "Override the inherited group with lower-case letters, digits and single hyphens, at most 64 bytes."},
 			{Name: "--idempotency-key", Value: "KEY", Required: true, Text: "Required stable submission key; retrying the same source and options replays the same run."},
 			{Name: "--round-limit", Value: "N", Default: "lineage limit, else 4", Text: "Maximum cross-run fix rounds (1..8). An explicit higher limit permits further rounds after escalation."},
 			{Name: "--gate", Value: "CMD", Default: "lineage gate, else producer gate", Text: "Repeatable worker-owned final gate command; overrides inherited commands."},

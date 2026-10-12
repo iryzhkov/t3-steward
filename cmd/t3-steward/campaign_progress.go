@@ -10,6 +10,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 func parseProgressArgs(args []string) (backlog.ProgressFilter, bool, error) {
@@ -25,7 +26,7 @@ func parseProgressArgs(args []string) (backlog.ProgressFilter, bool, error) {
 			}
 			seen[arg] = true
 			asJSON = true
-		case "--owner", "--since":
+		case "--group", "--owner", "--since":
 			if seen[arg] {
 				return filter, false, fmt.Errorf("duplicate %s", arg)
 			}
@@ -34,7 +35,12 @@ func parseProgressArgs(args []string) (backlog.ProgressFilter, bool, error) {
 				return filter, false, fmt.Errorf("%s needs a value", arg)
 			}
 			i++
-			if arg == "--owner" {
+			if arg == "--group" {
+				if err := domain.ValidateCampaignGroup(args[i]); err != nil {
+					return filter, false, err
+				}
+				filter.Group = args[i]
+			} else if arg == "--owner" {
 				filter.Owner = args[i]
 			} else {
 				since, err := time.Parse(time.RFC3339, args[i])

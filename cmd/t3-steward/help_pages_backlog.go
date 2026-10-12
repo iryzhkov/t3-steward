@@ -315,6 +315,7 @@ func backlogHelpPages() []helpPage {
 			"t3-steward backlog list [--project P] [--schedule S] [--state open|terminal|--progress STATES] [--class CLASS] [--worker W] [--quota-pool Q] [--limit N] [--since DURATION] [--thread current|ID] [--include-sink] [--json]",
 			[]helpFlag{
 				{Name: "--project", Value: "P", Default: "every project", Text: "Only runs of this project."},
+				{Name: "--group", Value: "ID", Default: "every group", Text: "Only runs in this group; lower-case letters, digits and single hyphens, at most 64 bytes."},
 				{Name: "--schedule", Value: "S", Default: "every run", Text: "Only runs this schedule triggered."},
 				{Name: "--state", Value: "open|terminal", Default: "every state", Text: "Filter run progress: terminal is succeeded, failed, cancelled or skipped; open is every other state. Mutually exclusive with --progress."},
 				{Name: "--progress", Value: "STATES", Default: "every state", Text: "Comma-separated progress states: queued, blocked, ready, active, needs-input, waiting-external, verifying, succeeded, failed, cancelled, skipped."},

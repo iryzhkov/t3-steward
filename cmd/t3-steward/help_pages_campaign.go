@@ -12,7 +12,7 @@ import "strings"
 // that belong to a sibling verb. Naming them here is what makes this page a
 // complete account of what that parser will do with this command line.
 const campaignAuthoringNote = "validate, plan, check and submit share one option parser. It also recognises " +
-	"--dot, --register-only, --idempotency-key, --task, --allow-unverified, --reason, --notify-thread and --no-notify, and refuses the ones " +
+	"--dot, --group (submit only), --register-only, --idempotency-key, --task, --allow-unverified, --reason, --notify-thread and --no-notify, and refuses the ones " +
 	"that belong to a sibling verb with \"campaign <verb> does not accept <option>\". Any other option is refused " +
 	"as unknown."
 
@@ -65,6 +65,7 @@ func campaignHelpPages() []helpPage {
 			Purpose: "submit one campaign run, or register a definition for schedules with --register-only.",
 			Usage:   []string{"t3-steward campaign submit <directory|workflow.yaml> --idempotency-key KEY [--register-only] [--allow-unverified --reason TEXT] [--notify-thread current|<id>|--no-notify] [--json]"},
 			Flags: []helpFlag{
+				{Name: "--group", Value: "ID", Default: "ungrouped", Text: "Record a group of at most 64 bytes: lower-case letters, digits and single hyphens. Replays retain the original group; incompatible with --register-only."},
 				{Name: "--register-only", Default: "off", Text: "Retain the workflow definition for schedules without starting a run or registering a wake. Refuses supervised manifests until scheduled supervision is implemented. Changing this mode under an existing key is refused."},
 				{Name: "--idempotency-key", Value: "KEY", Required: true, Text: "The key this submission is recorded under. The same key with the same directory returns the same run, the archive being packed deterministically; the same key with different content is refused. It is required rather than generated, because a generated key turns a retry into a second run."},
 				{Name: "--allow-unverified", Default: "off", Text: "Skip the client-side readiness check. The coordinator still refuses an impossible campaign. Requires --reason. Agents should not use it."},
@@ -84,6 +85,7 @@ func campaignHelpPages() []helpPage {
 			Purpose: "create a second run from one task; --use-commit reuses a failed attempt's retained commit after verification failure.",
 			Usage:   []string{"t3-steward campaign rerun <run> --from TASK --idempotency-key KEY [--prompt TEXT] [--reason TEXT] [--use-commit] [--json]"},
 			Flags: []helpFlag{
+				{Name: "--group", Value: "ID", Default: "source run group", Text: "Override the inherited group with lower-case letters, digits and single hyphens, at most 64 bytes. The override participates in amendment replay identity."},
 				{Name: "--from", Value: "TASK", Required: true, Text: "The task to start again from. Everything that depends on it is run again."},
 				{Name: "--idempotency-key", Value: "KEY", Required: true, Text: "The key the rerun is recorded under. Repeating it with the same content returns the same run."},
 				{Name: "--prompt", Value: "TEXT", Default: "source prompt", Text: "Corrected instructions for the selected root task only; retained as a new immutable input."},
@@ -139,7 +141,7 @@ func campaignHelpPages() []helpPage {
 		{
 			Path: "campaign progress", Purpose: "compact read-only progress mirror from coordinator facts.",
 			Usage:    []string{"t3-steward campaign progress [<run>...] [--owner THREAD] [--since RFC3339] [--json]"},
-			Flags:    []helpFlag{{Name: "--owner", Value: "THREAD", Default: "all notify threads", Text: "Filter by the recorded notify thread, including settled notifications."}, {Name: "--since", Value: "RFC3339", Default: "open runs and terminal runs from the last 24 hours", Text: "Inclusive last-change timestamp; replaces the default 24-hour terminal window."}, {Name: "--json", Default: "false", Text: "Print schemaVersion 1 with complete values."}},
+			Flags:    []helpFlag{{Name: "--group", Value: "ID", Default: "no group filter", Text: "Select every run in the group, including older terminal runs. Prints done/total, open and needs-attention counts and one row per run; JSON carries group counts and verdicts."}, {Name: "--owner", Value: "THREAD", Default: "all notify threads", Text: "Filter by the recorded notify thread, including settled notifications."}, {Name: "--since", Value: "RFC3339", Default: "open runs and terminal runs from the last 24 hours", Text: "Inclusive last-change timestamp; replaces the default 24-hour terminal window."}, {Name: "--json", Default: "false", Text: "Print schemaVersion 1 with complete values."}},
 			Exits:    coordinatorExits(),
 			JSONKeys: []string{"schemaVersion", "generatedAt", "runs"},
 			JSONNote: "runs and each tasks/outputs field are arrays, including when empty; see docs/backlog-v2-operations.md.",

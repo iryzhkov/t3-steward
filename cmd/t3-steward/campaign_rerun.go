@@ -18,6 +18,7 @@ const campaignRerunSchemaVersion = 1
 // value of the operation is that there are two of them and the first one is
 // still readable.
 type campaignRerun struct {
+	Group         string                 `json:"group,omitempty"`
 	SchemaVersion int                    `json:"schemaVersion"`
 	SourceRunID   string                 `json:"sourceRunId"`
 	SourceTaskID  string                 `json:"sourceTaskId"`
@@ -42,6 +43,7 @@ type campaignCarried struct {
 // parser would mean teaching it that its one positional is sometimes not a
 // path at all.
 type campaignRerunArgs struct {
+	group     string
 	run       string
 	from      string
 	key       string
@@ -65,12 +67,14 @@ func parseCampaignRerunArgs(args []string) (campaignRerunArgs, error) {
 				return campaignRerunArgs{}, errors.New("--json may be supplied only once")
 			}
 			parsed.asJSON = true
-		case "--from", "--idempotency-key", "--reason", "--prompt":
+		case "--group", "--from", "--idempotency-key", "--reason", "--prompt":
 			if index+1 >= len(args) || args[index+1] == "" {
 				return campaignRerunArgs{}, fmt.Errorf("%s needs one nonempty value", argument)
 			}
 			target := &parsed.from
 			switch argument {
+			case "--group":
+				target = &parsed.group
 			case "--idempotency-key":
 				target = &parsed.key
 			case "--reason":
@@ -104,7 +108,7 @@ func parseCampaignRerunArgs(args []string) (campaignRerunArgs, error) {
 		// requires one: a generated key turns a retry into a second run.
 		return campaignRerunArgs{}, errors.New("campaign rerun requires --idempotency-key KEY")
 	}
-	return parsed, nil
+	return parsed, domain.ValidateCampaignGroup(parsed.group)
 }
 
 func (c campaignCLI) runRerun(ctx context.Context, args []string) error {
@@ -139,6 +143,7 @@ func (c campaignCLI) runRerun(ctx context.Context, args []string) error {
 		reason = fmt.Sprintf("rerun of %s from %s", parsed.run, parsed.from)
 	}
 	result, err := c.amend(ctx, domain.GraphAmendment{
+		Group:            parsed.group,
 		ID:               parsed.key,
 		RunID:            summary.Run.ID,
 		ExpectedRevision: summary.Run.GraphRevision,
@@ -160,6 +165,7 @@ func (c campaignCLI) runRerun(ctx context.Context, args []string) error {
 
 func campaignRerunDocument(parsed campaignRerunArgs, sourceRunID string, result domain.GraphAmendmentResult) campaignRerun {
 	document := campaignRerun{
+		Group:         result.Run.Group,
 		SchemaVersion: campaignRerunSchemaVersion,
 		SourceRunID:   sourceRunID,
 		SourceTaskID:  parsed.from,

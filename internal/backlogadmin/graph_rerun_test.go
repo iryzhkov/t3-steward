@@ -75,7 +75,7 @@ func rerunFixture(t *testing.T) (*Service, *sqlite.Store, string) {
 	}
 	run, err := domain.BindRunSink(domain.WorkflowRun{
 		ID: "run", WorkflowID: "workflow", GraphRevision: 1, Revision: 1,
-		Progress: domain.ProgressFailed, CreatedAt: now, UpdatedAt: now,
+		Group: "wave-1", Progress: domain.ProgressFailed, CreatedAt: now, UpdatedAt: now,
 	}, records.Tasks)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestRerunCreatesOneLinkedRunAndLeavesTheSourceAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Run.ID == "run" || result.Run.WorkflowID != "workflow" || result.Run.GraphRevision != 1 {
+	if result.Run.Group != "wave-1" || result.Run.ID == "run" || result.Run.WorkflowID != "workflow" || result.Run.GraphRevision != 1 {
 		t.Fatalf("new run identity: %+v", result.Run)
 	}
 	provenance := result.Graph.RerunOf

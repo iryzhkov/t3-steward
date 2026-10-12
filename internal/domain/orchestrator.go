@@ -157,6 +157,7 @@ type QuotaAdmissionRootReceipt struct {
 
 // WorkflowRun is one execution of a workflow definition.
 type WorkflowRun struct {
+	Group           string                   `json:"group,omitempty"`
 	QuotaAdmission  *QuotaAdmissionReceipt   `json:"quotaAdmission,omitempty"`
 	RouteSelections map[string]RoleSelection `json:"routeSelections,omitempty"`
 	Graph           *GraphDefinition         `json:"graph,omitempty"`

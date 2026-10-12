@@ -138,6 +138,7 @@ type Principal struct {
 }
 
 type Filter struct {
+	Group       string                 `json:"group,omitempty"`
 	Project     string                 `json:"project,omitempty"`
 	ScheduleID  string                 `json:"scheduleId,omitempty"`
 	Progress    []domain.ProgressState `json:"progress,omitempty"`

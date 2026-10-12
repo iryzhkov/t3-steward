@@ -15,6 +15,7 @@ import (
 )
 
 type ArchiveSubmission struct {
+	Group          string
 	RegisterOnly   bool
 	IdempotencyKey string
 	Archive        io.Reader
@@ -57,6 +58,7 @@ func (s *SubmissionService) SubmitArchive(ctx context.Context, request ArchiveSu
 		return SubmissionResult{}, err
 	}
 	return s.SubmitDirectory(ctx, DirectorySubmission{
+		Group:            request.Group,
 		RegisterOnly:     request.RegisterOnly,
 		IdempotencyKey:   request.IdempotencyKey,
 		BundleDir:        root,

@@ -681,6 +681,7 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	}
 	response, err := submitArchiveRetrying(ctx, client,
 		backlogadmin.LocalSubmissionRequest{
+			Group:            parsed.group,
 			IdempotencyKey:   parsed.key,
 			RegisterOnly:     parsed.registerOnly,
 			Unverified:       parsed.unverified,
@@ -763,6 +764,9 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	); err != nil {
 		return err
 	}
+	if response.Group != "" {
+		fmt.Fprintf(c.stdout, "group: %s\n", response.Group)
+	}
 	renderRunProgress(c.stdout, wake)
 	renderWake(c.stdout, wake)
 	_, err = fmt.Fprintf(c.stdout,
@@ -793,6 +797,7 @@ func (c campaignCLI) prepare(source string) (campaign.Bundle, campaign.Plan, err
 
 // campaignArgs is one parsed authoring command line.
 type campaignArgs struct {
+	group  string
 	source string
 	key    string
 	task   string
@@ -817,6 +822,15 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 	var parsed campaignArgs
 	for index := 0; index < len(args); index++ {
 		switch argument := args[index]; argument {
+		case "--group":
+			if command != "submit" || parsed.group != "" || index+1 >= len(args) || args[index+1] == "" {
+				return campaignArgs{}, errors.New("--group needs one value on submit")
+			}
+			index++
+			parsed.group = args[index]
+			if err := domain.ValidateCampaignGroup(parsed.group); err != nil {
+				return campaignArgs{}, err
+			}
 		case "--register-only":
 			if command != "submit" || parsed.registerOnly {
 				return campaignArgs{}, errors.New("--register-only is accepted once by submit only; next: t3-steward campaign submit --help full")
@@ -921,6 +935,9 @@ func parseCampaignArgs(command string, args []string, allowDOT, requireKey bool)
 	}
 	if parsed.noNotify && parsed.notify != "" {
 		return campaignArgs{}, errors.New("--no-notify and --notify-thread contradict each other: one says nobody is woken, the other names who is")
+	}
+	if parsed.registerOnly && parsed.group != "" {
+		return campaignArgs{}, errors.New("--register-only creates no run for a group")
 	}
 	if parsed.registerOnly && parsed.notify != "" {
 		return campaignArgs{}, errors.New("--register-only creates no run to notify for; next: t3-steward campaign submit --help full")

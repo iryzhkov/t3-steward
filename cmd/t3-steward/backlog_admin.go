@@ -809,6 +809,14 @@ func parseWorkflowFilters(args []string) (backlogadmin.Filter, error) {
 			state = value
 		case "--project":
 			filter.Project = value
+		case "--group":
+			if filter.Group != "" || value == "" {
+				return filter, errors.New("--group needs one value")
+			}
+			if err := domain.ValidateCampaignGroup(value); err != nil {
+				return filter, err
+			}
+			filter.Group = value
 		case "--schedule":
 			filter.ScheduleID = value
 		case "--progress":
@@ -1395,6 +1403,9 @@ func renderWorkflow(out io.Writer, detail *backlogadmin.WorkflowDetail) {
 	fmt.Fprintf(out, "run: %s\nworkflow: %s (%s)\nproject: %s\nclass: %s\nprogress: %s\nrevision: %d\n",
 		summary.Run.ID, summary.Workflow.Name, summary.Workflow.ID, summary.Workflow.Project,
 		summary.Workflow.Class, summary.Run.Progress, summary.Run.Revision)
+	if summary.Run.Group != "" {
+		fmt.Fprintf(out, "group: %s\n", summary.Run.Group)
+	}
 	if lineage := summary.Run.Lineage; lineage != nil {
 		fmt.Fprintf(out, "parent: run %s task %s attempt %s (parent started %s)\n",
 			lineage.ParentRunID, lineage.ParentTaskID, lineage.ParentAttemptID, formatTime(lineage.ParentStartedAt))

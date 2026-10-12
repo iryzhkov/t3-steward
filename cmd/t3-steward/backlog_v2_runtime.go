@@ -153,6 +153,7 @@ func (s coordinatorLocalService) SubmitArchive(
 	archive io.Reader,
 ) (backlogadmin.LocalSubmissionResponse, error) {
 	result, err := s.submissions.SubmitArchive(ctx, backlog.ArchiveSubmission{
+		Group:          request.Group,
 		RegisterOnly:   request.RegisterOnly,
 		IdempotencyKey: request.IdempotencyKey,
 		Archive:        archive,
@@ -170,7 +171,8 @@ func (s coordinatorLocalService) SubmitArchive(
 		return backlogadmin.LocalSubmissionResponse{}, errors.New("submission completed without an acceptance time")
 	}
 	return backlogadmin.LocalSubmissionResponse{
-		Key: result.Record.Key, Digest: result.Record.Digest,
+		Group: result.Record.Group,
+		Key:   result.Record.Key, Digest: result.Record.Digest,
 		WorkflowID: result.Record.WorkflowID, RunID: result.Record.RunID,
 		State: string(result.Record.State), AcceptedAt: result.Record.AcceptedAt.Format(time.RFC3339Nano),
 		Replay: result.Replay,
