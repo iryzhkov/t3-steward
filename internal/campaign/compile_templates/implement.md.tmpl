@@ -43,3 +43,8 @@ Review: a separate review task reads the commit and `handoff.md` next. Do not
 claim acceptance.
 
 Acceptance criteria: the ones in `{{.UnitPath}}`.
+{{if .AcceptanceTests}}
+Write the named tests first and run them for initial failure where behavior is new.
+Explain cases that cannot fail first, then implement. In `handoff.md`, map every case
+to its test function and result.
+{{end}}

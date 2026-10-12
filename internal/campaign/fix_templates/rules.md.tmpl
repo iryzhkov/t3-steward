@@ -1,6 +1,6 @@
 # Fix-chain rules
 
-Read the complete original brief at .t3/inputs/inputs/fix/brief/prompt.md and every file under .t3/inputs/inputs/fix/brief/inputs/. Read context under .t3/inputs/inputs/fix/context/. Keep the original scope, acceptance criteria and base constraints.
+Read the complete original brief at .t3/inputs/inputs/fix/brief/prompt.md and every file under .t3/inputs/inputs/fix/brief/inputs/. Read context under .t3/inputs/inputs/fix/context/. Keep the original scope, acceptance criteria and base constraints. Tests named in the original brief must still exist and pass; removal or weakening is a regression.
 
 Create continuation.md immediately and keep its goal, checklist, current step, blockers and last verification current. Only declared artifacts are retained. List .t3/dependencies/ to discover producer directories; never hard-code dependency namespaces. Read commit provenance records and check out the exact dependency commit before work; never invent a moving branch or base.
 

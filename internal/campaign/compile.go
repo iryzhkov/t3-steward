@@ -110,6 +110,8 @@ type compileFrontMatter struct {
 	Roles    compileRoles  `yaml:"roles"`
 	Routes   compileRoutes `yaml:"routes"`
 	Verify   []string      `yaml:"verify"`
+
+	AcceptanceTests yaml.Node `yaml:"acceptance_tests"`
 	// Ledger and placement are validated by the generated workflow format.
 	Ledger    *backlog.ManifestLedger `yaml:"ledger"`
 	Placement *compilePlacement       `yaml:"placement"`
@@ -286,6 +288,10 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 		return 1
 	}
 
+	if node := mappingValue(root, "acceptance_tests"); node != nil && (node.Kind != yaml.ScalarNode || node.Tag != "!!str" || (node.Value != "required" && node.Value != "off")) {
+		return CompilePlan{}, refuse(lineOf(root, "acceptance_tests"), "acceptance_tests must be required or off")
+	}
+
 	placementNode := mappingValue(root, "placement")
 	if (mappingKey(placementNode, "hosts") != nil || mappingKey(placementNode, "requires") != nil) &&
 		(mappingKey(placementNode, "implement") != nil || mappingKey(placementNode, "review") != nil) {
@@ -355,6 +361,7 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 	plan := CompilePlan{Project: header.Project, Ref: header.Ref, Class: class, Template: templateName}
 	unitsNode := mappingValue(root, "units")
 	declared := map[string]int{}
+	var acceptanceRefusals []error
 	for index, spec := range header.Units {
 		line := lineOf(root, "units")
 		if unitsNode != nil && index < len(unitsNode.Content) {
@@ -391,11 +398,21 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 			return CompilePlan{}, refuse(line, "unit %q: section %q matches %d headings, on lines %s; name exactly one",
 				spec.ID, spec.Section, len(matches), joinAnd(at))
 		}
-		unit, err := renderCompiledUnit(plan, header, spec, line, raw, body[matches[0].start:sectionEnd(body, headings, matches[0])], extras)
+		section := body[matches[0].start:sectionEnd(body, headings, matches[0])]
+		if header.AcceptanceTests.Value == "required" {
+			if reason := acceptanceTestsReason(section); reason != "" {
+				acceptanceRefusals = append(acceptanceRefusals, refuse(line, "unit %q: %s", spec.ID, reason))
+				continue
+			}
+		}
+		unit, err := renderCompiledUnit(plan, header, spec, line, raw, section, extras)
 		if err != nil {
 			return CompilePlan{}, refuse(line, "unit %q: %v", spec.ID, err)
 		}
 		plan.Units = append(plan.Units, unit)
+	}
+	if len(acceptanceRefusals) > 0 {
+		return CompilePlan{}, errors.Join(acceptanceRefusals...)
 	}
 	return plan, nil
 }
@@ -551,6 +568,7 @@ func sectionEnd(body []byte, headings []planHeading, heading planHeading) int {
 
 // compilePromptData is what the prompt templates may name.
 type compilePromptData struct {
+	AcceptanceTests  bool
 	UnitID           string
 	Title            string
 	Section          string
@@ -673,7 +691,8 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 		title = spec.Section
 	}
 	data := compilePromptData{
-		UnitID: spec.ID, Title: title, Section: spec.Section,
+		AcceptanceTests: header.AcceptanceTests.Value == "required",
+		UnitID:          spec.ID, Title: title, Section: spec.Section,
 		Project: plan.Project, Ref: plan.Ref,
 		PlanPath:         ".t3/inputs/" + compiledPlanInput,
 		UnitPath:         ".t3/inputs/" + compiledUnitInput,

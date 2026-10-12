@@ -46,3 +46,7 @@ Syntactically representable input alone does not establish plausibility.
 Label exotic encodings (including Unicode-encoded tokens), adversarial YAML, and
 Unicode edge cases as FOLLOW-UPS with reproduction evidence; these nonblocking
 findings cannot change the verdict.
+{{if .AcceptanceTests}}
+Check that each named test exists, matches the case and passes. Missing,
+mismatched or failing tests are unmet criteria.
+{{end}}

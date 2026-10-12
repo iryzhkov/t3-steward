@@ -96,6 +96,9 @@ func campaignCompileHelpPage() helpPage {
 			"Plan format compile/v1 is a Markdown file whose YAML front matter, between leading --- lines, holds these keys and no others: " +
 			"compile: v1; project, the catalog project; ref, a full 40-character commit every unit is pinned to (a branch name is refused); " +
 			"class, required or surplus (default surplus); template: implement-review (default) or plan-review; " +
+			"acceptance_tests: required|off (absent means off). With required, each brief needs, outside fenced code, a line exactly Acceptance tests: followed by a Markdown list. " +
+			"Each item has a backticked Go test name or short case name, a colon and expected behavior; at least one item must contain (edge). " +
+			"Unordered and ordered lists and wrapped/indented continuations are supported, including an edge tag on a continuation. Blank lines may separate items; a new top-level paragraph or heading ends the list. " +
 			"type: git (default) requires ref; type: fresh requires plan-review and forbids even an empty ref. " +
 			"plan-review units require outputs: [plan.md, risks.md], clean relative file names validated as manifest outputs; artifacts/continuation.md, artifacts/handoff.md and review.md are reserved. " +
 			"The plan task declares these outputs and task state under artifacts/; review consumes every plan output and artifacts/handoff.md through inputs_from, writes review.md and task state, and declares the same verdict contract. Neither task declares commits. " +
