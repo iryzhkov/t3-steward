@@ -539,12 +539,32 @@ func (s *Store) LiveTaskWaitAttempts(ctx context.Context) (map[string]string, er
 // enough: progress alone collects a task mid-wake, and wait liveness alone
 // re-parks a task that is already running again.
 func (s *Store) ParkedTaskWaitAttempts(ctx context.Context) (map[string]string, error) {
+	return s.parkedTaskWaitAttempts(ctx, "")
+}
+
+// ParkedTaskWaitAttemptsFor scopes ownership across epochs, retaining all wake
+// group members for downgrade reconciliation and settlement-to-delivery custody.
+func (s *Store) ParkedTaskWaitAttemptsFor(ctx context.Context, workerID string) (map[string]string, error) {
+	if workerID == "" {
+		return nil, errors.New("worker identity is required")
+	}
+	return s.parkedTaskWaitAttempts(ctx, workerID)
+}
+
+func (s *Store) parkedTaskWaitAttempts(ctx context.Context, workerID string) (map[string]string, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	waits, err := loadJSON[domain.TaskWait](ctx, tx, "coordinator_task_waits")
+	query := "SELECT record FROM coordinator_task_waits ORDER BY id"
+	var args []any
+	if workerID != "" {
+		query = `SELECT record FROM coordinator_task_waits WHERE attempt_id IN
+		(SELECT attempt_id FROM coordinator_assignments WHERE json_extract(record, '$.workerId') = ?) ORDER BY id`
+		args = append(args, workerID)
+	}
+	waits, err := loadJSONQuery[domain.TaskWait](ctx, tx, "coordinator_task_waits", query, args...)
 	if err != nil {
 		return nil, err
 	}

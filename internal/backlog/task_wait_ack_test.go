@@ -17,11 +17,11 @@ type ackParkStore struct {
 	t            *testing.T
 }
 
-func (s *ackParkStore) LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error) {
+func (s *ackParkStore) LoadWorkerSnapshot(context.Context, string) (domain.WorkerSnapshot, bool, error) {
 	s.readSnapshot = true
-	return []domain.WorkerSnapshot{s.snapshot}, nil
+	return s.snapshot, true, nil
 }
-func (s *ackParkStore) ParkedTaskWaitAttempts(context.Context) (map[string]string, error) {
+func (s *ackParkStore) ParkedTaskWaitAttemptsFor(context.Context, string) (map[string]string, error) {
 	if !s.readSnapshot {
 		s.t.Fatal("park state read before durable worker snapshot")
 	}

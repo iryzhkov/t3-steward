@@ -2,6 +2,8 @@ package backlog
 
 import (
 	"context"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -17,8 +19,60 @@ type titleStore struct {
 	snapshots []domain.WorkerSnapshot
 }
 
-func (s titleStore) LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error) {
-	return s.snapshots, nil
+func (s titleStore) LoadWorkerSnapshot(_ context.Context, workerID string) (domain.WorkerSnapshot, bool, error) {
+	for _, snapshot := range s.snapshots {
+		if snapshot.WorkerID == workerID {
+			return snapshot, true, nil
+		}
+	}
+	return domain.WorkerSnapshot{}, false, nil
+}
+
+func TestScopedParkStatementMatchesGlobalPredicates(t *testing.T) {
+	ctx, now := context.Background(), time.Now().UTC()
+	must := func(err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	must(err)
+	defer store.Close()
+	r := titleRecords(now)
+	r.Attempts[3].Progress = domain.ProgressSucceeded // another worker contributes
+	r.Assignments = append(r.Assignments[:4], r.Assignments[5])
+	for i := range r.Assignments {
+		r.Assignments[i].DispatchToken = r.Assignments[i].ID
+	}
+	for _, id := range []string{"unresolved", "retained", "pruned", "graph"} {
+		run, task, artifact := campaignRunRecords(id, id, "implementation")
+		task.Name = id
+		if id != "unresolved" {
+			settle(&run)
+		}
+		if id == "graph" {
+			run.Graph = &domain.GraphDefinition{Tasks: []domain.Task{task}}
+		}
+		r.WorkflowRuns = append(r.WorkflowRuns, run)
+		r.Tasks = append(r.Tasks, task)
+		if id == "retained" || id == "graph" {
+			r.Artifacts = append(r.Artifacts, artifact)
+		}
+	}
+	must(store.SaveCoordinatorRecords(ctx, r))
+	must(store.SaveWorkerSnapshot(ctx, domain.WorkerSnapshot{WorkerID: "normandy", WorkerEpoch: "epoch", CoordinatorEpoch: 1, Sequence: 1, Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Hour), Inventory: titleWorker(workerproto.CapabilitySessionTitles).Inventory}))
+	got, err := ParkedAssignmentsFor(ctx, store, "normandy")
+	must(err)
+	var want workerproto.SnapshotRequest
+	stateSessionTitles(&want, r, "normandy", now)
+	must(stateCampaignRefs(&want, r))
+	if !reflect.DeepEqual(got.SessionStates, want.SessionStates) || !reflect.DeepEqual(got.RetainedCampaignRuns, want.RetainedCampaignRuns) {
+		t.Fatalf("scoped=%+v baseline=%+v", got, want)
+	}
+	must(store.Close())
+	if _, err := ParkedAssignmentsFor(ctx, store, "normandy"); err == nil {
+		t.Fatal("failed read sent an empty keep statement")
+	}
 }
 
 func titleWorker(capabilities ...string) domain.WorkerSnapshot {

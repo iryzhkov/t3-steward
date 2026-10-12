@@ -28,8 +28,13 @@ func incidentGuard(now time.Time) HostQuotaGuard {
 // snapshot, which decides what the coordinator asks of it.
 type snapshotSource []domain.WorkerSnapshot
 
-func (s snapshotSource) LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error) {
-	return s, nil
+func (s snapshotSource) LoadWorkerSnapshot(_ context.Context, workerID string) (domain.WorkerSnapshot, bool, error) {
+	for _, snapshot := range s {
+		if snapshot.WorkerID == workerID {
+			return snapshot, true, nil
+		}
+	}
+	return domain.WorkerSnapshot{}, false, nil
 }
 
 type emptyQuotaStore struct{}

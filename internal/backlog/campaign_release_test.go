@@ -75,6 +75,10 @@ func TestCampaignRefLifetimeWithLazyTerminalArtifacts(t *testing.T) {
 			t.Fatal("retention check decoded terminal artifacts")
 		}
 		retained, released := CampaignRefLifetime(records)
+		scoped, err := store.LoadRetainedCampaignRuns(ctx)
+		if err != nil || strings.Join(scoped, ",") != strings.Join(retained, ",") {
+			t.Fatalf("compact retention=%v baseline=%v err=%v", scoped, retained, err)
+		}
 		if wantRetained && (len(retained) != 1 || len(released) != 0) ||
 			!wantRetained && (len(retained) != 0 || len(released) != 1) {
 			t.Fatalf("retained=%v released=%v wantRetained=%v", retained, released, wantRetained)

@@ -96,6 +96,10 @@ func TestSharedWakeRecoversPartialLegacyDeliveryWithoutAnotherSend(t *testing.T)
 						t.Fatal(err)
 					}
 				}
+				scoped, err := store.ParkedTaskWaitAttemptsFor(ctx, "worker")
+				if err != nil || scoped[attempt.ID] == "" {
+					t.Fatalf("scoped downgrade custody: %v %v", scoped, err)
+				}
 				parked, err := store.ParkedTaskWaitAttempts(ctx)
 				if err != nil || parked[attempt.ID] == "" {
 					t.Fatalf("ambiguous wake lost collection fence: %+v %v", parked, err)

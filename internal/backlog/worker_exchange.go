@@ -183,8 +183,9 @@ func activationDispatchFailureCurrent(records sqlite.CoordinatorRecords, assignm
 // still park. A store that does not implement it has none, and every worker is
 // told that nothing is parked, which is exactly true for it.
 type TaskWaitParkStore interface {
-	ParkedTaskWaitAttempts(context.Context) (map[string]string, error)
-	LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error)
+	ParkedTaskWaitAttemptsFor(context.Context, string) (map[string]string, error)
+	LoadWorkerExchangeRecords(context.Context, string, bool) (sqlite.CoordinatorRecords, error)
+	LoadRetainedCampaignRuns(context.Context) ([]string, error)
 }
 
 // The coordinator's own store must satisfy it. The assertion below is what
@@ -229,16 +230,13 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 	// proves that the report was constructed after that worker observation;
 	// receiving a recently-built empty list by itself provides no such fence.
 	if snapshots, ok := source.(interface {
-		LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error)
+		LoadWorkerSnapshot(context.Context, string) (domain.WorkerSnapshot, bool, error)
 	}); ok {
-		observed, err := snapshots.LoadWorkerSnapshots(ctx)
+		snapshot, found, err := snapshots.LoadWorkerSnapshot(ctx, workerID)
 		if err != nil {
 			return workerproto.SnapshotRequest{}, err
 		}
-		for _, snapshot := range observed {
-			if snapshot.WorkerID != workerID {
-				continue
-			}
+		if found {
 			// Host bucket observations are asked of a worker build that
 			// advertises them, so an older worker never meets the field.
 			if slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityResourceTelemetry) {
@@ -267,26 +265,25 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 				request.ObservedWorkerEpoch = snapshot.WorkerEpoch
 				request.ObservedSequence = snapshot.Sequence
 			}
-			break
 		}
 	}
 	waits, ok := source.(TaskWaitParkStore)
 	if !ok || workerID == "" {
 		return request, nil
 	}
-	parked, err := waits.ParkedTaskWaitAttempts(ctx)
+	parked, err := waits.ParkedTaskWaitAttemptsFor(ctx, workerID)
 	if err != nil {
 		return workerproto.SnapshotRequest{}, fmt.Errorf("load parked task waits: %w", err)
 	}
-	records, err := waits.LoadCoordinatorRecords(ctx)
+	records, err := waits.LoadWorkerExchangeRecords(ctx, workerID, sessionTitles)
 	if err != nil {
 		return workerproto.SnapshotRequest{}, err
 	}
-	records, err = withCampaignCommitArtifacts(ctx, records)
+	retained, err := waits.LoadRetainedCampaignRuns(ctx)
 	if err != nil {
 		return workerproto.SnapshotRequest{}, err
 	}
-	if err := stateCampaignRefs(&request, records); err != nil {
+	if err := stateRetainedCampaignRefs(&request, retained); err != nil {
 		return workerproto.SnapshotRequest{}, err
 	}
 	if sessionTitles {

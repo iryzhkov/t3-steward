@@ -170,12 +170,17 @@ type parkStore struct {
 	err     error
 }
 
-func (s parkStore) ParkedTaskWaitAttempts(context.Context) (map[string]string, error) {
+func (s parkStore) ParkedTaskWaitAttemptsFor(context.Context, string) (map[string]string, error) {
 	return s.parked, s.err
 }
 
-func (s parkStore) LoadCoordinatorRecords(context.Context) (sqlite.CoordinatorRecords, error) {
+func (s parkStore) LoadWorkerExchangeRecords(context.Context, string, bool) (sqlite.CoordinatorRecords, error) {
 	return s.records, nil
+}
+
+func (s parkStore) LoadRetainedCampaignRuns(context.Context) ([]string, error) {
+	retained, _ := CampaignRefLifetime(s.records)
+	return retained, s.err
 }
 
 // The coordinator tells each worker which of its own assignments are parked,

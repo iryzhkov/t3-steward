@@ -136,6 +136,10 @@ func runSettled(run domain.WorkflowRun) bool {
 // release everything.
 func stateCampaignRefs(request *workerproto.SnapshotRequest, records sqlite.CoordinatorRecords) error {
 	retained, _ := CampaignRefLifetime(records)
+	return stateRetainedCampaignRefs(request, retained)
+}
+
+func stateRetainedCampaignRefs(request *workerproto.SnapshotRequest, retained []string) error {
 	if len(retained) > workerproto.MaxRetainedCampaignRuns {
 		return fmt.Errorf("%d campaigns hold declared commits, above the protocol limit of %d",
 			len(retained), workerproto.MaxRetainedCampaignRuns)

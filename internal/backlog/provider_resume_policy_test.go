@@ -14,8 +14,13 @@ type providerResumeSource struct {
 	admissions []domain.QuotaAdmissionRecord
 }
 
-func (s providerResumeSource) LoadWorkerSnapshots(context.Context) ([]domain.WorkerSnapshot, error) {
-	return s.snapshots, nil
+func (s providerResumeSource) LoadWorkerSnapshot(_ context.Context, workerID string) (domain.WorkerSnapshot, bool, error) {
+	for _, snapshot := range s.snapshots {
+		if snapshot.WorkerID == workerID {
+			return snapshot, true, nil
+		}
+	}
+	return domain.WorkerSnapshot{}, false, nil
 }
 
 func (s providerResumeSource) LoadQuotaAdmissions(context.Context) ([]domain.QuotaAdmissionRecord, error) {

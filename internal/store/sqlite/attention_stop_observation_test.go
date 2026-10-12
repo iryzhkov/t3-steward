@@ -36,6 +36,10 @@ type attentionStopConn struct {
 	reads *attentionStopReads
 }
 
+func (c *attentionStopConn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, opts)
+}
+
 func (c *attentionStopConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
 	return c.Conn.(driver.ExecerContext).ExecContext(ctx, query, args)
 }
