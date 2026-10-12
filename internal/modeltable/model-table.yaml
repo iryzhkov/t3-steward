@@ -1,0 +1,50 @@
+schema: model-table/v1
+# Artificial Analysis measurements via Slopalytics, recorded in the roadmap
+# addendum on 2026-10-09. Cost is the reported USD measurement, not a token price.
+# Excluded: claudeAgent/claude-haiku-5-5 at xhigh (quality 41.2, cost 0.12 USD).
+# xhigh is outside this table's allowed low/medium/high efforts.
+entries:
+  - route: codex/gpt-6.1-sol
+    effort: high
+    quality: 50.2
+    cost_usd: 0.32
+    source: Artificial Analysis via Slopalytics
+    recorded: "2026-10-09"
+  - route: claudeAgent/claude-opus-5-5
+    effort: high
+    quality: 53.6
+    cost_usd: 1.82
+    source: Artificial Analysis via Slopalytics
+    recorded: "2026-10-09"
+  - route: claudeAgent/claude-sonnet-5-5
+    effort: medium
+    quality: 40.8
+    cost_usd: 0.48
+    source: Artificial Analysis via Slopalytics
+    recorded: "2026-10-09"
+# Preferences preserve the bundled omarchy-pc route policy of 2026-10-11.
+# Floors are deliberately omitted: omitted means no floor.
+roles:
+  - name: plan
+    preference:
+      - {route: claudeAgent/claude-opus-5-5, effort: high}
+      - {route: codex/gpt-6.1-sol, effort: high}
+  - name: execute
+    preference:
+      - {route: claudeAgent/claude-opus-5-5, effort: medium}
+      - {route: codex/gpt-6.1-sol, effort: medium}
+  - name: review
+    preference:
+      - {route: claudeAgent/claude-opus-5-5, effort: medium}
+      - {route: codex/gpt-6.1-sol, effort: medium}
+  - name: critical-review
+    preference:
+      - {route: claudeAgent/claude-fable-5-1, effort: medium}
+      - {route: codex/gpt-6-astra, effort: medium}
+  - name: read
+    preference:
+      - {route: codex/gpt-6-luna, effort: high}
+      - {route: claudeAgent/claude-haiku-5-5, effort: high}
+  - name: 3d
+    preference:
+      - {route: codex/gpt-6-astra, effort: medium}

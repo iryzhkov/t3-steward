@@ -1,5 +1,30 @@
 # CLI route policy
 
+## Static model and effort data
+
+`internal/modeltable/model-table.yaml` is the repository-owned `model-table/v1`
+data file, embedded and strictly loaded by `internal/modeltable.Load` (or parsed
+from bytes with `Parse`). Entries identify an INSTANCE/MODEL route and effort,
+quality score, measured cost in USD, source attribution and recorded date.
+Only the three supplied Artificial Analysis measurements via Slopalytics are
+recorded; unmeasured route/effort pairs have no inferred values. The Haiku xhigh
+measurement is excluded in a comment because this table allows only low, medium
+and high, independently of installed route-policy effort exceptions.
+
+Each role has an ordered `preference` of route/effort pairs preserving the
+bundled omarchy-pc policy of 2026-10-11. A preference can be unmeasured. Optional
+`floor` is a quality score in [0, 100]; all shipped floors are omitted, meaning
+no floor. Quality and `cost_usd` are required finite, nonnegative numbers (zero
+is valid). Unknown fields, duplicate entries/roles/preferences, malformed routes,
+invalid efforts, missing provenance and malformed dates are refused.
+
+This table does not affect routing. Unit 1.11b will generate a candidate policy
+using the data; its output must be reviewed and installed through UpKeeper.
+The installed route policy remains UpKeeper-owned, and current resolution is
+unchanged. There is no Slopalytics import, enforcement or runtime model switch.
+
+## Installed policy
+
 The steward reads `$XDG_CONFIG_HOME/t3-steward/route-policy.yaml` (normally
 `~/.config/t3-steward/route-policy.yaml`), beside `coordinator-client.json`.
 It never installs or replaces it. Use `policy show --file PATH` to inspect a
