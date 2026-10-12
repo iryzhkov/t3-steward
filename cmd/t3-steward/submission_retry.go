@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -14,10 +15,21 @@ import (
 
 // Submissions make at most three attempts. Backoff is 250ms then 500ms,
 // each with uniform jitter of up to half the base delay. Only unavailable
-// and timeout failures are retried; every attempt reuses the request and bytes.
+// and timeout failures are retried. Parent-field negotiation consumes an attempt;
+// subsequent retries reuse the negotiated request and the same archive bytes.
 func submitArchiveRetrying(ctx context.Context, client adminSubmissionService, request backlogadmin.LocalSubmissionRequest, archive []byte, stderr io.Writer) (backlogadmin.LocalSubmissionResponse, error) {
-	return retrySubmission(ctx, stderr, submissionRetryDelay, waitSubmissionRetry, func() (backlogadmin.LocalSubmissionResponse, error) {
-		return submitArchiveClaimingParent(ctx, client, request, archive)
+	return retryArchiveSubmission(ctx, client, request, archive, stderr, submissionRetryDelay, waitSubmissionRetry)
+}
+
+func retryArchiveSubmission(ctx context.Context, client adminSubmissionService, request backlogadmin.LocalSubmissionRequest, archive []byte, stderr io.Writer, delay func(int) time.Duration, wait func(context.Context, time.Duration) error) (backlogadmin.LocalSubmissionResponse, error) {
+	return retrySubmissionWithFallback(ctx, stderr, delay, wait, func() (backlogadmin.LocalSubmissionResponse, error) {
+		return client.SubmitArchive(ctx, request, bytes.NewReader(archive), int64(len(archive)))
+	}, func(err error) bool {
+		if err != nil && request.Parent != nil && strings.Contains(err.Error(), `json: unknown field "parent"`) {
+			request.Parent = nil
+			return true
+		}
+		return false
 	})
 }
 
@@ -38,6 +50,10 @@ func waitSubmissionRetry(ctx context.Context, delay time.Duration) error {
 }
 
 func retrySubmission(ctx context.Context, stderr io.Writer, delay func(int) time.Duration, wait func(context.Context, time.Duration) error, submit func() (backlogadmin.LocalSubmissionResponse, error)) (backlogadmin.LocalSubmissionResponse, error) {
+	return retrySubmissionWithFallback(ctx, stderr, delay, wait, submit, nil)
+}
+
+func retrySubmissionWithFallback(ctx context.Context, stderr io.Writer, delay func(int) time.Duration, wait func(context.Context, time.Duration) error, submit func() (backlogadmin.LocalSubmissionResponse, error), fallback func(error) bool) (backlogadmin.LocalSubmissionResponse, error) {
 	if stderr == nil {
 		stderr = os.Stderr
 	}
@@ -47,7 +63,11 @@ func retrySubmission(ctx context.Context, stderr io.Writer, delay func(int) time
 		}
 		response, err := submit()
 		class := backlogadmin.ClassOf(err)
-		if err == nil || attempt == 3 || (class != backlogadmin.ClassUnavailable && class != backlogadmin.ClassTimeout) {
+		if err == nil || attempt == 3 {
+			return response, err
+		}
+		compatible := fallback != nil && fallback(err)
+		if !compatible && class != backlogadmin.ClassUnavailable && class != backlogadmin.ClassTimeout {
 			return response, err
 		}
 		pause := delay(attempt - 1)

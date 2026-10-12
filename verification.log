@@ -1,0 +1,42 @@
+Original pinned base: 5ee6edb318608a51a43a48afe154c19d85ada681
+Consumed implementation: 9ee38ddf6074d84d9386b07792d5b3feec1043a3
+Environment: GOMAXPROCS=3 GOFLAGS=-p=3 MAKEFLAGS=-j3 CARGO_BUILD_JOBS=3
+
+RED: go test ./cmd/t3-steward -run '^TestSubmissionRetryCompatibilityBound$' -count=1
+exit 1: maximum 3 transport attempts; got 6 sends and 2 retry lines; final error: unavailable: lost reply
+
+GREEN: go test ./cmd/t3-steward -run '^TestSubmissionRetry' -count=1
+exit 0, package 1.817s before extending regression to timeout and successful replay.
+
+Ancestry: git merge-base --is-ancestor 5ee6edb318608a51a43a48afe154c19d85ada681 9ee38ddf6074d84d9386b07792d5b3feec1043a3: exit 0
+
+Affected-test command: make test-affected BASE=5ee6edb318608a51a43a48afe154c19d85ada681
+test-affected: 1 packages changed against 5ee6edb318608a51a43a48afe154c19d85ada681, 1 selected with their importers:
+github.com/iryzhkov/t3-steward/cmd/t3-steward
+go test -race -count=1 -timeout 25m github.com/iryzhkov/t3-steward/cmd/t3-steward
+ok  	github.com/iryzhkov/t3-steward/cmd/t3-steward	214.578s
+
+affected-test exit 0
+
+Final focused retry test: go test ./cmd/t3-steward -run '^TestSubmissionRetry' -count=1
+exit 0, package 2.028s, unavailable/timeout and exhaustion/replay cases.
+
+Huyang verify_run stages=tests test_scope=affected: partial/unavailable, exit -1; no stage ran. Not counted as passing evidence.
+
+Test-integrity check:
+git diff 5ee6edb318608a51a43a48afe154c19d85ada681 -- '*_test.go'
+Inspected the complete diff. Removed existing test lines: none.
+git diff 5ee6edb318608a51a43a48afe154c19d85ada681 -- '*_test.go' | sed -n '/^-[^-]/p'
+exit 0, no output.
+git diff --exit-code 9ee38ddf6074d84d9386b07792d5b3feec1043a3 -- cmd/t3-steward/submission_retry_test.go
+exit 0, existing implementation tests unchanged.
+git diff --check: exit 0.
+git diff --cached --check: exit 0.
+gofmt -l cmd/t3-steward/submission_retry.go cmd/t3-steward/submission_retry_compatibility_test.go: exit 0, no output.
+Original-base source/test diff: 359 changed lines.
+Full make test and make lint reserved for the worker gate.
+
+Declared fix commit: git commit succeeded, exit 0.
+Post-commit git diff --exit-code and git diff --cached --exit-code: exit 0.
+git status --short: only Steward .t3 metadata remains untracked.
+Final report checkpoint is included by amending the fix commit.

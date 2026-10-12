@@ -1,9 +1,20 @@
-# Worker sequence recovery
+# Goal
+Repair fix1's sole blocking finding within the original submission-retry brief.
 
-Goal: implement Unit D21-4 on pinned base 8837123841415cea741cd5780c75bcf2afa5186f.
+# Checklist
+- [x] Read rules, original brief and bundled inputs; inspect retained review, handoff and commit provenance.
+- [x] Select consumed implementation 9ee38ddf6074d84d9386b07792d5b3feec1043a3 and verify original-base ancestry.
+- [x] Reproduce six-send defect before implementation and repair it.
+- [x] Run focused retry tests and original-base affected race tests.
+- [x] Inspect original-base test diff, with no removed or weakened existing test lines.
+- [x] Finalize handoff and verification evidence.
+- [x] Commit fix as HEAD and confirm clean tracked tree.
 
-Checklist: base and brief verified; stop condition confirmed before source edits; split report written; affected command, make test and make lint passed; report-only implementation commit next.
+# Current step
+Complete. HEAD is the declared fix commit; tracked tree cleanliness was verified after committing.
 
-Current step: committing report-only outcome; implementation stopped as required by brief.
-Blockers: existing epoch/session recovery does not fence rewound command execution or reconcile offered attempts. New recovery semantics are required; authoritative brief requires stopping.
-Last verification: make test-affected BASE=8837123841415cea741cd5780c75bcf2afa5186f exited 0 (no Go changes); make test exited 0; make lint exited 0. CPU limits applied. git diff --stat empty before report commit.
+# Blockers
+None. No fix/context directory was supplied. Huyang affected verification ran no stage; the pinned-base make target supplies the passing evidence.
+
+# Last verification
+make test-affected BASE=5ee6edb318608a51a43a48afe154c19d85ada681 passed, exit 0, affected cmd/t3-steward race tests with checkptr, 214.578s. Focused retry tests passed, 2.028s. Test integrity, gofmt and diff checks passed. Full gates remain for Steward.

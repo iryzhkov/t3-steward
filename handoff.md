@@ -1,29 +1,34 @@
-# Unit D21-4 handoff — STOP CONDITION
+# Fix1 handoff
 
-Base: 8837123841415cea741cd5780c75bcf2afa5186f (HEAD and .t3/base-commit verified).
-Resulting head: pending report-only implementation commit; obtain exact SHA with git rev-parse HEAD. This handoff is included in that commit.
-Changed paths: continuation.md, handoff.md only. No source or test changes.
+Original pinned base: 5ee6edb318608a51a43a48afe154c19d85ada681.
+Consumed implementation: 9ee38ddf6074d84d9386b07792d5b3feec1043a3, confirmed from retained implementation provenance and checked out before source edits.
+Resulting head: HEAD, declared commit fix. The commit includes the source repair, regression test and declared reports.
 
-The authoritative brief requires stopping if existing epoch-change handling cannot give in-flight attempts defined states without new recovery semantics. That condition applies. This is a split report, not a completed implementation or acceptance claim.
+## Blocking finding repaired
 
-Evidence at the pinned base:
-- internal/store/sqlite/fleet.go:145-150 matches the brief: same-epoch non-monotonic snapshots or non-increasing observation times return ErrStaleWorkerSnapshot. New-epoch snapshots permit a new counter but do not contain/reconcile attempts.
-- internal/workerruntime/protocol_replay.go:289-295 matches the brief: a gap from the durable session sequence returns ErrorReordered. A new session allows sequence one but leaves attempt journal commands intact.
-- internal/workerruntime/journal.go:213-224 refuses a changed worker epoch against an existing journal; only the coordinator epoch is adopted, without changing attempts.
-- internal/workerruntime/service.go:291-305 reconciles local attempts before processing the authenticated request. internal/workerruntime/runtime.go:805-816 dispatches preparing/prepared records with retained dispatch commands. Restoring a journal to such a phase can therefore execute retained commands before a snapshot reply lets the coordinator apply its terminal-attempt stop rules. Merely creating a fresh protocol session does not meet the no-duplicate-execution requirement.
-- internal/backlog/worker_reconcile.go:79-81 only selects claimed/unknown assignments, excluding offered assignments; :260-261 can release absent nonterminal assignments across worker epochs, while :236-241 preserves terminal old-epoch custody without positive observation. These rules do not provide a complete rewind reconciliation for every coordinator assignment and restored journal attempt.
+The outer retry loop previously called a helper that could send twice during parent-field compatibility negotiation. A transient failure on the parentless send restarted negotiation, producing six sends under the documented three-attempt bound.
 
-Design decision: preserve existing execution, authentication, enrollment and monotonicity fences. Do not bypass journal identity checks, reset counters or discard custody to make a handshake appear successful. Safe recovery needs an explicit pre-execution recovery barrier and an authoritative attempt disposition exchange, which are new recovery semantics outside this unit's stop boundary.
+Each retry iteration now makes exactly one transport send. The existing unknown-parent-field fallback clears the parent on the captured request once, counts against the three-send limit, and emits the same retry diagnostic and backoff as every other resend. Subsequent transient retries retain that negotiated request, idempotency key and archive bytes. Other transport classes still stop immediately unless the existing parent-field compatibility fallback applies. The caller's request is unchanged.
 
-Proposed split for plan revision:
-1. Detection and handshake: typed rewind reasons on both sides, authenticated fresh-session negotiation, and a durable barrier preventing local execution while rewind recovery is unresolved.
-2. Attempt reconciliation: bind coordinator dispositions to that barrier; cover offered, claimed/unknown, coordinator-terminal and journal-only attempts; contain old execution before retry; preserve retained-work evidence; release the barrier only after durable acknowledgement. Include copy/advance/restore regression coverage and worker operations documentation.
-Neither phase is implemented here. Do not ship a session-only reset as recovery.
+Changed source paths:
+- cmd/t3-steward/submission_retry.go
+- cmd/t3-steward/submission_retry_compatibility_test.go
 
-Verification (CPU limits: GOMAXPROCS=4 GOFLAGS=-p=4 MAKEFLAGS=-j4 CARGO_BUILD_JOBS=4):
-- git rev-parse HEAD: exit 0, matched base before editing.
-- make test-affected BASE=8837123841415cea741cd5780c75bcf2afa5186f: exit 0; no Go package changed, so no affected tests ran.
-- make test: exit 0 (normal tests, full race tests and go vet).
-- make lint: exit 0 (pinned staticcheck and gofmt gate).
+The regression failed before implementation with six sends and two retry lines. It now covers unavailable and timeout, both exhausted retries and successful replay returning the original run. It asserts the three-send limit, two diagnostics, identical parentless request and archive, and unchanged caller parent. Its final form injects the wait function instead of sleeping.
 
-Limitations/open risks: all four requested outcomes remain unimplemented, including the rollback regression. Existing stuck rewind behavior remains. No push, tag, release, deployment or nested submission was performed.
+## Verification
+
+Environment: GOMAXPROCS=3 GOFLAGS=-p=3 MAKEFLAGS=-j3 CARGO_BUILD_JOBS=3.
+- Failing regression before implementation: exit 1, six sends and two retry lines.
+- go test ./cmd/t3-steward -run '^TestSubmissionRetry' -count=1: exit 0, 2.028s after extending coverage.
+- Huyang verify_run, tests, affected: partial/unavailable, exit -1, no stage ran. It supplies no passing test evidence. Used the required make target against the pinned original base.
+- make test-affected BASE=5ee6edb318608a51a43a48afe154c19d85ada681: exit 0, cmd/t3-steward race tests with checkptr, 214.578s. Selected the changed package and its importers.
+- git diff --check and git diff --cached --check: exit 0.
+- Test integrity: inspected git diff 5ee6edb318608a51a43a48afe154c19d85ada681 -- '*_test.go'. Removed existing test lines: none. Both retry test files are additions relative to that base, and the original implementation's tests remain unchanged.
+- Source/test diff against the original base: 359 changed lines, below the roughly 400-line limit.
+
+Full make test and make lint are reserved for the declared worker gate. No live coordinator was exercised. Separate review owns acceptance.
+
+## FOLLOW-UPS
+
+The preceding review's note about real retry waits in the six existing lost-reply CLI fixtures remains unchanged. It is outside the blocking finding and this repair.
