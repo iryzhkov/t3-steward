@@ -174,7 +174,7 @@ func TestGateKillFailureMustNotApproveBadOutput(t *testing.T) {
 	}
 	writeTestFile(t, dir, "out.txt", "good")
 	storage := t.TempDir()
-	id := "attempt-1"
+	id, status, barrier := realGateScenario(t)
 	req := h2GateRequest(dir, id)
 	req.WorkerID = "worker-a"
 	systemctlPath, err := exec.LookPath("systemctl")
@@ -182,19 +182,19 @@ func TestGateKillFailureMustNotApproveBadOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := t.TempDir()
-	ctl := writeExecutable(t, fake, "systemctl", fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = kill ]; then\n  n=$(($(cat %[1]q 2>/dev/null || echo 0) + 1)); echo $n > %[1]q\n  if [ $n -gt 1 ]; then echo simulated-user-manager-kill-failure >&2; exit 1; fi\nfi\nexec %[2]q \"$@\"\n", filepath.Join(fake, "kills"), systemctlPath))
-	agent := `(inotifywait -qq -e open big.bin; printf 'bad\n' > out.txt) >/dev/null 2>&1 </dev/null & sleep 0.3`
+	ctl := writeExecutable(t, fake, "systemctl", fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = kill ]; then\n  if [ -e %[1]q ]; then\n    if [ ! -e %[4]q ]; then echo unexpected-post-kill-before-ready >&2; exit 1; fi\n    echo simulated-user-manager-kill-failure >&2; exit 1\n  fi\n  if [ -e %[3]q ]; then echo unexpected-first-kill-after-start >&2; exit 1; fi\n  touch %[1]q\nfi\nexec %[2]q \"$@\"\n", filepath.Join(fake, "preclear"), systemctlPath, status+".started", status+".ready"))
+	agent := gateWatchLauncher(status, "LC_ALL=C inotifywait -e open big.bin", barrier, testtiming.Bound(5*time.Second))
 	req.Task.Gate = &domain.TaskGate{Commands: []string{agent, "grep -qx good out.txt"}, Timeout: testtiming.Bound(5 * time.Second)}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "big.bin"}, {Name: "out.txt"}}
-	t.Cleanup(func() {
-		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))).Run()
-	})
+
 	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: SystemdScopeRunner{SystemctlBinary: ctl, ScopeCleanupTimeout: testtiming.Bound(time.Second)}}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleanupImmutable(t, result.StorageDir)
-	imported, _, _, _, _ := importFinalizedGate(t, req.Task, storage, result)
+	requireGateWatchReady(t, status)
+	imported, store, importer, response, data := importFinalizedGateAttempt(t, req.Task, storage, result, id)
+	requireFailedWithRetainedGateLog(t, imported, store, importer, response, data, "could not be cleared")
 	progress := imported.Transition[0].Attempt.Progress
 	if result.Completion.VerificationPassed || progress == domain.ProgressSucceeded {
 		t.Fatalf("failed scope cleanup approved: worker verification=%v coordinator progress=%s", result.Completion.VerificationPassed, progress)
@@ -212,7 +212,7 @@ func requireUserSystemd(t *testing.T) {
 	if _, err := exec.LookPath("systemd-run"); err != nil {
 		t.Skip("systemd-run unavailable")
 	}
-	if out, _ := exec.Command("systemctl", "--user", "show-environment").CombinedOutput(); len(out) == 0 {
+	if err := exec.Command("systemctl", "--user", "show-environment").Run(); err != nil {
 		t.Skip("no user systemd instance")
 	}
 }
@@ -238,19 +238,18 @@ func TestGateChildCannotRewriteUntrackedOutputBeforeDigest(t *testing.T) {
 	}
 	writeTestFile(t, dir, "out.txt", "good")
 	storage := t.TempDir()
-	id := fmt.Sprintf("gate-digest-%d", time.Now().UnixNano())
+	id, status, barrier := realGateScenario(t)
 	req := h2GateRequest(dir, id)
-	agent := `(inotifywait -qq -e open big.bin; printf 'bad\n' > out.txt) >/dev/null 2>&1 </dev/null & sleep 0.3`
+	agent := gateWatchLauncher(status, "LC_ALL=C inotifywait -e open big.bin", barrier, testtiming.Bound(5*time.Second))
 	req.Task.Gate = &domain.TaskGate{Commands: []string{agent, "grep -qx good out.txt"}, Timeout: testtiming.Bound(5 * time.Second)}
 	req.Task.Outputs = []domain.ArtifactDeclaration{{Name: "big.bin"}, {Name: "out.txt"}}
-	t.Cleanup(func() {
-		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))).Run()
-	})
+
 	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: SystemdScopeRunner{}}).Finalize(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cleanupImmutable(t, result.StorageDir)
+	requireGateWatchReady(t, status)
 	for _, artifact := range result.Artifacts {
 		if artifact.Name != "out.txt" {
 			continue
@@ -270,16 +269,16 @@ func TestGateChildCannotRewriteUntrackedOutputBeforeDigest(t *testing.T) {
 // that had passed.
 func TestGateRefinalizationAfterBackgroundChild(t *testing.T) {
 	requireUserSystemd(t)
+	if _, err := exec.LookPath("inotifywait"); err != nil {
+		t.Skip("inotifywait unavailable")
+	}
 	dir := h2GateRepository(t)
-	id := fmt.Sprintf("gate-retry-%d", time.Now().UnixNano())
+	id, status, barrier := realGateScenario(t)
 	req := h2GateRequest(dir, id)
-	// Keep the child alive beyond the scaled gate budget so waiting for it
-	// cannot hide a regression in scope cleanup or reuse.
-	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt && { sleep 120 >/dev/null 2>&1 </dev/null & }"}, Timeout: testtiming.Bound(10 * time.Second)}
+	// An installed watch keeps the child alive across command exit. Each
+	// finalization reuses the same attempt and unit, with fresh readiness files.
+	req.Task.Gate = &domain.TaskGate{Commands: []string{"grep -qx source source.txt || exit 1\n" + gateWatchLauncher(status, "LC_ALL=C inotifywait -e open source.txt", barrier, testtiming.Bound(5*time.Second))}, Timeout: testtiming.Bound(10 * time.Second)}
 	unit := processScopeUnit(fmt.Sprintf("verify-%s-gate-0", id))
-	t.Cleanup(func() {
-		_ = exec.Command("systemctl", "--user", "kill", "--kill-who=all", "--signal=KILL", unit).Run()
-	})
 	for round := 1; round <= 2; round++ {
 		storage := t.TempDir()
 		result, err := (AttemptFinalizer{StorageRoot: storage, Processes: SystemdScopeRunner{}}).Finalize(context.Background(), req)
@@ -287,6 +286,7 @@ func TestGateRefinalizationAfterBackgroundChild(t *testing.T) {
 			t.Fatalf("round %d: %v", round, err)
 		}
 		cleanupImmutable(t, result.StorageDir)
+		requireGateWatchReady(t, status)
 		if !result.Completion.VerificationPassed {
 			t.Fatalf("round %d: re-finalization of the same attempt failed: %s", round, result.Completion.Failure)
 		}

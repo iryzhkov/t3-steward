@@ -21,6 +21,11 @@ import (
 // the upload so that a test can replay it.
 func importFinalizedGate(t *testing.T, task domain.Task, storage string, finalized FinalizedAttempt) (ResultImportReport, *sqlite.Store, CoordinatorResultImporter, workerproto.ArtifactUploadResponse, resultUploadOpener) {
 	t.Helper()
+	return importFinalizedGateAttempt(t, task, storage, finalized, "attempt-1")
+}
+
+func importFinalizedGateAttempt(t *testing.T, task domain.Task, storage string, finalized FinalizedAttempt, attemptID string) (ResultImportReport, *sqlite.Store, CoordinatorResultImporter, workerproto.ArtifactUploadResponse, resultUploadOpener) {
+	t.Helper()
 	ctx := context.Background()
 	_, fixture, fixturePayloads, _ := gateImportFixture(t)
 	artifacts, payloads := fixture[:2], fixturePayloads[:2]
@@ -29,7 +34,7 @@ func importFinalizedGate(t *testing.T, task domain.Task, storage string, finaliz
 		payloads = append(payloads, readStoredArtifact(t, storage, artifact))
 	}
 	now := coordinatorTestTime
-	attempt := domain.Attempt{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 3, AssignmentID: "assignment-1", UpdatedAt: now}
+	attempt := domain.Attempt{ID: attemptID, WorkflowRunID: "run-1", TaskID: task.ID, Number: 1, Progress: domain.ProgressVerifying, Control: domain.ControlStopped, Revision: 3, AssignmentID: "assignment-1", UpdatedAt: now}
 	assignment := domain.Assignment{ID: "assignment-1", AttemptID: attempt.ID, WorkerID: "worker-a", WorkerEpoch: "worker-epoch-1", State: domain.AssignmentCompleted, ThreadID: "thread-1", Epoch: 1, LeaseToken: "lease", DispatchToken: "dispatch", CreatedAt: now, UpdatedAt: now}
 	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -45,9 +50,9 @@ func importFinalizedGate(t *testing.T, task domain.Task, storage string, finaliz
 		id, name, media := artifact.ID, artifact.Name, artifact.MediaType
 		switch index {
 		case 0:
-			id, media = "final-message-attempt-1", "text/markdown"
+			id, media = "final-message-"+attemptID, "text/markdown"
 		case 1:
-			id, media = "thread-archive-attempt-1", "application/json"
+			id, media = "thread-archive-"+attemptID, "application/json"
 		}
 		if name == "gate" {
 			name = "gate/report.json"
@@ -80,14 +85,17 @@ func requireFailedWithRetainedGateLog(t *testing.T, result ResultImportReport, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	logs := 0
+	logs, reports := 0, 0
 	for _, artifact := range records.Artifacts {
+		if artifact.Kind == domain.ArtifactGate && artifact.Name == "gate" {
+			reports++
+		}
 		if artifact.Kind == domain.ArtifactGate && artifact.Name == "gate/log.txt" {
 			logs++
 		}
 	}
-	if logs != 1 {
-		t.Fatalf("retained gate logs=%d, want 1", logs)
+	if logs != 1 || reports != 1 {
+		t.Fatalf("retained gate logs=%d reports=%d, want 1 each", logs, reports)
 	}
 	replay, err := importer.Import(ctx, response, data)
 	if err != nil || len(replay.Transition) != 0 {
@@ -273,5 +281,54 @@ func TestAmendedGateReportIsValidEvidence(t *testing.T) {
 	}
 	if err := validateGateReport(task, amended); err != nil {
 		t.Fatalf("invalid UTF-8 amendment rejected (reason %d bytes): %v", len(amended.Failure.Reason), err)
+	}
+}
+
+func TestFinalizedGateImportNondefaultAttempt(t *testing.T) {
+	storage := t.TempDir()
+	id := gateScenarioID(t.TempDir(), t.Name())
+	req := h2GateRequest(h2GateRepository(t), id)
+	req.WorkerID = "worker-a"
+	req.Task.Gate.Commands = []string{"echo intentional-failure; exit 1"}
+	result, err := (AttemptFinalizer{StorageRoot: storage, Processes: &directRunner{}}).Finalize(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupImmutable(t, result.StorageDir)
+	report := h2ReadGate(t, storage, result)
+	if report.Attempt != id || report.Worker != req.WorkerID {
+		t.Fatalf("report provenance: %+v", report)
+	}
+	for _, artifact := range result.Artifacts {
+		if artifact.AttemptID != id {
+			t.Fatalf("worker artifact provenance: %+v", artifact)
+		}
+	}
+	imported, store, importer, response, data := importFinalizedGateAttempt(t, req.Task, storage, result, id)
+	requireFailedWithRetainedGateLog(t, imported, store, importer, response, data, "intentional-failure")
+	records, err := store.LoadCoordinatorRecords(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records.Attempts) != 1 || records.Attempts[0].ID != id || records.Assignments[0].AttemptID != id {
+		t.Fatalf("coordinator provenance: %+v", records)
+	}
+	reports := 0
+	for _, artifact := range records.Artifacts {
+		if artifact.AttemptID != id {
+			t.Fatalf("imported artifact provenance: %+v", artifact)
+		}
+		if artifact.Kind == domain.ArtifactGate && artifact.Name == "gate" {
+			reports++
+		}
+	}
+	if reports != 1 {
+		t.Fatalf("retained reports=%d", reports)
+	}
+	if _, ok := data["final-message-"+id]; !ok {
+		t.Fatal("summary identity not bound")
+	}
+	if _, ok := data["thread-archive-"+id]; !ok {
+		t.Fatal("thread identity not bound")
 	}
 }
