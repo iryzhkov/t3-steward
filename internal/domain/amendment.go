@@ -287,7 +287,8 @@ func ValidateGraphTasks(run WorkflowRun, tasks []Task) error {
 				return errors.New("artifact input requires dependency edge")
 			}
 			for _, name := range outputs {
-				found := false
+				// Gates retain these two artifacts without ordinary output declarations.
+				found := names[source].Gate != nil && (name == "gate" || name == "gate/log.txt")
 				for _, out := range names[source].Outputs {
 					if out.Name == name {
 						found = true
