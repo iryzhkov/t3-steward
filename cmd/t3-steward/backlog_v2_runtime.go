@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"time"
 
@@ -209,10 +210,43 @@ func (r coordinatorQuotaReconciler) Tick(ctx context.Context) (backlog.QuotaBrid
 	if err != nil {
 		return backlog.QuotaBridgeReport{}, err
 	}
-	if err := r.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{QuotaPools: report.Pools}); err != nil {
-		return backlog.QuotaBridgeReport{}, fmt.Errorf("persist quota pool projection: %w", err)
+	stored := make(map[string]domain.QuotaPool, len(records.QuotaPools))
+	for _, pool := range records.QuotaPools {
+		stored[pool.ID] = pool
+	}
+	var changed []domain.QuotaPool
+	for _, pool := range report.Pools {
+		previous, exists := stored[pool.ID]
+		if !exists || quotaPoolChanged(previous, pool) {
+			changed = append(changed, pool)
+		}
+	}
+	if len(changed) > 0 {
+		if err := r.store.SaveCoordinatorRecords(ctx, sqlite.CoordinatorRecords{QuotaPools: changed}); err != nil {
+			return backlog.QuotaBridgeReport{}, fmt.Errorf("persist quota pool projection: %w", err)
+		}
 	}
 	return report, nil
+}
+
+// quotaPoolChanged ignores UpdatedAt, so a stored pool's UpdatedAt records its
+// last change rather than its last tick. Empty slices compare like nil slices,
+// preserving equality after a JSON round trip.
+func quotaPoolChanged(previous, current domain.QuotaPool) bool {
+	previous.UpdatedAt, current.UpdatedAt = time.Time{}, time.Time{}
+	if len(previous.ProviderInstanceIDs) == 0 {
+		previous.ProviderInstanceIDs = nil
+	}
+	if len(current.ProviderInstanceIDs) == 0 {
+		current.ProviderInstanceIDs = nil
+	}
+	if len(previous.Buckets) == 0 {
+		previous.Buckets = nil
+	}
+	if len(current.Buckets) == 0 {
+		current.Buckets = nil
+	}
+	return !reflect.DeepEqual(previous, current)
 }
 
 func (p coordinatorPlanner) resourcePlacementPolicy() domain.ResourcePlacementPolicy {
