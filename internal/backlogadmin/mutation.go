@@ -38,6 +38,14 @@ func (s *Service) Mutate(ctx context.Context, request Mutation) (MutationRespons
 		(len(request.Payload) != 0 && !json.Valid(request.Payload)) {
 		return MutationResponse{}, fmt.Errorf("%w: malformed mutation %q", ErrInvalidQuery, request.ID)
 	}
+	if request.Kind == domain.AdminCommandReprioritize {
+		if request.WorkflowRunID == "" || request.TaskID != "" || request.ScheduleID != "" {
+			return MutationResponse{}, fmt.Errorf("%w: reprioritize requires a workflow run and no task or schedule", ErrInvalidQuery)
+		}
+		if _, err := domain.DecodeReprioritizePayload(request.Payload); err != nil {
+			return MutationResponse{}, fmt.Errorf("%w: %v", ErrInvalidQuery, err)
+		}
+	}
 	action := Action{
 		CommandKind: request.Kind, WorkflowRunID: request.WorkflowRunID,
 		TaskID: request.TaskID, ScheduleID: request.ScheduleID,

@@ -391,6 +391,12 @@ func loadAdminTargetTx(
 }
 
 func validateAdminCommand(command domain.AdminCommand) error {
+	if command.Kind == domain.AdminCommandReprioritize {
+		if _, err := domain.DecodeReprioritizePayload(command.Payload); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidAdminCommand, err)
+		}
+	}
+
 	if strings.TrimSpace(command.ID) != command.ID || command.ID == "" ||
 		strings.TrimSpace(string(command.Kind)) != string(command.Kind) || command.Kind == "" ||
 		strings.TrimSpace(string(command.TargetType)) != string(command.TargetType) ||
@@ -417,7 +423,7 @@ func validAdminCommandKind(targetType domain.AdminTargetType, kind domain.AdminC
 			return true
 		}
 	case domain.AdminTargetWorkflowRun:
-		return kind == domain.AdminCommandCancel
+		return kind == domain.AdminCommandCancel || kind == domain.AdminCommandReprioritize
 	case domain.AdminTargetSchedule:
 		switch kind {
 		case domain.AdminCommandScheduleRun, domain.AdminCommandDelayNext,

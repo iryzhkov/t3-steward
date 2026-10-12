@@ -77,17 +77,18 @@ type UnknownAssignmentRecoveryDecision struct {
 type AdminCommandKind string
 
 const (
-	AdminCommandStart       AdminCommandKind = "start"
-	AdminCommandDelay       AdminCommandKind = "delay"
-	AdminCommandPause       AdminCommandKind = "pause"
-	AdminCommandResume      AdminCommandKind = "resume"
-	AdminCommandCancel      AdminCommandKind = "cancel"
-	AdminCommandRetry       AdminCommandKind = "retry"
-	AdminCommandSkip        AdminCommandKind = "skip"
-	AdminCommandScheduleRun AdminCommandKind = "schedule-run"
-	AdminCommandDelayNext   AdminCommandKind = "delay-next"
-	AdminCommandEnable      AdminCommandKind = "enable"
-	AdminCommandDisable     AdminCommandKind = "disable"
+	AdminCommandStart        AdminCommandKind = "start"
+	AdminCommandDelay        AdminCommandKind = "delay"
+	AdminCommandPause        AdminCommandKind = "pause"
+	AdminCommandResume       AdminCommandKind = "resume"
+	AdminCommandCancel       AdminCommandKind = "cancel"
+	AdminCommandReprioritize AdminCommandKind = "reprioritize"
+	AdminCommandRetry        AdminCommandKind = "retry"
+	AdminCommandSkip         AdminCommandKind = "skip"
+	AdminCommandScheduleRun  AdminCommandKind = "schedule-run"
+	AdminCommandDelayNext    AdminCommandKind = "delay-next"
+	AdminCommandEnable       AdminCommandKind = "enable"
+	AdminCommandDisable      AdminCommandKind = "disable"
 )
 
 type AuditEvent struct {
