@@ -197,8 +197,75 @@ func loadThrottleAttemptRecordsTx(ctx context.Context, tx *sql.Tx) ([]domain.Thr
 	return records, rows.Err()
 }
 
+func loadAttentionStopCandidatesTx(ctx context.Context, tx *sql.Tx) ([]domain.ThrottleAttemptRecord, error) {
+	return loadAttentionStopJSONTx[domain.ThrottleAttemptRecord](ctx, tx, `SELECT record FROM coordinator_throttle_attempts
+		WHERE delivery = 'acknowledged'
+		AND json_extract(record, '$.result') = 'stopped'
+		AND json_extract(record, '$.command.attentionStop') IS NOT NULL
+		ORDER BY directive_id, attempt_id`)
+}
+
+func loadAttentionStopTaskAttemptsTx(ctx context.Context, tx *sql.Tx, binding *domain.AttentionStopCommand) ([]domain.Attempt, error) {
+	return loadAttentionStopJSONTx[domain.Attempt](ctx, tx, `SELECT record FROM coordinator_attempts
+		WHERE workflow_run_id = ? AND task_id = ? ORDER BY id`, binding.WorkflowRunID, binding.TaskID)
+}
+
+func loadAttentionStopJSONTx[T any](ctx context.Context, tx *sql.Tx, query string, args ...any) ([]T, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []T
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var record T
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+func attentionStopOwnershipReleasedTx(ctx context.Context, tx *sql.Tx, binding *domain.AttentionStopCommand) (bool, error) {
+	attempts, err := loadAttentionStopTaskAttemptsTx(ctx, tx, binding)
+	if err != nil {
+		return false, err
+	}
+	for _, attempt := range attempts {
+		if attempt.Control != domain.ControlStopped && attempt.Control != domain.ControlUnassigned {
+			return false, nil
+		}
+		// An assignment can retain custody even when the attempt has no assignment ID.
+		var raw []byte
+		err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_assignments WHERE attempt_id = ?", attempt.ID).Scan(&raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			if attempt.AssignmentID != "" {
+				return false, nil
+			}
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		var assignment domain.Assignment
+		if err := json.Unmarshal(raw, &assignment); err != nil {
+			return false, err
+		}
+		if (attempt.AssignmentID != "" && (assignment.ID != attempt.AssignmentID || assignment.AttemptID != attempt.ID)) ||
+			(assignment.State != domain.AssignmentReleased && assignment.State != domain.AssignmentCompleted) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 func observeAttentionStopsTx(ctx context.Context, tx *sql.Tx, snapshot domain.WorkerSnapshot) error {
-	records, err := loadThrottleAttemptRecordsTx(ctx, tx)
+	records, err := loadAttentionStopCandidatesTx(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -270,63 +337,43 @@ func observeAttentionStopsTx(ctx context.Context, tx *sql.Tx, snapshot domain.Wo
 
 func advanceObservedAttentionStopTx(ctx context.Context, tx *sql.Tx, record domain.ThrottleAttemptRecord, observedAt time.Time) error {
 	binding := record.Command.AttentionStop
-	attempts, err := loadJSON[domain.Attempt](ctx, tx, "coordinator_attempts")
-	if err != nil {
-		return err
+	var raw []byte
+	waitErr := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", binding.WaitID).Scan(&raw)
+	var wait domain.TaskWait
+	if waitErr == nil {
+		waitErr = json.Unmarshal(raw, &wait)
 	}
-	assignments, err := loadJSON[domain.Assignment](ctx, tx, "coordinator_assignments")
-	if err != nil {
-		return err
-	}
-	owned := map[string]bool{}
-	for _, attempt := range attempts {
-		if attempt.WorkflowRunID != binding.WorkflowRunID || attempt.TaskID != binding.TaskID {
-			continue
-		}
-		owned[attempt.ID] = true
-		if attempt.Control != domain.ControlStopped && attempt.Control != domain.ControlUnassigned {
-			return nil
-		}
-		if attempt.AssignmentID != "" {
-			assignment, err := loadAssignmentTx(ctx, tx, attempt.AssignmentID)
-			if err != nil || assignment.AttemptID != attempt.ID ||
-				(assignment.State != domain.AssignmentReleased && assignment.State != domain.AssignmentCompleted) {
-				return nil
+	var receipt *domain.AttentionReceipt
+	if waitErr == nil {
+		for index := len(wait.AttentionReceipts) - 1; index >= 0; index-- {
+			prior := &wait.AttentionReceipts[index]
+			if prior.Decision.ID == binding.DecisionID && prior.CommandID == record.Command.ID && prior.CommandDigest == binding.CommandDigest {
+				receipt = prior
+				break
 			}
 		}
-	}
-	for _, assignment := range assignments {
-		if owned[assignment.AttemptID] && assignment.State != domain.AssignmentReleased && assignment.State != domain.AssignmentCompleted {
+		if receipt != nil && receipt.State != domain.AttentionDelivered {
 			return nil
 		}
 	}
-	var raw []byte
-	if err := tx.QueryRowContext(ctx, "SELECT record FROM coordinator_task_waits WHERE id=?", binding.WaitID).Scan(&raw); err != nil {
+	// A live attempt used to return nil before reading the wait. Defer wait errors
+	// and the missing-receipt error until the same ownership check has succeeded.
+	released, err := attentionStopOwnershipReleasedTx(ctx, tx, binding)
+	if err != nil || !released {
 		return err
 	}
-	var wait domain.TaskWait
-	if err := json.Unmarshal(raw, &wait); err != nil {
-		return err
+	if waitErr != nil {
+		return waitErr
 	}
-	for index := len(wait.AttentionReceipts) - 1; index >= 0; index-- {
-		prior := wait.AttentionReceipts[index]
-		if prior.Decision.ID != binding.DecisionID || prior.CommandID != record.Command.ID || prior.CommandDigest != binding.CommandDigest {
-			continue
-		}
-		if prior.State == domain.AttentionObserved {
-			return nil
-		}
-		if prior.State != domain.AttentionDelivered {
-			return nil
-		}
-		observed := prior
-		observed.State = domain.AttentionObserved
-		at := observedAt.UTC()
-		observed.ObservedAt = &at
-		wait.AttentionReceipts = append(wait.AttentionReceipts, observed)
-		return saveTaskWaitTx(ctx, tx, wait)
+	if receipt == nil {
+		return errors.New("attention stop observation has no matching delivered receipt")
 	}
-	return errors.New("attention stop observation has no matching delivered receipt")
+	observed := *receipt
+	observed.State = domain.AttentionObserved
+	at := observedAt.UTC()
+	observed.ObservedAt = &at
+	wait.AttentionReceipts = append(wait.AttentionReceipts, observed)
+	return saveTaskWaitTx(ctx, tx, wait)
 }
 
 func insertWorkerSnapshotAuditEvent(ctx context.Context, tx *sql.Tx, snapshot domain.WorkerSnapshot) (domain.AuditEvent, error) {
