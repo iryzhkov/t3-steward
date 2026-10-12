@@ -97,7 +97,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			return b.buildActivationOffer(ctx, records, attempt, assignment, expiresAt)
 		}
 	}
-	var inputIDs []string
+	var inputIDs, commitSourceRuns []string
 	for _, attempt := range records.Attempts {
 		if attempt.ID != assignment.AttemptID {
 			continue
@@ -118,10 +118,24 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			for _, task := range domain.TasksForRun(run, records.Tasks) {
 				inputIDs = append(inputIDs, task.PromptArtifactID)
 				inputIDs = append(inputIDs, task.InputArtifactIDs...)
+				if task.ID == attempt.TaskID {
+					for _, carried := range task.CarriedInputs {
+						if carriedCommitDeclared(records, carried) && !slices.Contains(commitSourceRuns, carried.SourceRunID) {
+							commitSourceRuns = append(commitSourceRuns, carried.SourceRunID)
+						}
+					}
+				}
 			}
 		}
 	}
 	records, err = records.WithArtifactIDs(ctx, inputIDs...)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
+	// Carried provenance belongs to the destination, but its Git bundle stays
+	// under the pinned source attempt. Hydrate only this task's commit sources;
+	// WithRunArtifacts returns a copy and leaves the shared tick cache intact.
+	records, err = records.WithRunArtifacts(ctx, commitSourceRuns...)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}

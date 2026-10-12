@@ -376,7 +376,12 @@ rather than applied in part.
 
 A successor may run on a different worker from its producer, whose campaign
 ref store has never held the commit. The commit then crosses as a Git bundle,
-over the same artifact path every other input takes:
+over the same artifact path every other input takes. Fixes, reruns and external
+commit inputs retain the source run and attempt binding. During an offer, the
+coordinator lazily loads those declared commit sources' retained artifacts,
+including terminal runs, and selects the bundle of the pinned attempt. Ordinary
+carried files do not load source history, and the shared tick snapshot stays
+unchanged.
 
 - When the coordinator offers a producer's package with the
   `campaign-commit-bundle-v1` capability, which it does only for a worker that
