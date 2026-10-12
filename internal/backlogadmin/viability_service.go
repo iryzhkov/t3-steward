@@ -698,16 +698,20 @@ func enrollmentReasons(worker viabilityWorker) []ViabilityReason {
 	if requirement == nil {
 		return nil
 	}
+	detail := ""
+	if attempt := requirement.AutomaticEnrollment; attempt != nil {
+		detail = "; " + attempt.Reason
+	}
 	enrollment := worker.dto.Enrollment
 	if enrollment == nil {
 		return []ViabilityReason{newViabilityReason(ReasonWorkerNotEligible,
-			fmt.Sprintf("worker %q is configured but has never enrolled", requirement.WorkerID))}
+			fmt.Sprintf("worker %q is configured but has never enrolled%s", requirement.WorkerID, detail))}
 	}
 	var reasons []ViabilityReason
 	if enrollment.Request.CatalogRevision != requirement.CatalogRevision {
 		reason := newViabilityReason(ReasonCatalogDigestMismatch, fmt.Sprintf(
-			"worker %q accepted catalog %s and the coordinator requires %s; re-enrol it",
-			requirement.WorkerID, shortDigest(enrollment.Request.CatalogRevision), shortDigest(requirement.CatalogRevision)))
+			"worker %q accepted catalog %s and the coordinator requires %s; re-enrol it%s",
+			requirement.WorkerID, shortDigest(enrollment.Request.CatalogRevision), shortDigest(requirement.CatalogRevision), detail))
 		reason.Desired = requirement.CatalogRevision
 		reason.Observed = enrollment.Request.CatalogRevision
 		if enrollment.Revision > 0 {
@@ -740,7 +744,7 @@ func enrollmentReasons(worker viabilityWorker) []ViabilityReason {
 		// credential reference or the connection. Naming drift here would be a
 		// lie, and naming nothing would lose the finding.
 		reasons = append(reasons, newViabilityReason(ReasonWorkerNotEligible,
-			fmt.Sprintf("worker %q enrollment does not match its requirement", requirement.WorkerID)))
+			fmt.Sprintf("worker %q enrollment does not match its requirement%s", requirement.WorkerID, detail)))
 	}
 	return reasons
 }

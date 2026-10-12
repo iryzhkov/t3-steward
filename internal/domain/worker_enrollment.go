@@ -21,11 +21,18 @@ type WorkerEnrollment struct {
 	EnrolledAt       time.Time               `json:"enrolledAt"`
 	SnapshotSequence int64                   `json:"snapshotSequence"`
 }
+type AutomaticWorkerEnrollment struct {
+	AttemptedAt time.Time `json:"attemptedAt"`
+	RetryAfter  time.Time `json:"retryAfter"`
+	Reason      string    `json:"reason"`
+}
+
 type WorkerRequirement struct {
-	Draining        bool   `json:"draining,omitempty"`
-	WorkerID        string `json:"workerId"`
-	WorkerEpoch     string `json:"workerEpoch"`
-	CatalogRevision string `json:"catalogRevision"`
-	CredentialRef   string `json:"credentialRef"`
-	Connection      string `json:"connection"`
+	AutomaticEnrollment *AutomaticWorkerEnrollment `json:"automaticEnrollment,omitempty"`
+	Draining            bool                       `json:"draining,omitempty"`
+	WorkerID            string                     `json:"workerId"`
+	WorkerEpoch         string                     `json:"workerEpoch"`
+	CatalogRevision     string                     `json:"catalogRevision"`
+	CredentialRef       string                     `json:"credentialRef"`
+	Connection          string                     `json:"connection"`
 }

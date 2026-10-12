@@ -1070,6 +1070,10 @@ func renderWorkers(out io.Writer, workers []backlogadmin.Worker) error {
 		return err
 	}
 	for _, worker := range workers {
+		if worker.Requirement != nil && worker.Requirement.AutomaticEnrollment != nil {
+			attempt := worker.Requirement.AutomaticEnrollment
+			fmt.Fprintf(out, "\n%s automatic enrollment: %s\n", worker.Snapshot.WorkerID, attempt.Reason)
+		}
 		inventory := worker.Snapshot.Inventory
 		if len(inventory.Projects) == 0 && len(inventory.Providers) == 0 {
 			continue

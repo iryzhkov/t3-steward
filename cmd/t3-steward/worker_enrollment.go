@@ -181,6 +181,12 @@ const workerEnrollUsage = `Usage: t3-steward worker enroll <worker> --current-ca
 Admit one configured worker to this coordinator's current catalog. Mutating, and
 it prints JSON on success.
 
+The coordinator also enrolls configured, opted-in workers during normal worker
+reconciliation. It uses these same checks, preserves draining state, and retries
+failed automatic attempts no more often than once per minute. Worker list shows
+the last automatic attempt and its reason. Explicit enrollment remains available
+for an immediate retry.
+
 It must be run on the coordinator host. Enrollment binds a worker to this
 coordinator's identity, epoch and credential reference, so the remote-admin role
 is refused it even over an authenticated coordinator client.

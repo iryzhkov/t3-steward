@@ -41,6 +41,9 @@ const RC120ReadVersion = "backlog.admin/v1-extended-read-rc120"
 // Future additive changes must freeze this shape and negotiate a new version.
 const CurrentReadVersion = "backlog.admin/v1-extended-read-rc122"
 
+// AutomaticEnrollmentReadVersion adds retained automatic attempts to the workers view.
+const AutomaticEnrollmentReadVersion = "backlog.admin/v1-workers-auto-enrollment"
+
 type QueryKind string
 
 const (

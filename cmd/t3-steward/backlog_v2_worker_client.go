@@ -105,6 +105,7 @@ type coordinatorWorkerTickReport struct {
 // construction until a scheduled post-startup cycle. Each pass uses a fresh
 // protocol session, so an ambiguous exchange cannot poison a later pass.
 type coordinatorWorkerSessions struct {
+	enroll    func(context.Context) error
 	close     func() error
 	workerIDs []string
 	// handOn imports one worker's continuation.md snapshots; Tick runs it for
@@ -184,6 +185,9 @@ func newCoordinatorWorkerSessions(
 	}
 	return &coordinatorWorkerSessions{
 		workerIDs: workerIDs,
+		enroll: func(ctx context.Context) error {
+			return reconcileWorkerEnrollments(ctx, settings, store, coordinatorEnrollmentHandlerWith(settings, store, coordinatorEpoch, artifacts, resolver), time.Now().UTC())
+		},
 		handOn: func(ctx context.Context, workerID string) (backlog.WorkerExchangeReport, error) {
 			session, err := open(ctx, workerID)
 			if err != nil {
@@ -480,6 +484,11 @@ func (s *coordinatorWorkerSessions) Tick(ctx context.Context, quota backlog.Quot
 func (s *coordinatorWorkerSessions) TickWorkers(ctx context.Context, quota backlog.QuotaBridgeReport, requestedIDs []string) coordinatorWorkerTickReport {
 	if s == nil || s.exchange == nil {
 		return coordinatorWorkerTickReport{}
+	}
+	if s.enroll != nil {
+		if err := s.enroll(ctx); err != nil {
+			slog.Warn("automatic worker enrollment failed", "error", err)
+		}
 	}
 	requested := make(map[string]bool, len(requestedIDs))
 	for _, id := range requestedIDs {

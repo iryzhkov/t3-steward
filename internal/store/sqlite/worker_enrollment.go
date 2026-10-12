@@ -36,7 +36,7 @@ func (s *Store) SaveWorkerRequirements(ctx context.Context, requirements []domai
 		if err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO coordinator_worker_requirements(worker_id,record) VALUES(?,?) ON CONFLICT(worker_id) DO UPDATE SET record=excluded.record", r.WorkerID, string(raw)); err != nil {
+		if _, err = tx.ExecContext(ctx, "INSERT INTO coordinator_worker_requirements(worker_id,record) VALUES(?,?) ON CONFLICT(worker_id) DO UPDATE SET record=json_set(excluded.record,'$.automaticEnrollment',json_extract(coordinator_worker_requirements.record,'$.automaticEnrollment'))", r.WorkerID, string(raw)); err != nil {
 			return err
 		}
 	}

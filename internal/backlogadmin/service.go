@@ -284,6 +284,16 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 	if err != nil {
 		return response, err
 	}
+	// Older strict worker readers retain their negotiated response shape.
+	if query.Version != AutomaticEnrollmentReadVersion {
+		for i := range response.Workers {
+			if requirement := response.Workers[i].Requirement; requirement != nil {
+				copy := *requirement
+				copy.AutomaticEnrollment = nil
+				response.Workers[i].Requirement = &copy
+			}
+		}
+	}
 	// The v1 progress-mirror request is an explicit extension introduced before
 	// rc.119. Keep its mirror while freezing any nested evidence at that shape.
 	if query.ProgressMirror != nil && query.Version == Version {
@@ -328,7 +338,8 @@ func (s *Service) Query(ctx context.Context, query Query) (Response, error) {
 func (s *Service) query(ctx context.Context, query Query) (Response, error) {
 	intakeStatus := query.Version == StatusIntakeVersion && query.Kind == QueryStatus
 	extendedRead := (query.Version == ExtendedReadVersion || query.Version == RC117ReadVersion || query.Version == RC118ReadVersion || query.Version == RC119ReadVersion || query.Version == RC120ReadVersion || query.Version == CurrentReadVersion) && query.Kind != QueryStatus
-	if query.Version != Version && !intakeStatus && !extendedRead {
+	automaticWorkersRead := query.Version == AutomaticEnrollmentReadVersion && query.Kind == QueryWorkers
+	if query.Version != Version && !intakeStatus && !extendedRead && !automaticWorkersRead {
 		return Response{}, fmt.Errorf("%w: got %q, want %q", ErrUnsupportedVersion, query.Version, Version)
 	}
 	if query.ProgressMirror != nil && query.Kind != QueryWorkflows {
