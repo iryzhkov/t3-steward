@@ -89,7 +89,7 @@ func supportedRepinRef(raw []byte) error {
 	// Match the physical scalar, refusing tags, escapes, aliases and multiline forms.
 	pin := regexp.QuoteMeta(ref.Value)
 	line := planLineText(raw, lines[ref.Line-1])
-	if !regexp.MustCompile(`^ref:[ \t]+(?:` + pin + `|'` + pin + `'|"` + pin + `")[ \t]*(?:#.*)?$`).MatchString(line) {
+	if !regexp.MustCompile(`^ *ref:[ \t]+(?:` + pin + `|'` + pin + `'|"` + pin + `")[ \t]*(?:#.*)?$`).MatchString(line) {
 		return unsupported
 	}
 	return nil
