@@ -14,13 +14,17 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
 )
 
+func reprioritizeRequireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 func reprioritizeSubmissionFixture(t *testing.T) (*sqlite.Store, string, *Service) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "state.db")
 	store, err := sqlitetest.OpenMigrated(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reprioritizeRequireNoError(t, err)
 	t.Cleanup(func() { store.Close() })
 	records := sqlite.CoordinatorRecords{
 		Workflows:    []domain.Workflow{{ID: "workflow-1", Version: 2, Name: "workflow", Class: domain.TaskClassRequired, TaskIDs: []string{"task-1"}}},
@@ -28,34 +32,26 @@ func reprioritizeSubmissionFixture(t *testing.T) (*sqlite.Store, string, *Servic
 		Tasks:        []domain.Task{{ID: "task-1", WorkflowID: "workflow-1", Name: "task", Class: domain.TaskClassRequired}},
 		Attempts:     []domain.Attempt{{ID: "attempt-1", WorkflowRunID: "run-1", TaskID: "task-1", Number: 1, Progress: domain.ProgressActive, Control: domain.ControlRunning, Revision: 4, UpdatedAt: adminTestNow}},
 	}
-	if err := store.SaveCoordinatorRecords(context.Background(), records); err != nil {
-		t.Fatal(err)
-	}
+	reprioritizeRequireNoError(t, store.SaveCoordinatorRecords(context.Background(), records))
 	return store, path, reprioritizeSubmissionService(t, store)
 }
-
 func reprioritizeSubmissionService(t *testing.T, store *sqlite.Store) *Service {
 	t.Helper()
 	service, err := New(store, &allowAuthorizer{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	reprioritizeRequireNoError(t, err)
 	service.SetClock(func() time.Time { return adminTestNow })
 	return service
 }
-
 func reprioritizeSubmissionRequest() Mutation {
 	return Mutation{Version: Version, Principal: Principal{ID: "operator"}, ID: "reprioritize-1",
 		Kind: domain.AdminCommandReprioritize, WorkflowRunID: "run-1", ExpectedRevision: 3,
 		Reason: "raise importance", Payload: json.RawMessage(`{"importance":5}`)}
 }
-
 func reprioritizeSubmissionCommand(request Mutation) domain.AdminCommand {
 	return domain.AdminCommand{ID: request.ID, Kind: request.Kind, TargetType: domain.AdminTargetWorkflowRun,
 		TargetID: request.WorkflowRunID, ExpectedRevision: request.ExpectedRevision, Reason: request.Reason,
 		RequestedBy: request.Principal.ID, Payload: request.Payload, State: domain.AdminCommandPending, CreatedAt: adminTestNow}
 }
-
 func TestRunReprioritizePayloadAndTargetValidation(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -72,7 +68,6 @@ func TestRunReprioritizePayloadAndTargetValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			for _, direct := range []bool{false, true} {
 				store, _, service := reprioritizeSubmissionFixture(t)
 				request := reprioritizeSubmissionRequest()
@@ -87,18 +82,15 @@ func TestRunReprioritizePayloadAndTargetValidation(t *testing.T) {
 					t.Fatalf("direct=%t valid=%t: %v", direct, tc.valid, err)
 				}
 				loaded, loadErr := store.LoadCoordinatorRecords(context.Background())
-				if loadErr != nil {
-					t.Fatal(loadErr)
-				}
+				reprioritizeRequireNoError(t, loadErr)
 				if !tc.valid && len(loaded.AdminCommands) != 0 {
 					t.Fatalf("invalid payload persisted: %#v", loaded.AdminCommands)
 				}
 			}
 		})
 	}
-	for _, target := range []domain.AdminTargetType{domain.AdminTargetAttempt, domain.AdminTargetSchedule} {
+	for _, target := range []domain.AdminTargetType{domain.AdminTargetAttempt, domain.AdminTargetSchedule, domain.AdminTargetWorkflowRun} {
 		t.Run(string(target), func(t *testing.T) {
-			t.Parallel()
 			store, _, service := reprioritizeSubmissionFixture(t)
 			request := reprioritizeSubmissionRequest()
 			command := reprioritizeSubmissionCommand(request)
@@ -106,9 +98,11 @@ func TestRunReprioritizePayloadAndTargetValidation(t *testing.T) {
 			command.TargetID = "attempt-1"
 			if target == domain.AdminTargetAttempt {
 				request.TaskID = "task-1"
-			} else {
+			} else if target == domain.AdminTargetSchedule {
 				request.WorkflowRunID, request.ScheduleID = "", "schedule-1"
 				command.TargetID = "schedule-1"
+			} else {
+				request.WorkflowRunID, command.TargetID = "", ""
 			}
 			if _, err := service.Mutate(context.Background(), request); !errors.Is(err, ErrInvalidQuery) {
 				t.Fatalf("service target: %v", err)
@@ -118,18 +112,6 @@ func TestRunReprioritizePayloadAndTargetValidation(t *testing.T) {
 			}
 		})
 	}
-	t.Run("missing-run", func(t *testing.T) {
-		t.Parallel()
-		store, _, service := reprioritizeSubmissionFixture(t)
-		request := reprioritizeSubmissionRequest()
-		request.WorkflowRunID = ""
-		if _, err := service.Mutate(context.Background(), request); err == nil {
-			t.Fatal("service accepted missing run")
-		}
-		if _, err := store.SubmitAdminCommand(context.Background(), reprioritizeSubmissionCommand(request)); err == nil {
-			t.Fatal("store accepted missing run")
-		}
-	})
 	if domain.AdminCommandRunScoped(domain.AdminCommandReprioritize, json.RawMessage(`{"scope":"run"}`)) {
 		t.Fatal("reprioritize became a run cancel")
 	}
@@ -140,9 +122,7 @@ func TestRunReprioritizeSubmissionFencesAndReplays(t *testing.T) {
 	ctx := context.Background()
 	store, path, service := reprioritizeSubmissionFixture(t)
 	before, err := store.LoadCoordinatorRecords(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reprioritizeRequireNoError(t, err)
 	request := reprioritizeSubmissionRequest()
 	submitted, err := service.Mutate(ctx, request)
 	if err != nil || submitted.Command.State != domain.AdminCommandPending {
@@ -160,13 +140,9 @@ func TestRunReprioritizeSubmissionFencesAndReplays(t *testing.T) {
 	if err != nil || rejected.Command.State != domain.AdminCommandRejected || rejected.CurrentTarget == nil || rejected.CurrentTarget.Revision != 3 {
 		t.Fatalf("stale fence: %#v, %v", rejected, err)
 	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	reprioritizeRequireNoError(t, store.Close())
 	store, err = sqlitetest.OpenMigrated(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reprioritizeRequireNoError(t, err)
 	defer store.Close()
 	service = reprioritizeSubmissionService(t, store)
 	replay, err := service.Mutate(ctx, request)
@@ -192,9 +168,7 @@ func TestRunReprioritizeSubmissionFencesAndReplays(t *testing.T) {
 		}
 	}
 	loaded, err := store.LoadCoordinatorRecords(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	reprioritizeRequireNoError(t, err)
 	runs := make(map[string]domain.WorkflowRun)
 	attempts := make(map[string]domain.Attempt)
 	for _, run := range loaded.WorkflowRuns {
@@ -218,9 +192,7 @@ func TestRunReprioritizeSubmissionFencesAndReplays(t *testing.T) {
 		t.Fatalf("unexpected submission effects: %#v", loaded)
 	}
 	events, err := store.LoadAuditEvents(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	reprioritizeRequireNoError(t, err)
 	counts := make(map[string]int)
 	for _, event := range events {
 		counts[event.ID]++
