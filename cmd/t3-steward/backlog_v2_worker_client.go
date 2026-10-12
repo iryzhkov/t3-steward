@@ -471,10 +471,27 @@ func scanCoordinatorWorkerCheckpoints(ctx context.Context, session coordinatorWo
 }
 
 func (s *coordinatorWorkerSessions) Tick(ctx context.Context, quota backlog.QuotaBridgeReport) coordinatorWorkerTickReport {
+	if s == nil {
+		return coordinatorWorkerTickReport{}
+	}
+	return s.TickWorkers(ctx, quota, s.workerIDs)
+}
+
+func (s *coordinatorWorkerSessions) TickWorkers(ctx context.Context, quota backlog.QuotaBridgeReport, requestedIDs []string) coordinatorWorkerTickReport {
 	if s == nil || s.exchange == nil {
 		return coordinatorWorkerTickReport{}
 	}
-	// The hand-on phase: every worker's continuation.md snapshots are imported
+	requested := make(map[string]bool, len(requestedIDs))
+	for _, id := range requestedIDs {
+		requested[id] = true
+	}
+	workerIDs := make([]string, 0, len(requestedIDs))
+	for _, id := range s.workerIDs {
+		if requested[id] {
+			workerIDs = append(workerIDs, id)
+		}
+	}
+	// The hand-on phase: every selected worker's continuation.md snapshots are imported
 	// before any worker's exchange expires a lease or freezes an offer, so a
 	// replacement offered on one worker carries what its predecessor left on
 	// another, whichever order the workers are polled in. Nothing waits for
@@ -483,7 +500,7 @@ func (s *coordinatorWorkerSessions) Tick(ctx context.Context, quota backlog.Quot
 	handedOn := map[string]backlog.WorkerExchangeReport{}
 	unopened := map[string]error{}
 	if s.handOn != nil {
-		for _, workerID := range s.workerIDs {
+		for _, workerID := range workerIDs {
 			report, err := s.handOn(ctx, workerID)
 			handedOn[workerID] = report
 			if err != nil {
@@ -494,8 +511,8 @@ func (s *coordinatorWorkerSessions) Tick(ctx context.Context, quota backlog.Quot
 			}
 		}
 	}
-	report := coordinatorWorkerTickReport{Results: make([]coordinatorWorkerTickResult, 0, len(s.workerIDs))}
-	for _, workerID := range s.workerIDs {
+	report := coordinatorWorkerTickReport{Results: make([]coordinatorWorkerTickResult, 0, len(workerIDs))}
+	for _, workerID := range workerIDs {
 		var exchange backlog.WorkerExchangeReport
 		err, failed := unopened[workerID]
 		if !failed {

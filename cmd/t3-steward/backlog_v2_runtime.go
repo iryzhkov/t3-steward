@@ -850,11 +850,28 @@ func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool
 // Retries reuse the last boundary's admission report. Transport still checks
 // current fences and assignment authority; retries do not create scheduler work.
 func (c coordinatorBoundaryCycle) tickWorkersOnly(ctx context.Context, quotaReport backlog.QuotaBridgeReport) {
+	c.tickWorkerPass(ctx, quotaReport, false)
+}
+
+func (c coordinatorBoundaryCycle) retryWorkers(ctx context.Context, quotaReport backlog.QuotaBridgeReport) {
+	started := time.Now()
+	ctx, snapshot := sqlite.WithCoordinatorRecordsSnapshot(ctx)
+	workers := c.tickWorkerPass(ctx, quotaReport, true)
+	c.logger.Info("backlog-v2 coordinator worker retry completed",
+		"duration", time.Since(started), "record_loads", snapshot.Finish(), "workers", workers)
+}
+
+func (c coordinatorBoundaryCycle) tickWorkerPass(ctx context.Context, quotaReport backlog.QuotaBridgeReport, retry bool) int {
 	if c.supervision != nil && c.supervision.settings.CoordinatorEpoch > 0 {
 		ctx = sqlite.WithCoordinatorEpochFence(ctx, c.supervision.settings.CoordinatorEpoch)
 	}
 	if c.workers != nil {
-		workerReport := c.workers.Tick(ctx, quotaReport)
+		var workerReport coordinatorWorkerTickReport
+		if reconnect, ok := c.workers.(*coordinatorReconnect); retry && ok {
+			workerReport = reconnect.Retry(ctx, quotaReport)
+		} else {
+			workerReport = c.workers.Tick(ctx, quotaReport)
+		}
 		for _, result := range workerReport.Results {
 			if result.Err != nil {
 				logTickFailure(ctx, c.logger, "backlog-v2 worker reconciliation failed", result.Err, "worker", result.WorkerID)
@@ -864,7 +881,9 @@ func (c coordinatorBoundaryCycle) tickWorkersOnly(ctx context.Context, quotaRepo
 				"offered", len(result.Report.Offered), "claimed", len(result.Report.Claimed),
 				"withheld", len(result.Report.Withheld)+len(result.Report.Delivery.Withheld))
 		}
+		return len(workerReport.Results)
 	}
+	return 0
 }
 
 func runBacklogV2Coordinator(ctx context.Context, cfg config.Config, logger *slog.Logger) (result error) {
@@ -1287,7 +1306,7 @@ func serveCoordinatorBoundaries(
 		case err := <-serverDone:
 			return err
 		case <-retryC:
-			cycle.tickWorkersOnly(ctx, lastQuotaReport)
+			cycle.retryWorkers(ctx, lastQuotaReport)
 			if reconnect.pending && reconnect.delay < coordinatorReconnectMaxDelay {
 				retry.Reset(reconnect.nextDelay())
 			} else {
