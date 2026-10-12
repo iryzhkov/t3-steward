@@ -220,7 +220,7 @@ func TestFleetCoordinatorSnapshotRenewalPersistsReply(t *testing.T) {
 			coordinator := FleetCoordinator{Store: store, Now: func() time.Time { return now }, LeaseRenewInterval: 10 * time.Second}
 			incoming := snapshotChangeAt(snapshot, 5, 10*time.Second)
 			renewed := snapshotChangeAt(incoming, 6, 11*time.Second)
-			renewed.Inventory.Telemetry = snapshot.Inventory.Telemetry.Clone()
+			renewed.Inventory.Telemetry = incoming.Inventory.Telemetry.Clone()
 			if changed {
 				renewed.Assignments[0].Control = domain.ControlPaused
 			}

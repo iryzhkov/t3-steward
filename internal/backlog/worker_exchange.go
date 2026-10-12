@@ -372,6 +372,7 @@ func (c FleetCoordinator) ReconcileWorker(
 	if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
 		return WorkerExchangeReport{}, err
 	}
+	latestTelemetry := snapshot.Inventory.Telemetry.Clone()
 	if snapshot, err = store.ObserveWorkerSnapshot(ctx, snapshot, false); err != nil {
 		return WorkerExchangeReport{}, err
 	}
@@ -485,6 +486,7 @@ func (c FleetCoordinator) ReconcileWorker(
 		if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
 			return report, err
 		}
+		latestTelemetry = snapshot.Inventory.Telemetry.Clone()
 		if report.Snapshot, err = store.ObserveWorkerSnapshot(ctx, snapshot, false); err != nil {
 			return report, err
 		}
@@ -513,6 +515,9 @@ func (c FleetCoordinator) ReconcileWorker(
 			}
 			report.Renewed = append(report.Renewed, renewed)
 		}
+		// A skipped observation keeps the stored sequence for planning, but
+		// the renewal must persist this exchange's latest resource measurement.
+		renewedSnapshot.Inventory.Telemetry = latestTelemetry.Clone()
 		if report.Snapshot, err = store.ObserveWorkerSnapshot(ctx, renewedSnapshot, true); err != nil {
 			return report, err
 		}
