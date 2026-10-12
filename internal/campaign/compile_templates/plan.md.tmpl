@@ -1,0 +1,16 @@
+# Plan unit {{.UnitID}}: {{.Title}}
+
+Read `{{.UnitPath}}` as the authoritative planning brief and `{{.PlanPath}}` for context.
+{{range .ExtraInputs}}Read supporting input `{{.}}`.
+{{end}}{{if .Ref}}Confirm `git rev-parse HEAD` is {{.Ref}} before reading the pinned checkout.
+{{else}}This is an empty fresh workspace for project {{.Project}}, with no Git repository.
+{{end}}Produce the requested plan only. Do not change source, execute the produced plan,
+make commits, push, or submit tasks or campaigns.
+List `{{.DependenciesPath}}` to discover any dependency directories and read their inputs.
+Write each declared file at its workspace-relative path:
+{{range .Outputs}}- `{{.}}`
+{{end}}Keep task state in `artifacts/continuation.md` and `artifacts/handoff.md`.
+The handoff records decisions, evidence, limitations and unresolved questions.
+{{if .Verify}}Declared verification commands, each of which must exit 0:
+{{range .Verify}}- `{{.}}`
+{{end}}{{end}}A separate review checks these files against the brief. Do not claim acceptance.

@@ -28,6 +28,9 @@ const CompileFormat = "v1"
 // it.
 const CompileTemplateImplementReview = "implement-review"
 
+// CompileTemplatePlanReview produces files and a verdict without commits.
+const CompileTemplatePlanReview = "plan-review"
+
 // Mount paths a compiled prompt names. They are fixed at authoring time: a
 // campaign input is mounted at .t3/inputs/<declared path>, and a dependency's
 // artifacts under .t3/dependencies/<producer task id>/, whose id is assigned
@@ -100,6 +103,7 @@ type CompiledFile struct {
 type compileFrontMatter struct {
 	Compile  string        `yaml:"compile"`
 	Project  string        `yaml:"project"`
+	Type     string        `yaml:"type"`
 	Ref      string        `yaml:"ref"`
 	Class    string        `yaml:"class"`
 	Template string        `yaml:"template"`
@@ -156,9 +160,10 @@ type compileRoute struct {
 }
 
 type compileUnitSpec struct {
-	ID      string `yaml:"id"`
-	Title   string `yaml:"title"`
-	Section string `yaml:"section"`
+	ID      string   `yaml:"id"`
+	Title   string   `yaml:"title"`
+	Section string   `yaml:"section"`
+	Outputs []string `yaml:"outputs"`
 }
 
 // compileObjectNames names each front-matter shape as the author wrote it,
@@ -294,9 +299,13 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 		return CompilePlan{}, refuse(lineOf(root, "compile"), "compile: %s is not a plan format this release reads; it reads compile: %s", header.Compile, CompileFormat)
 	case strings.TrimSpace(header.Project) == "":
 		return CompilePlan{}, refuse(lineOf(root, "project"), "project is required: the catalog project every unit runs in")
-	case header.Ref == "":
+	case header.Type != "" && header.Type != "git" && header.Type != "fresh":
+		return CompilePlan{}, refuse(lineOf(root, "type"), "type must be git or fresh")
+	case header.Type == "fresh" && mappingKey(root, "ref") != nil:
+		return CompilePlan{}, refuse(lineOf(root, "ref"), "fresh forbids ref, even an empty ref")
+	case header.Type != "fresh" && header.Ref == "":
 		return CompilePlan{}, refuse(1, "ref is required: the full 40-character commit every unit is pinned to")
-	case !compileRefPattern.MatchString(header.Ref):
+	case header.Type != "fresh" && !compileRefPattern.MatchString(header.Ref):
 		return CompilePlan{}, refuse(lineOf(root, "ref"), "ref %q is not a full 40-character commit id; a branch, tag or short id is refused so that every unit is pinned to one commit", header.Ref)
 	}
 	class := domain.TaskClass(header.Class)
@@ -311,8 +320,11 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 	if templateName == "" {
 		templateName = CompileTemplateImplementReview
 	}
-	if templateName != CompileTemplateImplementReview {
-		return CompilePlan{}, refuse(lineOf(root, "template"), "template %q is not available; this release compiles %s only", header.Template, CompileTemplateImplementReview)
+	if templateName != CompileTemplateImplementReview && templateName != CompileTemplatePlanReview {
+		return CompilePlan{}, refuse(lineOf(root, "template"), "template %q is not available; use implement-review or plan-review", header.Template)
+	}
+	if header.Type == "fresh" && templateName != CompileTemplatePlanReview {
+		return CompilePlan{}, refuse(lineOf(root, "type"), "fresh requires template: plan-review")
 	}
 	if err := checkCompileRouting(header, root, lineOf, refuse); err != nil {
 		return CompilePlan{}, err
@@ -551,6 +563,7 @@ type compilePromptData struct {
 	Verify           []string
 	// ExtraInputs are the mount paths of the extra inputs the plan bundles.
 	ExtraInputs []string
+	Outputs     []string
 }
 
 func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compileUnitSpec, line int, raw, section []byte, extras []CompiledFile) (CompiledUnit, error) {
@@ -605,15 +618,46 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 		routes, role, options := routing.compiled()
 		task.Routes, task.Role, task.Options = routes, role, options
 	}
+	tasks := compiledTasks{Implement: &implement, Review: review}
+	if plan.Template == CompileTemplatePlanReview {
+		if len(spec.Outputs) == 0 {
+			return CompiledUnit{}, fmt.Errorf("plan-review requires at least one output")
+		}
+		for _, output := range spec.Outputs {
+			if strings.TrimSpace(output) == "" || filepath.ToSlash(filepath.Clean(output)) != output || strings.Contains(output, "\\") {
+				return CompiledUnit{}, fmt.Errorf("output %q must be a clean relative file path", output)
+			}
+			for _, reserved := range []string{"artifacts/continuation.md", "artifacts/handoff.md", "review.md"} {
+				if output == reserved || strings.HasPrefix(reserved, output+"/") || strings.HasPrefix(output, reserved+"/") {
+					return CompiledUnit{}, fmt.Errorf("output %q collides with reserved %s", output, reserved)
+				}
+			}
+		}
+		implement.PromptFile, implement.Commits = "prompts/plan.md", nil
+		implement.Outputs = append(append([]string(nil), spec.Outputs...), "artifacts/continuation.md", "artifacts/handoff.md")
+		review.PromptFile, review.Needs = "prompts/plan-review.md", []string{"plan"}
+		review.InputsFrom = map[string][]string{"plan": append(append([]string(nil), spec.Outputs...), "artifacts/handoff.md")}
+		review.Outputs = []string{"review.md", "artifacts/continuation.md", "artifacts/handoff.md"}
+		for _, task := range []*compiledTask{&implement, &review} {
+			if task.Role != "" && task.Options["effort"] == "" {
+				task.Options = map[string]string{"effort": "high"}
+			}
+		}
+		tasks.Implement, tasks.Plan, tasks.Review = nil, &implement, review
+	}
+	environment := compiledEnvironment{Project: plan.Project, Ref: plan.Ref}
+	if header.Type == "fresh" {
+		environment.Type = "fresh"
+	}
 	workflow, err := marshalCompiledWorkflow(compiledWorkflow{
 		Version:     backlog.ManifestVersion,
 		Name:        spec.ID,
 		Class:       class,
-		Environment: compiledEnvironment{Project: plan.Project, Ref: plan.Ref},
+		Environment: environment,
 		Placement:   sharedPlacement,
 		Ledger:      newCompiledLedger(header.Ledger),
 		Inputs:      inputs,
-		Tasks:       compiledTasks{Implement: implement, Review: review},
+		Tasks:       tasks,
 	})
 	if err != nil {
 		return CompiledUnit{}, err
@@ -636,6 +680,7 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 		DependenciesPath: compiledDependencyPath,
 		CommitName:       compiledCommitName,
 		Verify:           header.Verify,
+		Outputs:          spec.Outputs,
 	}
 	for _, extra := range extras {
 		data.ExtraInputs = append(data.ExtraInputs, ".t3/inputs/"+extra.Path)
@@ -649,7 +694,11 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 	for _, extra := range extras {
 		unit.Files = append(unit.Files, CompiledFile{Path: extra.Path, Content: append([]byte(nil), extra.Content...)})
 	}
-	for _, name := range []string{"implement", "review"} {
+	promptNames := []string{"implement", "review"}
+	if plan.Template == CompileTemplatePlanReview {
+		promptNames = []string{"plan", "plan-review"}
+	}
+	for _, name := range promptNames {
 		var prompt bytes.Buffer
 		if err := compileTemplates.ExecuteTemplate(&prompt, name+".md.tmpl", data); err != nil {
 			return CompiledUnit{}, err

@@ -1,0 +1,42 @@
+version: 2
+name: a
+environment:
+  project: p
+  ref: d2e827681336e76413fdab34392f029a3e131cf4
+ledger:
+  jocasta_project: p
+  risk: medium
+inputs:
+  - inputs/plan.md
+  - inputs/unit.md
+tasks:
+  plan:
+    routes:
+      - instance: codex
+        model: gpt-6.1-sol
+        options: {effort: high}
+    prompt_file: prompts/plan.md
+    outputs: [plan.md, risks.md, artifacts/continuation.md, artifacts/handoff.md]
+    resources:
+      preset: light
+    placement:
+      hosts: [worker]
+  review:
+    routes:
+      - instance: codex
+        model: gpt-6.1-sol
+        options: {effort: high}
+    prompt_file: prompts/plan-review.md
+    needs: [plan]
+    inputs_from:
+      plan:
+        - plan.md
+        - risks.md
+        - artifacts/handoff.md
+    outputs: [review.md, artifacts/continuation.md, artifacts/handoff.md]
+    review_output:
+      verdict_line: review.md
+    resources:
+      preset: review
+    placement:
+      hosts: [worker]

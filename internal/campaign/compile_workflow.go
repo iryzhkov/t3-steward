@@ -30,11 +30,11 @@ type compiledWorkflow struct {
 	Tasks       compiledTasks       `yaml:"tasks"`
 }
 
-// compiledEnvironment omits type and scope: a compiled unit is always a git
-// workspace per task, which is what the manifest defaults to.
+// Git and task scope are omitted because they are manifest defaults.
 type compiledEnvironment struct {
 	Project string `yaml:"project"`
-	Ref     string `yaml:"ref"`
+	Ref     string `yaml:"ref,omitempty"`
+	Type    string `yaml:"type,omitempty"`
 }
 
 type compiledPlacement struct {
@@ -52,8 +52,9 @@ type compiledLedger struct {
 // compiledTasks is a struct rather than a map so that the tasks are written
 // in the order they run, not alphabetically.
 type compiledTasks struct {
-	Implement compiledTask `yaml:"implement"`
-	Review    compiledTask `yaml:"review"`
+	Implement *compiledTask `yaml:"implement,omitempty"`
+	Plan      *compiledTask `yaml:"plan,omitempty"`
+	Review    compiledTask  `yaml:"review"`
 }
 
 type compiledTask struct {
@@ -108,8 +109,12 @@ type compileRouting struct {
 }
 
 func compileTemplateRouting(header compileFrontMatter) []compileRouting {
+	executeTask := "implement"
+	if header.Template == CompileTemplatePlanReview {
+		executeTask = "plan"
+	}
 	return []compileRouting{
-		{name: "execute", task: "implement", route: header.Routes.Execute, role: header.Roles.Execute},
+		{name: "execute", task: executeTask, route: header.Routes.Execute, role: header.Roles.Execute},
 		{name: "review", task: "review", route: header.Routes.Review, role: header.Roles.Review},
 	}
 }

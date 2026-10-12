@@ -86,6 +86,27 @@ func TestCampaignCompileWritesUnitsThatValidateAndPlan(t *testing.T) {
 	}
 }
 
+func TestCampaignCompilePlanningRefusesBeforeWriting(t *testing.T) {
+	for _, suffix := range []string{"", "\n    outputs: []", "\n    outputs: [\"\"]", "\n    outputs: [x, x]", "\n    outputs: [../x]",
+		"\n    outputs: [artifacts/continuation.md]", "\n    outputs: [artifacts/handoff.md]", "\n    outputs: [review.md]"} {
+		planPath, raw := compileFixturePlan(t)
+		broken := strings.Replace(string(raw), "template: implement-review", "template: plan-review", 1)
+		broken = strings.Replace(broken, "section: \"C-1\"", "section: \"C-1\"\n    outputs: [plan.md]", 1)
+		broken = strings.Replace(broken, "section: B-1", "section: B-1"+suffix, 1)
+		if err := os.WriteFile(planPath, []byte(broken), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(t.TempDir(), "wave")
+		var stdout bytes.Buffer
+		if err := campaignTestCLI(t, &stdout).run(context.Background(), []string{"compile", planPath, "--out", out}); err == nil {
+			t.Fatalf("accepted %q", suffix)
+		}
+		if _, err := os.Stat(out); !os.IsNotExist(err) {
+			t.Fatalf("refused planning campaign wrote %s: %v", out, err)
+		}
+	}
+}
+
 func TestCampaignCompileJSONIsOneDocumentWithOneObjectPerUnit(t *testing.T) {
 	planPath, _ := compileFixturePlan(t)
 	out := filepath.Join(t.TempDir(), "wave")

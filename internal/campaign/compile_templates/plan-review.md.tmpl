@@ -1,0 +1,16 @@
+# Review plan for unit {{.UnitID}}: {{.Title}}
+
+Read `{{.UnitPath}}` as the authoritative planning brief and `{{.PlanPath}}` for context.
+{{range .ExtraInputs}}Read supporting input `{{.}}`.
+{{end}}{{if .Ref}}The checkout is pinned to {{.Ref}}.
+{{else}}This is an empty fresh workspace for project {{.Project}}, with no Git repository.
+{{end}}List `{{.DependenciesPath}}` to discover the planning task's directory.
+Read its `artifacts/handoff.md` and every declared plan output:
+{{range .Outputs}}- `{{.}}`
+{{end}}Check the produced plans against every criterion in the planning brief.
+Do not change source, execute the plans, make commits, push or submit tasks or campaigns.
+Write `review.md` with the first line exactly `VERDICT: ACCEPT` or
+`VERDICT: CHANGES_REQUESTED`, the existing coordinator verdict contract.
+Include findings with concrete failure scenarios, criteria evidence and verification exit codes.
+Keep task state in `artifacts/continuation.md` and `artifacts/handoff.md`.
+Request changes only for defects or unmet criteria.

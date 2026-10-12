@@ -76,13 +76,17 @@ func campaignCompileHelpPage() helpPage {
 		JSONNote: "Read schemaVersion first. units holds one object per compiled unit in plan order: id, directory, valid, errors (always an array), plan (name, tasks, edges, digest) for a valid unit, and check (outcome and reasons) with --check. " + jsonErrorNote,
 		Notes: "Plan format compile/v1 is a Markdown file whose YAML front matter, between leading --- lines, holds these keys and no others: " +
 			"compile: v1; project, the catalog project; ref, a full 40-character commit every unit is pinned to (a branch name is refused); " +
-			"class, required or surplus (default surplus); template: implement-review, the only template and the default; " +
+			"class, required or surplus (default surplus); template: implement-review (default) or plan-review; " +
+			"type: git (default) requires ref; type: fresh requires plan-review and forbids even an empty ref. " +
+			"plan-review units require outputs: [plan.md, risks.md], clean relative file names validated as manifest outputs; artifacts/continuation.md, artifacts/handoff.md and review.md are reserved. " +
+			"The plan task declares these outputs and task state under artifacts/; review consumes every plan output and artifacts/handoff.md through inputs_from, writes review.md and task state, and declares the same verdict contract. Neither task declares commits. " +
+			"routes.execute and roles.execute route plan; placement.implement and resources.implement configure it. Unspecified planning role effort is high. Planning prompts prohibit source edits and executing the produced plan. " +
 			"roles.execute and roles.review, each an optional {effort: low|medium|high}; " +
 			"routes.execute and routes.review, each {instance, model, quota_pool, effort}; verify, an optional list of implement verify commands; " +
 			"ledger, the workflow ledger block {jocasta_project, plan, risk, acceptance}; placement, either shared {hosts, requires} for every task or {implement: {hosts, requires}, review: {hosts, requires}}; mixing forms is refused; " +
 			"resources, a resources block per template task, as {implement: {preset: build}, review: {preset: review}}; review resources default to preset review (1 CPU unit, 1500 MB memory, 1024 MB scratch, minimum CPU class low), which fits 3-CPU/2000-MB/8-GB workers including the 2048-MB disk reserve; review has no host pin unless placement declares one; " +
 			"max_turns, a positive turn bound for every task; inputs, a list of extra files relative to the plan's directory; " +
-			"and units, a list of {id, title, section}, such as {id: c1, title: Campaign compile skeleton, section: \"C-1\"}.\n\n" +
+			"and units, a list of {id, title, section, outputs}, with outputs required for plan-review, such as {id: c1, title: Campaign compile skeleton, section: \"C-1\"}.\n\n" +
 			"Routing: each template task is routed by role unless routes pins it. The implement task takes role execute and the review task role review, " +
 			"with the effort roles names; the coordinator's route policy chooses the concrete route at check and submission, and prefers a review route of a provider family other than the implementation's. " +
 			"Omitting both roles and routes routes both tasks by role. routes.<role> pins that task to exactly the route written. " +
@@ -92,8 +96,8 @@ func campaignCompileHelpPage() helpPage {
 			"it is bundled into every unit at inputs/<path>, mounted at .t3/inputs/inputs/<path>, and named in both prompts. plan.md and unit.md are refused as input names because compile writes them.\n\n" +
 			"A unit id is lower-case letters, digits and single hyphens starting with a letter, at most 64 bytes; it names the unit directory and the workflow. " +
 			"section names the Markdown heading of the plan body whose section is the unit's brief. Only ATX headings (lines starting with #) count, and not inside fenced code; the heading's text is the section, or begins with it followed by a space or a colon, and the section runs to the next heading of the same or a higher level. " +
-			"An unknown key, a missing or duplicate unit id, a section that matches no heading or several, and a ref that is not a full commit are refused with the plan line and the reason, before anything is written.\n\n" +
-			"Each unit directory holds workflow.yaml (version 2, writing only the fields that differ from the workflow defaults, in the order: version, name, class, environment, placement, ledger, inputs, then the tasks in the order they run: an implement task that declares the commit implementation at HEAD and the outputs continuation.md and handoff.md, then a review task that needs it, takes the commit and handoff.md through inputs_from, and declares review_output: {verdict_line: review.md}), " +
+			"An unknown key, a missing or duplicate unit id, a section that matches no heading or several, and a git ref that is not a full commit are refused with the plan line and the reason, before anything is written.\n\n" +
+			"For implement-review, each unit directory holds workflow.yaml (version 2, writing only the fields that differ from the workflow defaults, in the order: version, name, class, environment, placement, ledger, inputs, then the tasks in the order they run: an implement task that declares the commit implementation at HEAD and the outputs continuation.md and handoff.md, then a review task that needs it, takes the commit and handoff.md through inputs_from, and declares review_output: {verdict_line: review.md}), " +
 			"inputs/plan.md (the whole plan, byte for byte), inputs/unit.md (the unit's section, byte for byte), prompts/implement.md and prompts/review.md. " +
 			"The prompts name the pinned ref, the unit id and the mounted paths .t3/inputs/inputs/plan.md, .t3/inputs/inputs/unit.md and .t3/dependencies/.\n\n" +
 			"The review prompt asks for review.md to start with VERDICT: ACCEPT or VERDICT: CHANGES_REQUESTED, and the coordinator records that line as the run's verdict, shown by task result and campaign show. " +
