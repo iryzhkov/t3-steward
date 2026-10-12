@@ -19,6 +19,7 @@ watchdog uses. There is no coordinator involved: this is the operator's hand
 on the local T3 server, for a session nothing else owns any more.
 
 Commands:
+  whoami [--json]               Print the current T3 thread id used for campaign notifications.
   stop <thread-id> [--session]   Dispatch thread.turn.interrupt for the thread's
                                  running turn; with --session also dispatch
                                  thread.session.stop so the provider process ends.
@@ -37,6 +38,9 @@ type threadStopper interface {
 func cmdThread(g globalFlags, args []string) error {
 	if answered, err := admitFamilyHelp(os.Stdout, []string{"thread"}, args); answered || err != nil {
 		return err
+	}
+	if args[0] == "whoami" {
+		return cmdThreadWhoami(g, args[1:], os.Stdout)
 	}
 	if args[0] != "stop" {
 		return fmt.Errorf("unknown thread command %q; see t3-steward thread --help", args[0])

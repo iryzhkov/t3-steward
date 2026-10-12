@@ -194,6 +194,16 @@ func fleetHelpPages() []helpPage {
 			Parsers:  []parserSite{{Func: "runTaskEnv"}},
 		},
 		{
+			Path:     "thread whoami",
+			Purpose:  "print the current T3 thread id that campaign submit --notify-thread current would use.",
+			Usage:    []string{"t3-steward thread whoami [--json]"},
+			Flags:    []helpFlag{jsonFlag("the thread identity")},
+			Exits:    localExits(),
+			JSONKeys: []string{"threadId"},
+			Notes:    "Uses the same current-thread resolution and refusal as campaign submit, from this process environment. Reaches no coordinator and submits nothing.",
+			Parsers:  []parserSite{{Func: "cmdThreadWhoami"}, {Func: "takeJSONFlag"}},
+		},
+		{
 			Path:    "thread stop",
 			Purpose: "interrupt one T3 thread's running turn on this host, and optionally end its session.",
 			Usage:   []string{"t3-steward thread stop <thread-id> [--session]"},
