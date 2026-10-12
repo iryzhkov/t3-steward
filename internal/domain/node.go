@@ -319,7 +319,30 @@ func (r NodeWaitRequest) Kind() WaitKind {
 	return WaitKindNode
 }
 
+// NodeWakeRetargetRequest is store-only plumbing. The service must validate the
+// destination host and live thread before calling the store.
+type NodeWakeRetargetRequest struct {
+	RunIDs         []string `json:"runIds,omitempty"`
+	Project        string   `json:"project,omitempty"`
+	SourceThreadID string   `json:"sourceThreadId,omitempty"`
+	SourceHost     string   `json:"sourceHost,omitempty"`
+	ThreadID       string   `json:"threadId"`
+	Host           string   `json:"host"`
+	Actor          string   `json:"actor"`
+	Reason         string   `json:"reason"`
+	Key            string   `json:"key"`
+}
+
+type NodeWakeRetargetResult struct {
+	Moved     []string `json:"moved,omitempty"`
+	Skipped   []string `json:"skipped,omitempty"`
+	Unchanged []string `json:"unchanged,omitempty"`
+}
+
 type NodeWait struct {
+	RecipientGeneration uint64 `json:"recipientGeneration,omitempty"`
+	RegistrationHost    string `json:"registrationHost,omitempty"`
+
 	Registration       NodeWaitRequest  `json:"registration"`
 	Request            NodeWaitRequest  `json:"request"`
 	Actor              string           `json:"actor"`

@@ -170,7 +170,7 @@ func saveNodeWaitTx(ctx context.Context, tx *sql.Tx, w domain.NodeWait) error {
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO coordinator_node_waits(id,thread_id,record) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record", w.Request.ID, w.Request.ThreadID, raw)
+	_, err = tx.ExecContext(ctx, "INSERT INTO coordinator_node_waits(id,thread_id,record) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET thread_id=excluded.thread_id,record=excluded.record", w.Request.ID, w.Request.ThreadID, raw)
 	return err
 }
 func pinNodeTx(ctx context.Context, tx *sql.Tx, owner string, ref domain.NodeRef) error {
@@ -195,7 +195,12 @@ func (s *Store) RegisterNodeWait(ctx context.Context, request domain.NodeWaitReq
 			return w, err
 		}
 		// Replay does not require source metadata after delivery released its pin.
-		if (!reflect.DeepEqual(w.Request, request) && !reflect.DeepEqual(w.Registration, request)) || w.Actor != actor || w.Host != host {
+		registrationHost := w.Host
+		if w.RegistrationHost != "" {
+			registrationHost = w.RegistrationHost
+		}
+		sameRequest := reflect.DeepEqual(w.Registration, request) || w.RecipientGeneration == 0 && reflect.DeepEqual(w.Request, request)
+		if !sameRequest || w.Actor != actor || registrationHost != host {
 			return w, errors.New("wait ID replay changed registration")
 		}
 		return w, tx.Commit()
@@ -424,6 +429,12 @@ func settleStructuredTaskWaitsTx(ctx context.Context, tx *sql.Tx, records nodeSt
 // TransitionNodeWake is the authoritative delivery state boundary. Every caller,
 // including admin transports, receives the same legal-transition guard.
 func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now time.Time) (bool, error) {
+	return s.TransitionNodeWakeGeneration(ctx, id, from, to, now, 0)
+}
+
+// TransitionNodeWakeGeneration fences sending, including individual fallback
+// claims. Legacy callers expect generation zero.
+func (s *Store) TransitionNodeWakeGeneration(ctx context.Context, id, from, to string, now time.Time, generation uint64) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
@@ -437,7 +448,7 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 	if err = json.Unmarshal(raw, &w); err != nil {
 		return false, err
 	}
-	if w.Delivery != from {
+	if w.Delivery != from || to == "sending" && w.RecipientGeneration != generation {
 		return false, nil
 	}
 	settled, allowed := w.SettledAt != nil, false
@@ -508,6 +519,12 @@ func (s *Store) TransitionNodeWake(ctx context.Context, id, from, to string, now
 // wake-all member represented by it. A replay must name identical bytes,
 // digest, membership, and delivery identity.
 func (s *Store) ClaimNodeWakeGroup(ctx context.Context, leaderID, from, deliveryID, payload string, memberIDs []string, now time.Time) (bool, error) {
+	return s.ClaimNodeWakeGroupGenerations(ctx, leaderID, from, deliveryID, payload, memberIDs, now, nil)
+}
+
+// ClaimNodeWakeGroupGenerations requires each member's snapshot generation.
+// Absent expectations are zero, including for legacy callers.
+func (s *Store) ClaimNodeWakeGroupGenerations(ctx context.Context, leaderID, from, deliveryID, payload string, memberIDs []string, now time.Time, generations map[string]uint64) (bool, error) {
 	if len(memberIDs) == 0 {
 		return false, fmt.Errorf("claim node wake group %q: no members", leaderID)
 	}
@@ -525,6 +542,9 @@ func (s *Store) ClaimNodeWakeGroup(ctx context.Context, leaderID, from, delivery
 		var wake domain.NodeWait
 		if err := json.Unmarshal(raw, &wake); err != nil {
 			return false, err
+		}
+		if wake.RecipientGeneration != generations[id] {
+			return false, nil
 		}
 		expected := wake.Delivery
 		if id == leaderID && expected != from {
