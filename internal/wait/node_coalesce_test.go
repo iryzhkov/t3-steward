@@ -118,6 +118,24 @@ func TestCoalescingFallsBackWithoutGroupClaim(t *testing.T) {
 	}
 }
 
+func TestCoalescedMissingLeaderObservation(t *testing.T) {
+	now := time.Date(2026, 10, 1, 0, 2, 0, 0, time.UTC)
+	a := coalesceWait("a", now.Add(-2*time.Minute))
+	a.Observation = nil
+	store := &coalesceMemory{nativeGroupMemory{[]domain.NodeWait{a, coalesceWait("b", now.Add(-time.Minute))}}}
+	control := &nativeControl{}
+	r := New(store, control, nil)
+	r.NodeHost, r.NodeCoalesceWindow = "host", 2*time.Minute
+	r.SetClock(func() time.Time { return now })
+	r.tickNodes(context.Background())
+	if control.sends != 1 {
+		t.Fatalf("want one batch send, got %d", control.sends)
+	}
+	if text := control.texts[0]; !strings.Contains(text, "Run \"a\": recorded state unavailable.") {
+		t.Fatalf("missing observation must render unavailable: %s", text)
+	}
+}
+
 func TestCoalescedWakeUsesRecordedStateLine(t *testing.T) {
 	w := coalesceWait("unsafe;run", time.Time{})
 	text := coalescedNodeMessage([]domain.NodeWait{w, coalesceWait("safe", time.Time{})}, []*WakeSummary{nil, {Headline: "actual headline"}})

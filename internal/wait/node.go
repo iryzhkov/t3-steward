@@ -347,11 +347,12 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			}
 			summaries := buildNodeSummaries(ctx, r.NodeSummary, wake)
 			builtSummaries, summaryMembers = summaries, wake
-			text = nodeWakeMessage(w, summaries[0])
 			if coalesced {
 				text = coalescedNodeMessage(members, summaries)
 			} else if grouped {
 				text = nodeGroupMessageWith(members, summaries)
+			} else {
+				text = nodeWakeMessage(w, summaries[0])
 			}
 		}
 		var claimed, frozen bool
