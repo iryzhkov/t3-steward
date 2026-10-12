@@ -493,7 +493,7 @@ func (c FleetCoordinator) ReconcileWorker(
 	if err != nil {
 		return report, err
 	}
-	renewals := leaseRenewalsForWorker(records.Assignments, report.Snapshot, now, leaseDuration)
+	renewals := leaseRenewalsForWorker(records.Assignments, report.Snapshot, now, leaseDuration, c.LeaseRenewInterval)
 	if len(renewals) != 0 {
 		renewedSnapshot, renewErr := transport.DeliverLeaseRenewals(ctx, renewals)
 		if renewErr != nil {
@@ -532,7 +532,14 @@ func (c FleetCoordinator) ReconcileWorker(
 	return report, nil
 }
 
-func leaseRenewalsForWorker(assignments []domain.Assignment, snapshot domain.WorkerSnapshot, now time.Time, leaseDuration time.Duration) []domain.AssignmentLeaseRenewal {
+// leaseRenewalsForWorker renews live claims once renewInterval has elapsed since
+// their lease was last set, when remaining time is at most leaseDuration minus
+// renewInterval. An interval <= 0 or >= leaseDuration falls back to half the
+// lease duration, renewing when at most half the lease remains.
+func leaseRenewalsForWorker(assignments []domain.Assignment, snapshot domain.WorkerSnapshot, now time.Time, leaseDuration, renewInterval time.Duration) []domain.AssignmentLeaseRenewal {
+	if renewInterval <= 0 || renewInterval >= leaseDuration {
+		renewInterval = leaseDuration / 2
+	}
 	observed := make(map[string]domain.WorkerAssignmentObservation, len(snapshot.Assignments))
 	for _, observation := range snapshot.Assignments {
 		observed[workerAssignmentKey(observation.AssignmentID, observation.AssignmentEpoch)] = observation
@@ -543,6 +550,9 @@ func leaseRenewalsForWorker(assignments []domain.Assignment, snapshot domain.Wor
 		if !ok || observation.State != domain.AssignmentClaimed || assignment.State != domain.AssignmentClaimed ||
 			assignment.WorkerID != snapshot.WorkerID || assignment.WorkerEpoch != snapshot.WorkerEpoch ||
 			!assignment.LeaseExpiresAt.After(now) {
+			continue
+		}
+		if assignment.LeaseExpiresAt.Sub(now) > leaseDuration-renewInterval {
 			continue
 		}
 		expiresAt := now.Add(leaseDuration)

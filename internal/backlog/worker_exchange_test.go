@@ -93,18 +93,18 @@ func TestLeaseRenewalsForWorkerRequiresLiveDurableAndObservedClaim(t *testing.T)
 		WorkerID: snapshot.WorkerID, WorkerEpoch: snapshot.WorkerEpoch,
 		LeaseToken: "lease-1", LeaseExpiresAt: coordinatorTestTime.Add(time.Minute),
 	}
-	renewals := leaseRenewalsForWorker([]domain.Assignment{assignment}, snapshot, coordinatorTestTime, time.Hour)
+	renewals := leaseRenewalsForWorker([]domain.Assignment{assignment}, snapshot, coordinatorTestTime, time.Hour, 0)
 	if len(renewals) != 1 || renewals[0].WorkerSequence != snapshot.Sequence ||
 		!renewals[0].LeaseExpiresAt.Equal(coordinatorTestTime.Add(time.Hour)) {
 		t.Fatalf("renewals = %#v", renewals)
 	}
 	assignment.State = domain.AssignmentUnknown
-	if got := leaseRenewalsForWorker([]domain.Assignment{assignment}, snapshot, coordinatorTestTime, time.Hour); len(got) != 0 {
+	if got := leaseRenewalsForWorker([]domain.Assignment{assignment}, snapshot, coordinatorTestTime, time.Hour, 0); len(got) != 0 {
 		t.Fatalf("unknown assignment renewals = %#v", got)
 	}
 	assignment.State = domain.AssignmentClaimed
 	assignment.LeaseExpiresAt = coordinatorTestTime
-	if got := leaseRenewalsForWorker([]domain.Assignment{assignment}, snapshot, coordinatorTestTime, time.Hour); len(got) != 0 {
+	if got := leaseRenewalsForWorker([]domain.Assignment{assignment}, snapshot, coordinatorTestTime, time.Hour, 0); len(got) != 0 {
 		t.Fatalf("expired assignment renewals = %#v", got)
 	}
 }
