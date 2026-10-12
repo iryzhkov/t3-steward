@@ -168,6 +168,8 @@ func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*Worke
 			CompatibleCatalogRevisions: options.CompatibleCatalogRevisions,
 			ArtifactRoot:               artifactRoot,
 			RunsRoot:                   runsRoot,
+			BuildCacheRoot:             BuildCacheRoot(options.Settings.Storage.Workspaces),
+			Caches:                     options.Settings.Workers[options.WorkerID].Caches,
 			StopTimeout:                options.Settings.Transport.RequestTimeout.D(),
 			RetainWorkspaces:           true,
 			DryRun:                     options.DryRun,

@@ -19,6 +19,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/compat"
+	"github.com/iryzhkov/t3-steward/internal/config"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/privatefile"
@@ -83,6 +84,10 @@ type LocalDriverConfig struct {
 	// PreflightFreshness bounds how long a preflight receipt may be reused for
 	// an unchanged identity. Zero uses DefaultPreflightFreshness.
 	PreflightFreshness time.Duration
+	// Build caches are resolved only for host provider sessions.
+	BuildCacheRoot     string
+	Caches             []config.V2Cache
+	CacheVersionRunner CacheVersionRunner
 	RetainWorkspaces   bool
 	DryRun             bool
 }
@@ -922,7 +927,7 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 		ProjectID: projectID, Title: workerproto.InitialSessionTitle(pkg),
 		ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default",
 		WorktreePath: workspace, Prompt: prompt,
-		Environment: pkg.Identity.TaskEnvironment(),
+		Environment: d.taskEnvironment(ctx, pkg),
 	})
 	if threadID != "" && threadID != pkg.Identity.ThreadID {
 		return errors.New("T3 returned a different deterministic thread identity")

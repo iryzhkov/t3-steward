@@ -350,6 +350,43 @@ The ask gate checks only that a route and resolvable credentials exist. Registra
 authenticates using the client's configured request timeout; a transient transport
 failure keeps its transport error class rather than becoming `ask-relay-unavailable`.
 
+## Shared build caches
+
+Declare caches on a worker under `backlog_v2.workers`:
+
+```yaml
+caches:
+  - name: go
+    toolchain:
+      command: go
+      version_args: [env, GOVERSION]
+    env:
+      GOCACHE: go-build
+      GOMODCACHE: mod
+    max_mb: 4096
+```
+
+The worker resolves the toolchain version on each host task dispatch. Directories
+are `<storage.workspaces>/build-caches/<name>/<version-label>-<version-hash>/<subpath>`.
+The hash keys the exact reported version, so different toolchain versions use
+different directories. Failed version queries or directory creation skip that
+cache, log the reason with the attempt and thread, and still launch the task.
+
+Only the provider session receives the declared variables. Preflight steps and
+the verification gate are not covered in this part. Recovery dispatches that
+reuse a workspace receive the same cache environment. Contained runtimes receive
+no cache variables because they do not mount the worker cache root; each dispatch
+logs that reason.
+
+Go documents [GOCACHE](https://pkg.go.dev/cmd/go#hdr-Build_and_test_caching) and
+[GOMODCACHE](https://go.dev/ref/mod#module-cache) as safe for concurrent Go commands,
+so tasks on one worker can share these directories. Builds in different attempt
+paths can use `go build -trimpath` to avoid source paths changing compilation
+cache keys; the worker does not inject build flags. Operators must declare only caches
+whose tool documents concurrent use. Never declare a build output or target
+directory, and do not redirect workspace paths. Pruning arrives separately;
+until then `max_mb` is validated but not enforced.
+
 ## Turns that end while their commands still run
 
 Ending a turn completes a task, so a turn that ends while a command the task
