@@ -26,6 +26,7 @@ func TestFleetCoordinatorSnapshotRenewalTelemetryFreshness(t *testing.T) {
 				now = coordinatorTestTime.Add(offset)
 				sequence++
 				incoming := snapshotChangeAt(snapshot, sequence, offset)
+				incoming.Inventory.Telemetry = &domain.WorkerTelemetry{ObservedAt: now}
 				reply := snapshotChangeAt(incoming, sequence+1, offset+time.Second)
 				// Renewal replies carry no resource observation.
 				reply.Inventory.Telemetry = nil
@@ -37,8 +38,8 @@ func TestFleetCoordinatorSnapshotRenewalTelemetryFreshness(t *testing.T) {
 					t.Fatal("stored telemetry missing")
 				}
 				age := now.Sub(stored.Inventory.Telemetry.ObservedAt)
-				if age > 30*time.Second {
-					t.Fatalf("tick %s: stored telemetry age %s exceeds half the snapshot validity", offset, age)
+				if age != 0 {
+					t.Fatalf("tick %s: stored telemetry age %s, want this exchange's measurement", offset, age)
 				}
 				if row.audits != previous.audits {
 					t.Fatalf("unchanged exchange added worker audit: got %d want %d", row.audits, previous.audits)
@@ -51,12 +52,14 @@ func TestFleetCoordinatorSnapshotRenewalTelemetryFreshness(t *testing.T) {
 						t.Fatalf("renewal reply was not persisted: %+v", stored)
 					}
 					snapshotChangeAssertSnapshot(t, row, report.Snapshot)
-					if row.writes != previous.writes+1 || row.renewals != previous.renewals+1 {
+					if row.writes != previous.writes+2 || row.renewals != previous.renewals+1 {
 						t.Fatalf("renewal writes: got %+v, previous %+v", row, previous)
 					}
 					sequence++
-				} else if row != previous {
-					t.Fatalf("idle exchange changed stored row: got %+v, previous %+v", row, previous)
+				} else if row.writes != previous.writes+1 || row.renewals != previous.renewals ||
+					stored.Sequence != snapshot.Sequence || !stored.ObservedAt.Equal(snapshot.ObservedAt) ||
+					!stored.ValidUntil.Equal(snapshot.ValidUntil) {
+					t.Fatalf("telemetry refresh changed fences: got %+v, previous %+v", row, previous)
 				}
 				snapshot = stored
 				previous = row

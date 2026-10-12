@@ -75,7 +75,8 @@ func snapshotChangeAt(snapshot domain.WorkerSnapshot, sequence int64, offset tim
 	for i := range snapshot.Assignments {
 		snapshot.Assignments[i].ObservedAt = snapshot.ObservedAt
 	}
-	snapshot.Inventory.Telemetry = &domain.WorkerTelemetry{ObservedAt: snapshot.ObservedAt}
+	// Metadata-only fixtures leave telemetry unknown; collecting exchanges set it explicitly.
+	snapshot.Inventory.Telemetry = nil
 	return snapshot
 }
 

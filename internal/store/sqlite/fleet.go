@@ -125,6 +125,7 @@ func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSn
 // identifies that observation, rather than the worker's latest report; coordinator
 // fences compare stored sequences, and workers accept lagging command and parked
 // statement sequences. Stopped assignment observations are substance and persist.
+// Telemetry alone refreshes the stored record without advancing these fences.
 // A renewal reply is always persisted. refresh is for an observation the caller
 // has already acted on, such as a lease renewal reply; an unchanged refresh never
 // adds an audit row.
@@ -188,6 +189,18 @@ func (s *Store) saveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSn
 				return domain.WorkerSnapshot{}, err
 			}
 		}
+		// Resource evidence advances independently of the observation used by
+		// command and collection fences. Update only the encoded record.
+		if !reflect.DeepEqual(current.Inventory.Telemetry, snapshot.Inventory.Telemetry) {
+			current.Inventory.Telemetry = snapshot.Inventory.Telemetry.Clone()
+			merged, err := json.Marshal(current)
+			if err != nil {
+				return domain.WorkerSnapshot{}, fmt.Errorf("encode worker telemetry %q: %w", snapshot.WorkerID, err)
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE coordinator_worker_snapshots SET record = ? WHERE worker_id = ?", merged, snapshot.WorkerID); err != nil {
+				return domain.WorkerSnapshot{}, fmt.Errorf("refresh worker telemetry %q: %w", snapshot.WorkerID, err)
+			}
+		}
 		return current, tx.Commit()
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -245,7 +258,7 @@ func workerSnapshotSubstanceEqual(a, b domain.WorkerSnapshot) bool {
 	return string(canonical(a)) == string(canonical(b))
 }
 
-// workerSnapshotRefreshDue bounds stored observation and measurement age to half
+// workerSnapshotRefreshDue bounds stored observation age to half
 // a validity period and keeps stored validity at least half a period ahead.
 func workerSnapshotRefreshDue(stored, incoming domain.WorkerSnapshot) bool {
 	return !incoming.ObservedAt.Before(stored.ObservedAt.Add(stored.ValidUntil.Sub(stored.ObservedAt) / 2))
