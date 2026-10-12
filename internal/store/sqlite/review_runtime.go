@@ -172,8 +172,16 @@ func storedReviewChildrenTx(ctx context.Context, tx *sql.Tx) ([]ReviewMaterializ
 }
 
 // ReconcileMaterializedReviewChildren includes allocated-only rounds before
-// coordinator snapshots. Each round commits under its parent writer lock.
+// coordinator snapshots. Each unsettled round commits under its parent writer lock.
 func (s *Store) ReconcileMaterializedReviewChildren(ctx context.Context) error {
+	pass, _ := ctx.Value(reviewChildrenTickKey{}).(*reviewChildrenTick)
+	if pass != nil {
+		pass.mu.Lock()
+		defer pass.mu.Unlock()
+		if pass.reconciled {
+			return nil
+		}
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -190,8 +198,9 @@ func (s *Store) ReconcileMaterializedReviewChildren(ctx context.Context) error {
 		return err
 	}
 	type issued struct {
-		f  review.FrozenAuthority
-		cp review.CheckpointAuthority
+		f       review.FrozenAuthority
+		cp      review.CheckpointAuthority
+		settled bool
 	}
 	var checkpoints []issued
 	issuedByKey := map[string]issued{}
@@ -222,6 +231,14 @@ func (s *Store) ReconcileMaterializedReviewChildren(ctx context.Context) error {
 		err = rows.Err()
 	}
 	rows.Close()
+	if err == nil {
+		for i := range checkpoints {
+			checkpoints[i].settled, err = reviewCheckpointSettledTx(ctx, tx, checkpoints[i].cp)
+			if err != nil {
+				break
+			}
+		}
+	}
 	tx.Rollback()
 	if err != nil {
 		return fmt.Errorf("enumerate review checkpoints: %w", err)
@@ -235,9 +252,17 @@ func (s *Store) ReconcileMaterializedReviewChildren(ctx context.Context) error {
 		}
 	}
 	for _, item := range checkpoints {
+		// A terminal round without live attempts has neither work to cancel nor
+		// pending members; it needs no writer transaction.
+		if item.settled {
+			continue
+		}
 		if _, err = s.ReconcileReviewChildCancellation(ctx, item.f, item.cp); err != nil {
 			return fmt.Errorf("reconcile review %s parent %s: %w", item.cp.Key(), item.f.Parent.AttemptID, err)
 		}
+	}
+	if pass != nil {
+		pass.reconciled = true
 	}
 	return nil
 }

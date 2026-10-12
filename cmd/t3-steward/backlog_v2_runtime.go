@@ -745,6 +745,7 @@ func logTickFailure(ctx context.Context, logger *slog.Logger, msg string, err er
 }
 
 func (c coordinatorBoundaryCycle) tick(ctx context.Context, exchangeWorkers bool) backlog.QuotaBridgeReport {
+	ctx = sqlite.WithReviewChildrenReconciledOncePerTick(ctx)
 	started := time.Now()
 	ctx, snapshot := sqlite.WithCoordinatorRecordsSnapshot(ctx)
 	defer func() {
