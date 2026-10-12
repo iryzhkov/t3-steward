@@ -110,14 +110,12 @@ func (s *Store) loadCoordinatorRecordsSnapshot(ctx context.Context, snapshot *Co
 		return CoordinatorRecords{}, err
 	}
 	defer tx.Rollback()
-	var changes, version int64
-	if err := tx.QueryRowContext(ctx, "SELECT revision FROM temp.coordinator_records_stamp").Scan(&changes); err != nil {
+	cached := snapshot.entries[s]
+	changes, version, valid, err := coordinatorRecordsValidity(ctx, tx, connection, cached)
+	if err != nil {
 		return CoordinatorRecords{}, err
 	}
-	if err := tx.QueryRowContext(ctx, "PRAGMA data_version").Scan(&version); err != nil {
-		return CoordinatorRecords{}, err
-	}
-	if cached, ok := snapshot.entries[s]; ok && cached.connection == connection && cached.changes == changes && cached.version == version {
+	if valid {
 		if err := tx.Commit(); err != nil {
 			return CoordinatorRecords{}, err
 		}
@@ -136,4 +134,35 @@ func (s *Store) loadCoordinatorRecordsSnapshot(ctx context.Context, snapshot *Co
 	records.loadCommitArtifactPresence = s.loadCommitArtifactPresence
 	snapshot.entries[s] = coordinatorRecordsEntry{connection: connection, changes: changes, version: version, records: records}
 	return records, nil
+}
+
+// coordinatorRecordsValidity shares the connection, records stamp and data-version rule.
+func coordinatorRecordsValidity(ctx context.Context, tx *sql.Tx, connection reflect.Value, cached coordinatorRecordsEntry) (changes, version int64, valid bool, err error) {
+	if err = tx.QueryRowContext(ctx, "SELECT revision FROM temp.coordinator_records_stamp").Scan(&changes); err != nil {
+		return
+	}
+	if err = tx.QueryRowContext(ctx, "PRAGMA data_version").Scan(&version); err != nil {
+		return
+	}
+	valid = cached.connection == connection && cached.changes == changes && cached.version == version
+	return
+}
+
+// coordinatorRecordsSnapshotTx reuses read-only tick records in an open transaction.
+// Node-wait resolution needs every run, including terminal ones; future narrowing
+// of the tick snapshot must preserve this path's complete run history.
+func (s *Store) coordinatorRecordsSnapshotTx(ctx context.Context, tx *sql.Tx, connection reflect.Value) (CoordinatorRecords, bool, error) {
+	snapshot, _ := ctx.Value(coordinatorRecordsSnapshotKey{}).(*CoordinatorRecordsSnapshot)
+	if snapshot == nil {
+		return CoordinatorRecords{}, false, nil
+	}
+	snapshot.mu.Lock()
+	defer snapshot.mu.Unlock()
+	cached, ok := snapshot.entries[s]
+	if !snapshot.active || !ok || cached.connection != connection {
+		// A different connection may not have the temporary stamp.
+		return CoordinatorRecords{}, false, nil
+	}
+	_, _, valid, err := coordinatorRecordsValidity(ctx, tx, connection, cached)
+	return cached.records, valid, err
 }

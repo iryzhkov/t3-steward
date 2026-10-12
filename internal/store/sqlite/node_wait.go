@@ -85,6 +85,11 @@ func nodeStateRecordsTx(ctx context.Context, tx *sql.Tx, quotaStaleAfter time.Du
 	if r.CoordinatorRecords, err = nodeRecordsTx(ctx, tx); err != nil {
 		return r, err
 	}
+	return nodeStateRecordsWithRecordsTx(ctx, tx, r)
+}
+
+func nodeStateRecordsWithRecordsTx(ctx context.Context, tx *sql.Tx, r nodeStateRecords) (nodeStateRecords, error) {
+	var err error
 	if r.QuotaPools, err = loadJSON[domain.QuotaPool](ctx, tx, "coordinator_quota_pools"); err != nil {
 		return r, err
 	}
@@ -260,16 +265,46 @@ func (s *Store) ListNodeWaits(ctx context.Context) ([]domain.NodeWait, error) {
 // kind: the interactive node waits, and the task-bound waits whose condition
 // is structured (node, quota), which have no local check anywhere.
 func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var connection reflect.Value
+	if err := conn.Raw(func(raw any) error { connection = reflect.ValueOf(raw); return nil }); err != nil {
+		return err
+	}
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	var pending bool
+	if err := tx.QueryRowContext(ctx, `SELECT
+		EXISTS(SELECT 1 FROM coordinator_node_waits
+			WHERE json_extract(record, '$.settledAt') IS NULL
+			AND COALESCE(json_extract(record, '$.delivery'), '') NOT IN ('cancelled', 'rejected'))
+		OR EXISTS(SELECT 1 FROM coordinator_task_waits
+			WHERE json_extract(record, '$.settledAt') IS NULL)`).Scan(&pending); err != nil {
+		return err
+	}
+	if !pending {
+		return tx.Commit()
+	}
 	waits, err := loadJSON[domain.NodeWait](ctx, tx, "coordinator_node_waits")
 	if err != nil {
 		return err
 	}
-	records, err := nodeStateRecordsTx(ctx, tx, s.quotaStaleAfter)
+	cached, valid, err := s.coordinatorRecordsSnapshotTx(ctx, tx, connection)
+	if err != nil {
+		return err
+	}
+	var records nodeStateRecords
+	if valid {
+		records, err = nodeStateRecordsWithRecordsTx(ctx, tx, nodeStateRecords{CoordinatorRecords: cached, QuotaStaleAfter: s.quotaStaleAfter})
+	} else {
+		records, err = nodeStateRecordsTx(ctx, tx, s.quotaStaleAfter)
+	}
 	if err != nil {
 		return err
 	}

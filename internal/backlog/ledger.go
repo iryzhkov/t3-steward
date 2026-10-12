@@ -92,6 +92,9 @@ type LedgerStateStore interface {
 // that cannot reach Jocasta marks the ledger behind and leaves it for a later
 // pass after a backoff; the run itself never waits for it.
 type LedgerReconciler struct {
+	// Pending optionally checks for eligible ledger work before loading records
+	// or states. Nil preserves the unconditional records load.
+	Pending func(context.Context, time.Time) (bool, error)
 	// Records loads the coordinator snapshot boundaries are derived from.
 	Records func(context.Context) (sqlite.CoordinatorRecords, error)
 	// ReviewRounds loads the review rounds the coordinator recorded for one
@@ -150,6 +153,16 @@ func (r *LedgerReconciler) Tick(ctx context.Context) LedgerReport {
 		return report
 	}
 	defer r.busy.Unlock()
+	if r.Pending != nil {
+		pending, err := r.Pending(ctx, r.now())
+		if err != nil {
+			report.Errors = append(report.Errors, fmt.Errorf("check pending milestone ledger work: %w", err))
+			return report
+		}
+		if !pending {
+			return report
+		}
+	}
 	records, err := r.Records(ctx)
 	if err != nil {
 		report.Errors = append(report.Errors, fmt.Errorf("load records for the milestone ledger: %w", err))

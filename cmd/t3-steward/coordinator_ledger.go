@@ -35,6 +35,7 @@ type coordinatorLedger struct {
 func newCoordinatorLedger(cfg config.Config, store *sqlite.Store, artifacts backlog.CoordinatorArtifactStore, logger *slog.Logger) *coordinatorLedger {
 	return &coordinatorLedger{
 		reconciler: &backlog.LedgerReconciler{
+			Pending:      store.PendingLedgerWork,
 			Records:      store.LoadCoordinatorRecords,
 			ReviewRounds: store.ListReviewRoundsForRun,
 			States:       store,
