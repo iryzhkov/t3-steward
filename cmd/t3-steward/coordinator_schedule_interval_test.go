@@ -14,6 +14,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite/sqlitetest"
+	"github.com/iryzhkov/t3-steward/internal/testtiming"
 )
 
 type scheduledPassTiming struct {
@@ -24,6 +25,7 @@ type scheduledPassTiming struct {
 type timedCoordinatorSchedules struct {
 	delay  time.Duration
 	passes []scheduledPassTiming
+	onPass func()
 }
 
 func (s *timedCoordinatorSchedules) Tick(context.Context) (backlog.ScheduleTickReport, error) {
@@ -31,6 +33,9 @@ func (s *timedCoordinatorSchedules) Tick(context.Context) (backlog.ScheduleTickR
 	time.Sleep(s.delay)
 	pass.end = time.Now()
 	s.passes = append(s.passes, pass)
+	if s.onPass != nil {
+		s.onPass()
+	}
 	return backlog.ScheduleTickReport{}, nil
 }
 
@@ -93,15 +98,45 @@ func TestCoordinatorScheduledSlowPassDoesNotCoalesce(t *testing.T) {
 
 func TestCoordinatorScheduledFastPassKeepsRunning(t *testing.T) {
 	t.Parallel()
-	const interval = 50 * time.Millisecond
-	schedules := &timedCoordinatorSchedules{}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*interval)
-	defer cancel()
-	serveTimedCoordinator(t, ctx, schedules, nil, interval)
-	if n := len(schedules.passes); n < 5 {
-		t.Fatalf("fast passes = %d, want at least 5 over %s", n, 10*interval)
+	for _, tc := range []struct {
+		name         string
+		startupDelay time.Duration
+	}{
+		{name: "normal"},
+		// Startup alone exceeds the old 500 ms throughput window.
+		{name: "delayed_startup", startupDelay: 600 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const interval = 50 * time.Millisecond
+			const scheduledTarget = 4
+			// This is only a watchdog for missing progress, not a throughput bound.
+			ctx, cancel := context.WithTimeout(context.Background(), testtiming.Bound(10*time.Second))
+			defer cancel()
+			schedules := &timedCoordinatorSchedules{delay: tc.startupDelay}
+			var ready bool
+			var startupPasses int
+			ctx = withCoordinatorStarted(ctx, func() {
+				startupPasses = len(schedules.passes)
+				ready = true
+				schedules.delay = 0
+			})
+			// The callback, readiness baseline and recordings all run on the
+			// coordinator goroutine. Inspect them only after shutdown returns.
+			schedules.onPass = func() {
+				if ready && len(schedules.passes)-startupPasses >= scheduledTarget {
+					cancel()
+				}
+			}
+			serveTimedCoordinator(t, ctx, schedules, nil, interval)
+			if !ready {
+				t.Fatal("coordinator did not report readiness")
+			}
+			if n := len(schedules.passes) - startupPasses; n < scheduledTarget {
+				t.Fatalf("scheduled passes after readiness = %d, want at least %d (watchdog: %v)", n, scheduledTarget, ctx.Err())
+			}
+			assertScheduledPassGaps(t, schedules.passes, interval)
+		})
 	}
-	assertScheduledPassGaps(t, schedules.passes, interval)
 }
 
 type timedCoordinatorRetry struct {
