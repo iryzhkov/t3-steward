@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -90,17 +91,10 @@ const defaultGitLsRemoteTimeout = 30 * time.Second
 // otherwise be buffered in full before anything truncated it.
 const defaultGitLsRemoteOutputBytes = 64 << 10
 
-// gitLsRemoteProbe observes whether the project's repository and ref can be
-// read under the execution identity and credential references the real task
-// would use.
-//
-// The argument vector is fixed: git ls-remote --exit-code -- <repository>
-// <ref> for named refs. Full object IDs use the bounded advertisement without
-// a ref-name filter and compare its object-ID column. There is no shell, and
-// a manifest cannot supply the argv. Both values
-// are validated by the same validators the project catalog applies before any
-// argument vector is built, so a repository or ref that begins with a dash is
-// refused as a value rather than passed where Git would read it as an option.
+// gitLsRemoteProbe observes repository reachability through the task's runner.
+// Named refs use ls-remote; full object IDs absent from its bounded advertisement
+// are checked against fetched history. Arguments are built here, never by a
+// manifest, after the catalog validators reject unsafe repository and ref values.
 func gitLsRemoteProbe(ctx context.Context, request ProbeRequest) (ProbeResult, error) {
 	if err := ValidateRepositoryProbeArguments(request.Repository, request.Ref); err != nil {
 		return ProbeResult{}, err
@@ -119,28 +113,75 @@ func gitLsRemoteProbe(ctx context.Context, request ProbeRequest) (ProbeResult, e
 	if !isFullGitObjectID(request.Ref) {
 		return runProbeCommand(ctx, bounded, "git", "ls-remote", "--exit-code", "--", request.Repository, request.Ref)
 	}
-	// ls-remote patterns match ref names, not object IDs. Filtering by a commit
-	// would incorrectly turn even the advertised branch tip into exit status 2.
+	// ls-remote patterns match ref names, not object IDs.
 	result, err := runProbeCommand(ctx, bounded, "git", "ls-remote", "--exit-code", "--", request.Repository)
 	var exitError *ProcessExitError
 	if result.ExitCode == 2 && (err == nil || errors.As(err, &exitError)) {
-		return result, errors.New("pinned commit reachability is unobserved: repository advertises no refs")
+		return result, err
 	}
 	if err != nil || result.ExitCode != 0 {
 		return result, err
 	}
 	// Only complete records count: a bounded/truncated final line proves nothing.
-	// Absence from advertisements does not prove absence of an ancestor or hidden
-	// object. Keep that case unobserved instead of inventing a permanent refusal.
+	hasHEAD := false
 	lines := strings.Split(result.Output, "\n")
 	for _, line := range lines[:len(lines)-1] {
 		fields := strings.Split(line, "\t")
-		if len(fields) == 2 && strings.EqualFold(fields[0], request.Ref) &&
+		if len(fields) != 2 {
+			continue
+		}
+		if strings.EqualFold(fields[0], request.Ref) &&
 			(fields[1] == "HEAD" || strings.HasPrefix(fields[1], "refs/")) {
 			return result, nil
 		}
+		hasHEAD = hasHEAD || fields[1] == "HEAD"
 	}
-	return result, errors.New("pinned commit reachability is unobserved: object is not in the bounded ref advertisement")
+	return gitFetchPinnedCommitProbe(ctx, bounded, hasHEAD)
+}
+
+// gitFetchPinnedCommitProbe obtains the advertised refs and their history under
+// the same runner, deadline and output bound as the advertisement. Only a
+// successful fetch can prove absence. All Git writes stay in a private directory.
+func gitFetchPinnedCommitProbe(ctx context.Context, request ProbeRequest, hasHEAD bool) (ProbeResult, error) {
+	dir, err := os.MkdirTemp("", "t3-repository-probe-")
+	if err != nil {
+		return ProbeResult{}, err
+	}
+	defer os.RemoveAll(dir)
+	request.WorkspaceDir = dir
+	format := "sha1"
+	if len(request.Ref) == 64 {
+		format = "sha256"
+	}
+	result, err := runProbeCommand(ctx, request, "git", "init", "--bare", "--quiet", "--object-format="+format, ".")
+	if err != nil || result.ExitCode != 0 {
+		return result, err
+	}
+	args := []string{"fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--", request.Repository, "+refs/*:refs/probe/*"}
+	if hasHEAD {
+		args = append(args, "HEAD:refs/probe-head")
+	}
+	result, err = runProbeCommand(ctx, request, "git", args...)
+	if err != nil || result.ExitCode != 0 {
+		return result, err
+	}
+	// A missing commit yields exit 1 from this quiet, local object lookup.
+	result, err = runProbeCommand(ctx, request, "git", "rev-parse", "--verify", "--quiet", "--end-of-options", strings.ToLower(request.Ref)+"^{commit}")
+	var exitError *ProcessExitError
+	if result.ExitCode == 1 && (err == nil || errors.As(err, &exitError)) {
+		return ProbeResult{ExitCode: 2, Output: "pinned commit is absent from fetched refs\n"}, nil
+	}
+	if err != nil || result.ExitCode != 0 {
+		return result, err
+	}
+	result, err = runProbeCommand(ctx, request, "git", "for-each-ref", "--contains="+strings.ToLower(request.Ref), "--format=%(refname)", "--count=1")
+	if err != nil || result.ExitCode != 0 {
+		return result, err
+	}
+	if strings.TrimSpace(result.Output) == "" {
+		return ProbeResult{ExitCode: 2, Output: "pinned commit is unreachable from fetched refs\n"}, nil
+	}
+	return result, nil
 }
 
 func isFullGitObjectID(ref string) bool {
