@@ -445,10 +445,7 @@ func (s *Store) migrateThroughSupported(target, supported int) error {
 		return err
 	}
 	// Sort a copy so reordered registrations cannot change application order.
-	ordered := append([]struct {
-		version int
-		ddl     string
-	}(nil), versionedMigrations...)
+	ordered := append([]schemaMigration(nil), versionedMigrations...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].version < ordered[j].version })
 	missing := make(map[int]bool, len(pending))
 	for _, v := range pending {
@@ -477,49 +474,46 @@ func (s *Store) migrateThroughSupported(target, supported int) error {
 // The list is a package variable rather than a literal inside Migrate so that a
 // compatibility test can build a database at an older version and then migrate
 // it forward through the same code the coordinator runs.
-var versionedMigrations = []struct {
-	version int
-	ddl     string
-}{
-	{2, coordinatorMigrationV2},
-	{3, coordinatorMigrationV3},
-	{4, coordinatorMigrationV4},
-	{5, coordinatorMigrationV5},
-	{6, coordinatorMigrationV6},
-	{7, coordinatorMigrationV7},
-	{8, coordinatorMigrationV8},
-	{9, coordinatorMigrationV9},
-	{10, coordinatorMigrationV10},
-	{11, coordinatorMigrationV11},
-	{12, coordinatorMigrationV12},
-	{13, coordinatorMigrationV13},
-	{14, coordinatorMigrationV14},
-	{15, coordinatorMigrationV15},
-	{16, coordinatorMigrationV16},
-	{17, coordinatorMigrationV17},
-	{18, coordinatorMigrationV18},
-	{19, coordinatorMigrationV19},
-	{20, coordinatorMigrationV20},
-	{21, coordinatorMigrationV21},
-	{22, coordinatorMigrationV22},
-	{23, coordinatorMigrationV23},
-	{24, coordinatorMigrationV24},
-	{25, coordinatorMigrationV25},
-	{26, coordinatorMigrationV26},
-	{27, coordinatorMigrationV27},
-	{28, coordinatorMigrationV28},
-	{29, coordinatorMigrationV29},
-	{30, coordinatorMigrationV30},
-	{31, coordinatorMigrationV31},
-	{32, coordinatorMigrationV32},
-	{33, coordinatorMigrationV33},
-	{34, coordinatorMigrationV34},
-	{37, coordinatorMigrationV37},
+var versionedMigrations = []schemaMigration{
+	{version: 2, ddl: coordinatorMigrationV2},
+	{version: 3, ddl: coordinatorMigrationV3},
+	{version: 4, ddl: coordinatorMigrationV4},
+	{version: 5, ddl: coordinatorMigrationV5},
+	{version: 6, ddl: coordinatorMigrationV6},
+	{version: 7, ddl: coordinatorMigrationV7},
+	{version: 8, ddl: coordinatorMigrationV8},
+	{version: 9, ddl: coordinatorMigrationV9},
+	{version: 10, ddl: coordinatorMigrationV10},
+	{version: 11, ddl: coordinatorMigrationV11},
+	{version: 12, ddl: coordinatorMigrationV12},
+	{version: 13, ddl: coordinatorMigrationV13},
+	{version: 14, ddl: coordinatorMigrationV14},
+	{version: 15, ddl: coordinatorMigrationV15},
+	{version: 16, ddl: coordinatorMigrationV16},
+	{version: 17, ddl: coordinatorMigrationV17},
+	{version: 18, ddl: coordinatorMigrationV18},
+	{version: 19, ddl: coordinatorMigrationV19},
+	{version: 20, ddl: coordinatorMigrationV20},
+	{version: 21, ddl: coordinatorMigrationV21},
+	{version: 22, ddl: coordinatorMigrationV22},
+	{version: 23, ddl: coordinatorMigrationV23},
+	{version: 24, ddl: coordinatorMigrationV24},
+	{version: 25, ddl: coordinatorMigrationV25},
+	{version: 26, ddl: coordinatorMigrationV26},
+	{version: 27, ddl: coordinatorMigrationV27},
+	{version: 28, ddl: coordinatorMigrationV28},
+	{version: 29, ddl: coordinatorMigrationV29},
+	{version: 30, ddl: coordinatorMigrationV30},
+	{version: 31, ddl: coordinatorMigrationV31},
+	{version: 32, ddl: coordinatorMigrationV32},
+	{version: 33, ddl: coordinatorMigrationV33},
+	{version: 34, ddl: coordinatorMigrationV34},
+	{version: 37, ddl: coordinatorMigrationV37},
 	// V35, V36 and V40 are unused; V38 is reserved for the deferred M16-8;
 	// V41 is unused. V39 (M16-6) and V42 (C1 leases) may arrive in either
 	// order, which the gap-filling runner applies.
-	{39, coordinatorMigrationV39},
-	{42, coordinatorMigrationV42},
+	{version: 39, ddl: coordinatorMigrationV39},
+	{version: 42, ddl: coordinatorMigrationV42},
 }
 
 func (s *Store) applyVersionedMigration(version int, ddl string) error {

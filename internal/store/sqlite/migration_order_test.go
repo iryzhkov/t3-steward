@@ -10,10 +10,7 @@ import (
 
 // The synthetic versions below are placed above the real registry (which ends
 // at V42), so that they never collide with a registered migration.
-type testMigration = struct {
-	version int
-	ddl     string
-}
+type testMigration = schemaMigration
 
 func setTestMigrations(t *testing.T, extra ...testMigration) {
 	t.Helper()
@@ -31,11 +28,11 @@ func TestMigrationGapsArrivalOrderReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	setTestMigrations(t, testMigration{50, "CREATE TABLE gap_high (id INTEGER);"}, testMigration{52, "CREATE TABLE gap_order (version INTEGER);"})
+	setTestMigrations(t, testMigration{version: 50, ddl: "CREATE TABLE gap_high (id INTEGER);"}, testMigration{version: 52, ddl: "CREATE TABLE gap_order (version INTEGER);"})
 	if err := s.migrateThroughSupported(52, 52); err != nil {
 		t.Fatal(err)
 	}
-	versionedMigrations = append(versionedMigrations, testMigration{51, "INSERT INTO gap_low VALUES (51); INSERT INTO gap_order VALUES (51);"}, testMigration{49, "CREATE TABLE gap_low (version INTEGER); INSERT INTO gap_order VALUES (49);"})
+	versionedMigrations = append(versionedMigrations, testMigration{version: 51, ddl: "INSERT INTO gap_low VALUES (51); INSERT INTO gap_order VALUES (51);"}, testMigration{version: 49, ddl: "CREATE TABLE gap_low (version INTEGER); INSERT INTO gap_order VALUES (49);"})
 	if err := s.migrateThroughSupported(48, 52); err != nil {
 		t.Fatal(err)
 	}
@@ -98,11 +95,11 @@ func TestMigrationGapsRollbackRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	setTestMigrations(t, testMigration{52, "CREATE TABLE gap_conflict (id INTEGER);"})
+	setTestMigrations(t, testMigration{version: 52, ddl: "CREATE TABLE gap_conflict (id INTEGER);"})
 	if err := s.migrateThroughSupported(52, 52); err != nil {
 		t.Fatal(err)
 	}
-	versionedMigrations = append(versionedMigrations, testMigration{49, "CREATE TABLE gap_rolled_back (id INTEGER); CREATE TABLE gap_conflict (id INTEGER);"}, testMigration{51, "CREATE TABLE gap_later (id INTEGER);"})
+	versionedMigrations = append(versionedMigrations, testMigration{version: 49, ddl: "CREATE TABLE gap_rolled_back (id INTEGER); CREATE TABLE gap_conflict (id INTEGER);"}, testMigration{version: 51, ddl: "CREATE TABLE gap_later (id INTEGER);"})
 	err = s.migrateThroughSupported(52, 52)
 	for _, text := range []string{"49", "52", "already exists"} {
 		if err == nil || !strings.Contains(err.Error(), text) {
@@ -209,7 +206,7 @@ func TestPendingSchemaVersionsReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	setTestMigrations(t, testMigration{52, ""}, testMigration{51, ""}, testMigration{49, ""})
+	setTestMigrations(t, testMigration{version: 52, ddl: ""}, testMigration{version: 51, ddl: ""}, testMigration{version: 49, ddl: ""})
 	if _, err := s.db.Exec("INSERT INTO schema_version VALUES (52)"); err != nil {
 		t.Fatal(err)
 	}
