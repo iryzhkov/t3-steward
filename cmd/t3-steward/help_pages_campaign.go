@@ -47,6 +47,7 @@ func campaignHelpPages() []helpPage {
 			Parsers:  []parserSite{{Func: "parseCampaignArgs"}},
 		},
 		campaignCompileHelpPage(),
+		campaignRepinHelpPage(),
 		{
 			Path:    "campaign check",
 			Purpose: "ask the coordinator whether a campaign could run now, creating nothing.",

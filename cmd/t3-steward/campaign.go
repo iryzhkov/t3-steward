@@ -29,6 +29,7 @@ backlog workflow and run records; there is no separate campaign record.
 Offline (no configuration or coordinator):
   validate <directory|workflow.yaml> [--json]
   plan     <directory|workflow.yaml> [--json|--dot]
+  repin DIR --to SHA [--check] [--json]
   compile PLAN --out DIR [--unit ID] [--force] [--json]
     Writes one campaign directory per plan unit; never submits.
     --check adds the live readiness check of every unit (coordinator).
@@ -377,6 +378,8 @@ func (c campaignCLI) run(ctx context.Context, args []string) error {
 		return c.runPlan(args[1:])
 	case "compile":
 		return c.runCompile(ctx, args[1:])
+	case "repin":
+		return c.runRepin(ctx, args[1:])
 	case "check":
 		return c.runCheck(ctx, args[1:])
 	case "submit":
@@ -475,7 +478,7 @@ func (c campaignCLI) explainNamesATask(ctx context.Context, args []string) error
 
 // campaignCommands are the subcommands run dispatches, in the order a
 // did-you-mean suggestion prefers them.
-var campaignCommands = []string{"validate", "plan", "compile", "check", "submit", "list", "progress", "result", "show", "status", "explain", "graph", "cancel", "fix", "rerun", "supervision", "recovery", "commit", "help"}
+var campaignCommands = []string{"validate", "plan", "compile", "repin", "check", "submit", "list", "progress", "result", "show", "status", "explain", "graph", "cancel", "fix", "rerun", "supervision", "recovery", "commit", "help"}
 
 // nearestCampaignCommand returns the campaign subcommand within two edits of
 // name, or "" when none is that close.
