@@ -65,6 +65,11 @@ func (s *leaseCadenceStore) SaveWorkerSnapshot(ctx context.Context, snapshot dom
 	return s.Store.SaveWorkerSnapshot(ctx, snapshot)
 }
 
+func (s *leaseCadenceStore) ObserveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSnapshot, refresh bool) (domain.WorkerSnapshot, error) {
+	s.snapshotWrites++
+	return s.Store.ObserveWorkerSnapshot(ctx, snapshot, refresh)
+}
+
 type leaseCadenceTransport struct {
 	*exchangeTransport
 	renewalCalls int

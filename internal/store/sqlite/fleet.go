@@ -117,37 +117,78 @@ func (s *Store) AdvanceCoordinatorEpoch(ctx context.Context, expected int64) (in
 // move forward, and the authorization is the catalog and the explicit
 // enrollment that named the new epoch in the first place.
 func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSnapshot) error {
+	_, err := s.saveWorkerSnapshot(ctx, snapshot, false, false)
+	return err
+}
+
+// ObserveWorkerSnapshot returns the last persisted observation. Stored Sequence
+// identifies that observation, rather than the worker's latest report; coordinator
+// fences compare stored sequences, and workers accept lagging command and parked
+// statement sequences. Stopped assignment observations are substance and persist.
+// A renewal reply is always persisted. refresh is for an observation the caller
+// has already acted on, such as a lease renewal reply; an unchanged refresh never
+// adds an audit row.
+func (s *Store) ObserveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSnapshot, refresh bool) (domain.WorkerSnapshot, error) {
+	return s.saveWorkerSnapshot(ctx, snapshot, true, refresh)
+}
+
+func (s *Store) saveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSnapshot, observe, refresh bool) (domain.WorkerSnapshot, error) {
 	if err := validateWorkerSnapshot(snapshot); err != nil {
-		return err
+		return domain.WorkerSnapshot{}, err
 	}
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
-		return fmt.Errorf("encode worker snapshot %q: %w", snapshot.WorkerID, err)
+		return domain.WorkerSnapshot{}, fmt.Errorf("encode worker snapshot %q: %w", snapshot.WorkerID, err)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin worker snapshot: %w", err)
+		return domain.WorkerSnapshot{}, fmt.Errorf("begin worker snapshot: %w", err)
 	}
 	defer tx.Rollback()
 	if err := requireCoordinatorEpoch(ctx, tx, snapshot.CoordinatorEpoch); err != nil {
-		return err
+		return domain.WorkerSnapshot{}, err
 	}
 	current, exists, err := loadWorkerSnapshotTx(ctx, tx, snapshot.WorkerID)
 	if err != nil {
-		return err
+		return domain.WorkerSnapshot{}, err
 	}
+	substanceEqual := observe && exists && workerSnapshotSubstanceEqual(current, snapshot)
 	if exists {
 		if reflect.DeepEqual(current, snapshot) {
-			if _, err := insertWorkerSnapshotAuditEvent(ctx, tx, snapshot); err != nil {
-				return err
+			if observe {
+				return current, nil
 			}
-			return tx.Commit()
+			if _, err := insertWorkerSnapshotAuditEvent(ctx, tx, snapshot); err != nil {
+				return domain.WorkerSnapshot{}, err
+			}
+			return snapshot, tx.Commit()
 		}
 		sameEpoch := current.WorkerEpoch == snapshot.WorkerEpoch
 		if (sameEpoch && snapshot.Sequence <= current.Sequence) ||
 			!snapshot.ObservedAt.After(current.ObservedAt) {
-			return fmt.Errorf("%w: worker %q epoch %q sequence %d", ErrStaleWorkerSnapshot, snapshot.WorkerID, snapshot.WorkerEpoch, snapshot.Sequence)
+			return domain.WorkerSnapshot{}, fmt.Errorf("%w: worker %q epoch %q sequence %d", ErrStaleWorkerSnapshot, snapshot.WorkerID, snapshot.WorkerEpoch, snapshot.Sequence)
 		}
+	}
+	if observe && substanceEqual && !refresh && !workerSnapshotRefreshDue(current, snapshot) {
+		var pending bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM coordinator_throttle_attempts AS t
+				JOIN coordinator_assignments AS a ON a.id = json_extract(t.record, '$.command.assignmentId')
+				WHERE t.delivery = 'acknowledged'
+					AND json_extract(t.record, '$.result') = 'stopped'
+					AND json_extract(t.record, '$.command.attentionStop') IS NOT NULL
+					AND json_extract(t.record, '$.command.workerId') = ?
+					AND json_extract(a.record, '$.state') NOT IN ('released', 'completed')
+			)`, snapshot.WorkerID).Scan(&pending); err != nil {
+			return domain.WorkerSnapshot{}, err
+		}
+		if pending {
+			if err := observeAttentionStopsTx(ctx, tx, snapshot); err != nil {
+				return domain.WorkerSnapshot{}, err
+			}
+		}
+		return current, tx.Commit()
 	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO coordinator_worker_snapshots(
@@ -162,18 +203,52 @@ func (s *Store) SaveWorkerSnapshot(ctx context.Context, snapshot domain.WorkerSn
 			record = excluded.record
 	`, snapshot.WorkerID, snapshot.WorkerEpoch, snapshot.CoordinatorEpoch,
 		snapshot.Sequence, snapshot.Connected, snapshot.ValidUntil.UTC().Format(time.RFC3339Nano), raw); err != nil {
-		return fmt.Errorf("save worker snapshot %q: %w", snapshot.WorkerID, err)
+		return domain.WorkerSnapshot{}, fmt.Errorf("save worker snapshot %q: %w", snapshot.WorkerID, err)
 	}
 	if err := observeAttentionStopsTx(ctx, tx, snapshot); err != nil {
-		return err
+		return domain.WorkerSnapshot{}, err
 	}
-	if _, err := insertWorkerSnapshotAuditEvent(ctx, tx, snapshot); err != nil {
-		return err
+	if !observe || !substanceEqual {
+		if _, err := insertWorkerSnapshotAuditEvent(ctx, tx, snapshot); err != nil {
+			return domain.WorkerSnapshot{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit worker snapshot %q: %w", snapshot.WorkerID, err)
+		return domain.WorkerSnapshot{}, fmt.Errorf("commit worker snapshot %q: %w", snapshot.WorkerID, err)
 	}
-	return nil
+	return snapshot, nil
+}
+
+// workerSnapshotSubstanceEqual ignores snapshot and inventory sequences and
+// observation times, snapshot validity, inventory telemetry and pressure, and
+// assignment and quota observation times: these advance on otherwise idle reports.
+// Canonical JSON preserves all other fields and equates omitted nil/empty slices.
+func workerSnapshotSubstanceEqual(a, b domain.WorkerSnapshot) bool {
+	canonical := func(snapshot domain.WorkerSnapshot) []byte {
+		snapshot.Sequence = 0
+		snapshot.ObservedAt, snapshot.ValidUntil = time.Time{}, time.Time{}
+		snapshot.Inventory.Sequence = 0
+		snapshot.Inventory.ObservedAt = time.Time{}
+		snapshot.Inventory.Telemetry = nil
+		snapshot.Inventory.Pressure = domain.CPUPressure{}
+		snapshot.Assignments = append([]domain.WorkerAssignmentObservation(nil), snapshot.Assignments...)
+		for i := range snapshot.Assignments {
+			snapshot.Assignments[i].ObservedAt = time.Time{}
+		}
+		snapshot.QuotaObservations = append([]domain.WorkerQuotaObservation(nil), snapshot.QuotaObservations...)
+		for i := range snapshot.QuotaObservations {
+			snapshot.QuotaObservations[i].ObservedAt = time.Time{}
+		}
+		raw, _ := json.Marshal(snapshot)
+		return raw
+	}
+	return string(canonical(a)) == string(canonical(b))
+}
+
+// workerSnapshotRefreshDue bounds stored observation and measurement age to half
+// a validity period and keeps stored validity at least half a period ahead.
+func workerSnapshotRefreshDue(stored, incoming domain.WorkerSnapshot) bool {
+	return !incoming.ObservedAt.Before(stored.ObservedAt.Add(stored.ValidUntil.Sub(stored.ObservedAt) / 2))
 }
 
 func loadThrottleAttemptRecordsTx(ctx context.Context, tx *sql.Tx) ([]domain.ThrottleAttemptRecord, error) {

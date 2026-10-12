@@ -21,6 +21,7 @@ import (
 type WorkerExchangeStore interface {
 	FleetCoordinatorStore
 	SaveWorkerSnapshot(context.Context, domain.WorkerSnapshot) error
+	ObserveWorkerSnapshot(context.Context, domain.WorkerSnapshot, bool) (domain.WorkerSnapshot, error)
 	ClaimAssignment(context.Context, domain.AssignmentClaimRequest) (domain.Assignment, error)
 	RenewAssignmentLease(context.Context, domain.AssignmentLeaseRenewal) (domain.Assignment, error)
 	ExpireAssignmentLeases(context.Context, int64, time.Time) ([]domain.Assignment, error)
@@ -371,7 +372,7 @@ func (c FleetCoordinator) ReconcileWorker(
 	if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
 		return WorkerExchangeReport{}, err
 	}
-	if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+	if snapshot, err = store.ObserveWorkerSnapshot(ctx, snapshot, false); err != nil {
 		return WorkerExchangeReport{}, err
 	}
 	report := WorkerExchangeReport{Snapshot: snapshot, Expired: expired}
@@ -484,10 +485,9 @@ func (c FleetCoordinator) ReconcileWorker(
 		if err := store.ClearWorkerUsageAcknowledgements(ctx, transport.WorkerID(), observations.AcknowledgedUsageEventIDs); err != nil {
 			return report, err
 		}
-		if err := store.SaveWorkerSnapshot(ctx, snapshot); err != nil {
+		if report.Snapshot, err = store.ObserveWorkerSnapshot(ctx, snapshot, false); err != nil {
 			return report, err
 		}
-		report.Snapshot = snapshot
 	}
 	records, err = store.LoadCoordinatorRecords(ctx)
 	if err != nil {
@@ -513,10 +513,9 @@ func (c FleetCoordinator) ReconcileWorker(
 			}
 			report.Renewed = append(report.Renewed, renewed)
 		}
-		if err := store.SaveWorkerSnapshot(ctx, renewedSnapshot); err != nil {
+		if report.Snapshot, err = store.ObserveWorkerSnapshot(ctx, renewedSnapshot, true); err != nil {
 			return report, err
 		}
-		report.Snapshot = renewedSnapshot
 	}
 	delivery, err := c.ReconcileWorkerCommandsWithAdmission(ctx, report.Snapshot, transport, admission)
 	report.Delivery = delivery
