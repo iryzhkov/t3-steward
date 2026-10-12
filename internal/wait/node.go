@@ -64,6 +64,9 @@ func reconcileNodeWake(ctx context.Context, control NodeControl, threadID, deliv
 	return WakeReceiptUnknown, err
 }
 
+// ErrNodeGroupClaimUnsupported requests legacy individual transitions in the same tick.
+var ErrNodeGroupClaimUnsupported = errors.New("native wait group claim unsupported")
+
 // NodeGroupClaimer atomically freezes an exact payload and every wake-all
 // member represented by that one external effect.
 type NodeGroupClaimer interface {
@@ -302,9 +305,13 @@ func (r *Runner) tickNodes(ctx context.Context) {
 				text = nodeGroupMessageWith(members, summaries)
 			}
 		}
-		var claimed bool
+		var claimed, frozen bool
 		if freezer, ok := store.(NodeGroupClaimer); ok {
 			claimed, err = freezer.ClaimNodeWakeGroup(ctx, w.Request.ID, w.Delivery, w.DeliveryID, text, memberIDs, now)
+			frozen = !errors.Is(err, ErrNodeGroupClaimUnsupported)
+			if !frozen {
+				claimed, err = store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", now)
+			}
 		} else {
 			claimed, err = store.TransitionNodeWake(ctx, w.Request.ID, w.Delivery, "sending", now)
 		}
@@ -331,7 +338,7 @@ func (r *Runner) tickNodes(ctx context.Context) {
 			continue
 		}
 		if grouped {
-			if _, frozen := store.(NodeGroupClaimer); frozen {
+			if frozen {
 				// Every member names the same frozen effect and remains sending
 				// until the shared remote message is positively observed.
 				continue

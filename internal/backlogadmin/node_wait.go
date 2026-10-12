@@ -35,9 +35,12 @@ type NodeWaitOperation struct {
 	Events   []domain.UserInputEvent `json:"events,omitempty"`
 	// CoordinatorID is injected by the authenticated server boundary and is
 	// never accepted from request JSON.
-	CoordinatorID string `json:"-"`
-	From          string `json:"from,omitempty"`
-	To            string `json:"to,omitempty"`
+	CoordinatorID string   `json:"-"`
+	From          string   `json:"from,omitempty"`
+	To            string   `json:"to,omitempty"`
+	DeliveryID    string   `json:"deliveryId,omitempty"`
+	Payload       string   `json:"payload,omitempty"`
+	Members       []string `json:"members,omitempty"`
 	// Host is the host whose steward delivers the wake of this registration.
 	// A T3 thread exists only on the host that opened it, and a wake is sent by
 	// the wait runner whose NodeHost matches the wait's host, so a registration
@@ -84,6 +87,12 @@ type NodeWaitOperation struct {
 // programs, and a spelling that drifted would fail only against a live
 // coordinator.
 const NodeWaitTransitionAction = "transition-node"
+
+const NodeWaitClaimGroupAction = "claim-node-group"
+
+type nodeWaitGroupClaimer interface {
+	ClaimNodeWakeGroup(context.Context, string, string, string, string, []string, time.Time) (bool, error)
+}
 
 type NodeWaitResponse struct {
 	Waits            []domain.NodeWait            `json:"waits"`
@@ -228,6 +237,27 @@ func (s *Service) NodeWait(ctx context.Context, principal Principal, op NodeWait
 		}
 		result.Waits = []domain.NodeWait{w}
 		return result, nil
+	case NodeWaitClaimGroupAction:
+		if op.ID == "" || op.From == "" || op.DeliveryID == "" || op.Payload == "" || len(op.Members) == 0 {
+			return result, errors.New("a native wake group claim needs the wait ID, current delivery state, delivery ID, payload and members")
+		}
+		seen := make(map[string]bool, len(op.Members))
+		for _, id := range op.Members {
+			if seen[id] {
+				return result, errors.New("duplicate native wake group member")
+			}
+			seen[id] = true
+		}
+		if !seen[op.ID] {
+			return result, errors.New("native wake group leader must be a member")
+		}
+		claimer, ok := s.reader.(nodeWaitGroupClaimer)
+		if !ok {
+			return result, errors.New("native wait group claim unavailable")
+		}
+		changed, err := claimer.ClaimNodeWakeGroup(ctx, op.ID, op.From, op.DeliveryID, op.Payload, op.Members, s.now())
+		result.Changed = changed
+		return result, err
 	case NodeWaitTransitionAction:
 		// The delivery state machine of a node wake, for the steward of the host
 		// the wait names. That steward holds the thread and none of the

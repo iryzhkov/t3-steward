@@ -26,11 +26,15 @@ import (
 //
 // A coordinator host keeps its own store, which is the authority and needs no
 // transport.
-func configureNodeWaitTransport(runner *wait.Runner, cfg config.Config, log *slog.Logger) {
+func configureNodeWaitTransport(runner *wait.Runner, cfg config.Config, log *slog.Logger, claimGroups ...bool) {
 	if cfg.BacklogV2.Mode == "coordinator" || !cfg.BacklogV2.CoordinatorClient.Configured() {
 		return
 	}
-	runner.NodeStore = &remoteNodeWaitStore{cfg: cfg, log: log}
+	remote := &remoteNodeWaitStore{cfg: cfg, log: log}
+	runner.NodeStore = remote
+	if len(claimGroups) != 0 && claimGroups[0] {
+		runner.NodeStore = &remoteNodeWaitGroupStore{remoteNodeWaitStore: remote}
+	}
 }
 
 // remoteNodeWaitStore is the coordinator's node-wait surface as seen from
