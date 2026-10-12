@@ -374,6 +374,10 @@ func (s *DeclaredReviewStaging) childStageFiles(ctx context.Context, snap Admiss
 	if run.Graph != nil && run.Graph.ClonedFrom != nil {
 		ids = task.InputArtifactIDs
 	}
+	records, err = records.WithArtifactIDs(ctx, ids...)
+	if err != nil {
+		return nil, err
+	}
 	if len(snap.Authority.Requirements.Members) > childStageMaxMembers {
 		return nil, errors.New("stage reviewer count exceeds bound")
 	}

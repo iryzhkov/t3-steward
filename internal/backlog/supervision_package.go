@@ -123,6 +123,10 @@ func (b CoordinatorOfferBuilder) buildActivationOffer(
 	for _, facts := range admin.Incidents {
 		incidents = append(incidents, facts.Incident)
 	}
+	records, err = records.WithRunArtifacts(ctx, run.ID)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
 	var artifacts []domain.Artifact
 	for _, artifact := range records.Artifacts {
 		if artifact.WorkflowRunID == run.ID {

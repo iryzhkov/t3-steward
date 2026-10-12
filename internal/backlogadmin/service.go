@@ -549,7 +549,7 @@ func (s *Service) loadRunAudit(ctx context.Context, v *view, runID string) error
 
 // loadView reads the one consistent snapshot every query is answered from.
 func (s *Service) loadView(ctx context.Context) (view, error) {
-	records, err := s.reader.LoadCoordinatorRecords(ctx)
+	records, err := s.reader.LoadCoordinatorRecords(sqlite.WithoutCoordinatorRecordsSnapshot(ctx))
 	if err != nil {
 		return view{}, fmt.Errorf("load coordinator snapshot: %w", err)
 	}

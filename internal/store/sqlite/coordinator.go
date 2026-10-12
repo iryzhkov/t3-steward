@@ -141,20 +141,28 @@ CREATE INDEX coordinator_admin_commands_target ON coordinator_admin_commands(tar
 // CoordinatorRecords is a durable coordinator snapshot. SaveCoordinatorRecords
 // writes every supplied record in one transaction; omitted records are left intact.
 type CoordinatorRecords struct {
-	ReviewRounds      []review.Round
-	Workflows         []domain.Workflow
-	WorkflowRuns      []domain.WorkflowRun
-	Tasks             []domain.Task
-	Attempts          []domain.Attempt
-	Assignments       []domain.Assignment
-	Activations       []domain.Activation
-	Incidents         []domain.ReviewIncident
-	Schedules         []domain.Schedule
-	ScheduleTemplates []domain.ScheduleTemplate
-	Triggers          []domain.Trigger
-	QuotaPools        []domain.QuotaPool
-	Artifacts         []domain.Artifact
-	AdminCommands     []domain.AdminCommand
+	// CommitArtifactsRetained holds lazy existence checks, without decoding history.
+	CommitArtifactsRetained    map[string]bool `json:"-"`
+	loadCommitArtifactPresence func(context.Context, string, map[string]bool) (bool, error)
+	// AssignmentsByRun is built once per loaded snapshot and is read-only.
+	AssignmentsByRun    map[string][]domain.Assignment `json:"-"`
+	omittedArtifactRuns map[string]bool
+	loadArtifacts       func(context.Context, []string) ([]domain.Artifact, error)
+	loadRunArtifacts    func(context.Context, string) ([]domain.Artifact, error)
+	ReviewRounds        []review.Round
+	Workflows           []domain.Workflow
+	WorkflowRuns        []domain.WorkflowRun
+	Tasks               []domain.Task
+	Attempts            []domain.Attempt
+	Assignments         []domain.Assignment
+	Activations         []domain.Activation
+	Incidents           []domain.ReviewIncident
+	Schedules           []domain.Schedule
+	ScheduleTemplates   []domain.ScheduleTemplate
+	Triggers            []domain.Trigger
+	QuotaPools          []domain.QuotaPool
+	Artifacts           []domain.Artifact
+	AdminCommands       []domain.AdminCommand
 	// AuditEvents are written by SaveCoordinatorRecords but never filled by
 	// LoadCoordinatorRecords. The audit table is append-only history, the
 	// largest table by far (217,834 rows and 109 MB of JSON on the fleet
@@ -422,7 +430,7 @@ func (s *Store) loadCoordinatorRecords(ctx context.Context) (CoordinatorRecords,
 		return CoordinatorRecords{}, fmt.Errorf("begin coordinator load: %w", err)
 	}
 	defer tx.Rollback()
-	records, err := loadCoordinatorRecordsTx(ctx, tx)
+	records, err := loadCoordinatorRecordsTx(ctx, tx, false)
 	if err != nil {
 		return CoordinatorRecords{}, err
 	}
@@ -432,7 +440,7 @@ func (s *Store) loadCoordinatorRecords(ctx context.Context) (CoordinatorRecords,
 	return records, nil
 }
 
-func loadCoordinatorRecordsTx(ctx context.Context, tx *sql.Tx) (CoordinatorRecords, error) {
+func loadCoordinatorRecordsTx(ctx context.Context, tx *sql.Tx, tick bool) (CoordinatorRecords, error) {
 	var records CoordinatorRecords
 	var err error
 	if records.Workflows, err = loadJSON[domain.Workflow](ctx, tx, "coordinator_workflows"); err != nil {
@@ -462,7 +470,25 @@ func loadCoordinatorRecordsTx(ctx context.Context, tx *sql.Tx) (CoordinatorRecor
 	if records.QuotaPools, err = loadJSON[domain.QuotaPool](ctx, tx, "coordinator_quota_pools"); err != nil {
 		return CoordinatorRecords{}, err
 	}
-	if records.Artifacts, err = loadJSON[domain.Artifact](ctx, tx, "coordinator_artifacts"); err != nil {
+	artifactQuery := "SELECT record FROM coordinator_artifacts ORDER BY id"
+	if tick {
+		// Filter before decoding. Run-less definition artifacts and artifacts of
+		// unknown runs retain the ordinary load semantics.
+		artifactQuery = `WITH terminal_runs AS MATERIALIZED (
+			SELECT id FROM coordinator_workflow_runs
+			WHERE json_extract(record, '$.sink.progress')
+			IN ('succeeded', 'failed', 'cancelled', 'skipped')
+		)
+		SELECT record FROM coordinator_artifacts
+		WHERE workflow_run_id NOT IN (SELECT id FROM terminal_runs) ORDER BY id`
+		records.omittedArtifactRuns = make(map[string]bool)
+		for _, run := range records.WorkflowRuns {
+			if run.Sink != nil && run.Sink.Progress.Terminal() {
+				records.omittedArtifactRuns[run.ID] = true
+			}
+		}
+	}
+	if records.Artifacts, err = loadJSONQuery[domain.Artifact](ctx, tx, "coordinator_artifacts", artifactQuery); err != nil {
 		return CoordinatorRecords{}, err
 	}
 	if records.AdminCommands, err = loadJSON[domain.AdminCommand](ctx, tx, "coordinator_admin_commands"); err != nil {
@@ -470,6 +496,9 @@ func loadCoordinatorRecordsTx(ctx context.Context, tx *sql.Tx) (CoordinatorRecor
 	}
 	// Audit events are deliberately not loaded here; see CoordinatorRecords.
 	records.Tasks = domain.TasksWithGraphAdditions(records.WorkflowRuns, records.Tasks)
+	if tick {
+		records.AssignmentsByRun = IndexAssignmentsByRun(records.Attempts, records.Assignments)
+	}
 	return records, nil
 }
 
@@ -500,7 +529,11 @@ func loadScheduleTemplates(ctx context.Context, tx *sql.Tx) ([]domain.ScheduleTe
 }
 
 func loadJSON[T any](ctx context.Context, tx *sql.Tx, table string) ([]T, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT record FROM "+table+" ORDER BY id")
+	return loadJSONQuery[T](ctx, tx, table, "SELECT record FROM "+table+" ORDER BY id")
+}
+
+func loadJSONQuery[T any](ctx context.Context, tx *sql.Tx, table, query string, args ...any) ([]T, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("load %s: %w", table, err)
 	}

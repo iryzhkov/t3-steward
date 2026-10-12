@@ -265,6 +265,10 @@ func admissionCriteria(ctx context.Context, store CoordinatorArtifactStore, reco
 	if id == "" || id == task.PromptArtifactID || !slices.Contains(task.InputArtifactIDs, id) || !slices.Contains(workflow.InputArtifactIDs, id) {
 		return fail("criteria not declared by task and workflow")
 	}
+	records, err = records.WithArtifactIDs(ctx, workflow.InputArtifactIDs...)
+	if err != nil {
+		return fail(err.Error())
+	}
 	// Every canonical pin must map to exactly one retained submission artifact.
 	var criteria domain.Artifact
 	for _, entry := range manifest.Entries {

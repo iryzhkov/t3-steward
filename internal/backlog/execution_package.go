@@ -97,6 +97,34 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 			return b.buildActivationOffer(ctx, records, attempt, assignment, expiresAt)
 		}
 	}
+	var inputIDs []string
+	for _, attempt := range records.Attempts {
+		if attempt.ID != assignment.AttemptID {
+			continue
+		}
+		for _, run := range records.WorkflowRuns {
+			if run.ID != attempt.WorkflowRunID {
+				continue
+			}
+			records, err = records.WithRunArtifacts(ctx, run.ID)
+			if err != nil {
+				return workerproto.AssignmentOffer{}, err
+			}
+			for _, workflow := range records.Workflows {
+				if workflow.ID == run.WorkflowID {
+					inputIDs = append(inputIDs, workflow.InputArtifactIDs...)
+				}
+			}
+			for _, task := range domain.TasksForRun(run, records.Tasks) {
+				inputIDs = append(inputIDs, task.PromptArtifactID)
+				inputIDs = append(inputIDs, task.InputArtifactIDs...)
+			}
+		}
+	}
+	records, err = records.WithArtifactIDs(ctx, inputIDs...)
+	if err != nil {
+		return workerproto.AssignmentOffer{}, err
+	}
 	state, err := resolveExecutionPackageState(records, assignment)
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err

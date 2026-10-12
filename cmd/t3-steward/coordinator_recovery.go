@@ -28,6 +28,10 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 	if err != nil {
 		return err
 	}
+	records, err = records.WithRunArtifacts(ctx, run.ID)
+	if err != nil {
+		return err
+	}
 	latest := make(map[string]domain.Attempt)
 	for _, attempt := range domain.DeclaredTaskAttempts(records.Attempts) {
 		if attempt.WorkflowRunID != run.ID {

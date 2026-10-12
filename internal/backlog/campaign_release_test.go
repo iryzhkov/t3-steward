@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
@@ -41,6 +42,52 @@ func settle(run *domain.WorkflowRun) {
 // settled campaign survive while its record is retained and go when retention
 // removes it, and across many completed campaigns the store holds the refs of
 // the campaigns whose records still exist rather than the sum of all of them.
+func TestCampaignRefLifetimeWithLazyTerminalArtifacts(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	run, task, artifact := campaignRunRecords("terminal", "task", "implementation")
+	settle(&run)
+	artifact.CreatedAt = time.Now().Add(-time.Hour)
+	records := sqlite.CoordinatorRecords{WorkflowRuns: []domain.WorkflowRun{run}, Tasks: []domain.Task{task}, Artifacts: []domain.Artifact{artifact}}
+	if err := store.SaveCoordinatorRecords(ctx, records); err != nil {
+		t.Fatal(err)
+	}
+	ctx, scope := sqlite.WithCoordinatorRecordsSnapshot(ctx)
+	defer scope.Finish()
+	read := func(wantRetained bool) {
+		t.Helper()
+		records, err := store.LoadCoordinatorRecords(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records.Artifacts) != 0 {
+			t.Fatal("terminal artifacts decoded by tick")
+		}
+		records, err = withCampaignCommitArtifacts(ctx, records)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records.Artifacts) != 0 {
+			t.Fatal("retention check decoded terminal artifacts")
+		}
+		retained, released := CampaignRefLifetime(records)
+		if wantRetained && (len(retained) != 1 || len(released) != 0) ||
+			!wantRetained && (len(retained) != 0 || len(released) != 1) {
+			t.Fatalf("retained=%v released=%v wantRetained=%v", retained, released, wantRetained)
+		}
+	}
+	read(true)
+	// Pruning provenance must refresh the tick's retention decision.
+	if _, _, err := store.PruneArtifacts(ctx, time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	read(false)
+}
+
 func TestCampaignRefReleaseFollowsArtifactRetention(t *testing.T) {
 	ctx := context.Background()
 	repository := newGitFixture(t)

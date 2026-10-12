@@ -42,6 +42,10 @@ func (s *Service) ExportCommit(ctx context.Context, principal Principal, request
 	if err != nil {
 		return ArtifactContent{}, err
 	}
+	records, err = records.WithRunArtifacts(ctx, request.RunID)
+	if err != nil {
+		return ArtifactContent{}, err
+	}
 	var run domain.WorkflowRun
 	for _, r := range records.WorkflowRuns {
 		if r.ID == request.RunID {

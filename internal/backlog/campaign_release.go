@@ -61,7 +61,11 @@ func CampaignRefLifetime(records sqlite.CoordinatorRecords) (retained, releasabl
 		if len(declared) == 0 {
 			continue
 		}
-		if runSettled(run) && !commitRecordRetained(run.ID, declared, records.Artifacts) {
+		commitRetained, checked := records.CommitArtifactsRetained[run.ID]
+		if !checked {
+			commitRetained = commitRecordRetained(run.ID, declared, records.Artifacts)
+		}
+		if runSettled(run) && !commitRetained {
 			releasable = append(releasable, run.ID)
 			continue
 		}
@@ -72,8 +76,23 @@ func CampaignRefLifetime(records sqlite.CoordinatorRecords) (retained, releasabl
 	return retained, releasable
 }
 
-// declaredCommitNames indexes the (task, name) pairs of one run that name a
-// declared commit rather than a file the task wrote.
+// withCampaignCommitArtifacts checks terminal provenance without decoding it.
+func withCampaignCommitArtifacts(ctx context.Context, records sqlite.CoordinatorRecords) (sqlite.CoordinatorRecords, error) {
+	for _, run := range records.WorkflowRuns {
+		declared := declaredCommitNames(run, records.Tasks)
+		if !runSettled(run) || len(declared) == 0 {
+			continue
+		}
+		var err error
+		records, err = records.WithCommitArtifactPresence(ctx, run.ID, declared)
+		if err != nil {
+			return sqlite.CoordinatorRecords{}, err
+		}
+	}
+	return records, nil
+}
+
+// declaredCommitNames indexes the (task, name) pairs of declared commits.
 func declaredCommitNames(run domain.WorkflowRun, templates []domain.Task) map[string]bool {
 	declared := map[string]bool{}
 	for _, task := range domain.TasksForRun(run, templates) {
@@ -159,6 +178,11 @@ func (r *CampaignRefReleaseReconciler) Tick(ctx context.Context) CampaignRefRele
 	records, err := r.Records(ctx)
 	if err != nil {
 		report.Errors = append(report.Errors, fmt.Errorf("load records for campaign commit release: %w", err))
+		return report
+	}
+	records, err = withCampaignCommitArtifacts(ctx, records)
+	if err != nil {
+		report.Errors = append(report.Errors, err)
 		return report
 	}
 	held, err := r.Refs.Runs()

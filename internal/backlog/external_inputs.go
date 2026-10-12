@@ -58,6 +58,10 @@ func (i BundleIngester) retainExternalInputs(ctx context.Context, manifest Manif
 			if err != nil {
 				return err
 			}
+			source, err = source.WithRunArtifacts(ctx, ref.RunID)
+			if err != nil {
+				return err
+			}
 			observation, err := domain.ResolveNode(ref, source.WorkflowRuns, source.Tasks, source.Attempts, source.Assignments)
 			if err != nil {
 				return fmt.Errorf("external input %s: %w", producer, err)

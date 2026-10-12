@@ -118,6 +118,43 @@ func TestCoordinatorOfferBuilderAcceptsADefinitionRetainedUnderAnEarlierRun(t *t
 	}
 }
 
+func TestCoordinatorOfferBuilderLoadsTerminalDefinitionLazily(t *testing.T) {
+	now := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
+	records, assignment := packageBuilderFixture(now)
+	submission := records.WorkflowRuns[0]
+	submission.Progress = domain.ProgressSucceeded
+	submission.Sink = &domain.SinkTask{Progress: domain.ProgressSucceeded}
+	scheduled := records.WorkflowRuns[0]
+	scheduled.ID = "run-2"
+	records.WorkflowRuns = []domain.WorkflowRun{submission, scheduled}
+	for i := range records.Attempts {
+		records.Attempts[i].WorkflowRunID = scheduled.ID
+	}
+	for i := range records.Artifacts {
+		if records.Artifacts[i].Kind == domain.ArtifactOutput {
+			records.Artifacts[i].WorkflowRunID = scheduled.ID
+		}
+	}
+	builder := packageBuilder(t, records)
+	builder.Store = builder.Store.(packageRecordStore).decisions
+	ctx, scope := sqlite.WithCoordinatorRecordsSnapshot(context.Background())
+	defer scope.Finish()
+	before, err := builder.Store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before.Artifacts) != 1 {
+		t.Fatalf("tick artifacts=%+v", before.Artifacts)
+	}
+	offer, err := builder.BuildAssignmentOffer(ctx, assignment, now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offer.Package.Package.Prompt.Path != "prompt/tasks/consumer.md" || len(offer.Package.Package.StaticInputs) != 1 {
+		t.Fatalf("lazy package inputs=%+v", offer.Package.Package)
+	}
+}
+
 func TestCoordinatorOfferBuilderFailsClosedOnBrokenDurableLinks(t *testing.T) {
 	now := time.Date(2026, 9, 10, 22, 0, 0, 0, time.UTC)
 	tests := map[string]func(*sqlite.CoordinatorRecords){

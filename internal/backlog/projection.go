@@ -103,6 +103,10 @@ func ProjectWorkflowRunsWithRetries(ctx context.Context, store ProjectionStore, 
 		return report, fmt.Errorf("load records for projection: %w", err)
 	}
 	retryPending := AutomaticRetryPendingRuns(records, coordinatorMax)
+	assignmentsByRun := records.AssignmentsByRun
+	if assignmentsByRun == nil {
+		assignmentsByRun = sqlite.IndexAssignmentsByRun(records.Attempts, records.Assignments)
+	}
 	for _, run := range records.WorkflowRuns {
 		if run.Sink != nil && run.Sink.Progress.Terminal() || retryPending[run.ID] {
 			continue
@@ -128,7 +132,7 @@ func ProjectWorkflowRunsWithRetries(ctx context.Context, store ProjectionStore, 
 				owned[attempt.ID] = true
 			}
 		}
-		for _, assignment := range records.Assignments {
+		for _, assignment := range assignmentsByRun[run.ID] {
 			if owned[assignment.AttemptID] {
 				before.Assignments = append(before.Assignments, assignment)
 			}

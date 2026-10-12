@@ -36,6 +36,23 @@ func (s *Service) rerunGraph(
 	if !ok || s.artifactOpen == nil {
 		return result, errors.New("rerun storage or artifact custody unavailable")
 	}
+	records, err := records.WithRunArtifacts(ctx, source.ID)
+	if err != nil {
+		return result, err
+	}
+	var inputIDs []string
+	inputIDs = append(inputIDs, workflow.InputArtifactIDs...)
+	for _, task := range domain.TasksForRun(source, records.Tasks) {
+		inputIDs = append(inputIDs, task.PromptArtifactID)
+		inputIDs = append(inputIDs, task.InputArtifactIDs...)
+		for _, carried := range task.CarriedInputs {
+			inputIDs = append(inputIDs, carried.ArtifactID)
+		}
+	}
+	records, err = records.WithArtifactIDs(ctx, inputIDs...)
+	if err != nil {
+		return result, err
+	}
 	scope, err := domain.PlanRerun(source, records.Tasks, records.Attempts, r.TaskID)
 	var retained map[string]domain.Artifact
 	var reusedCommits []domain.ReusedCommit

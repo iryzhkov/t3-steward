@@ -218,7 +218,7 @@ func (s *Store) PruneArtifacts(
 	before time.Time,
 	protectedRunIDs []string,
 ) ([]domain.Artifact, []domain.ArtifactRetentionSkip, error) {
-	records, err := s.LoadCoordinatorRecords(ctx)
+	records, err := s.LoadCoordinatorRecords(WithoutCoordinatorRecordsSnapshot(ctx))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -312,7 +312,7 @@ func retentionPinOwnersTx(ctx context.Context, tx *sql.Tx) (map[string][]string,
 
 // ArtifactStoragePathReferenced reports whether retained metadata still owns a blob.
 func (s *Store) ArtifactStoragePathReferenced(ctx context.Context, storagePath string) (bool, error) {
-	records, err := s.LoadCoordinatorRecords(ctx)
+	records, err := s.LoadCoordinatorRecords(WithoutCoordinatorRecordsSnapshot(ctx))
 	if err != nil {
 		return false, err
 	}

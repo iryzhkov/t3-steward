@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"reflect"
 	"sync"
 )
@@ -24,6 +25,41 @@ type coordinatorRecordsEntry struct {
 	records    CoordinatorRecords
 }
 type coordinatorRecordsSnapshotKey struct{}
+
+// Temporary, connection-local tracking needs no persistent schema migration.
+// Trigger updates participate in the writer's transaction, so rollback leaves
+// the cached records valid. External commits remain fenced by data_version.
+func ensureCoordinatorRecordsStamp(ctx context.Context, conn *sql.Conn) error {
+	var exists int
+	if err := conn.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_temp_master WHERE name = 'coordinator_records_stamp'").Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 0 {
+		return nil
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, "CREATE TEMP TABLE coordinator_records_stamp (revision INTEGER NOT NULL); INSERT INTO coordinator_records_stamp VALUES (0)"); err != nil {
+		return err
+	}
+	for _, table := range []string{
+		"coordinator_workflows", "coordinator_workflow_runs", "coordinator_tasks",
+		"coordinator_attempts", "coordinator_assignments", "coordinator_schedules",
+		"coordinator_schedule_templates", "coordinator_triggers", "coordinator_quota_pools",
+		"coordinator_artifacts", "coordinator_admin_commands",
+	} {
+		for _, event := range []string{"INSERT", "UPDATE", "DELETE"} {
+			query := fmt.Sprintf("CREATE TEMP TRIGGER records_stamp_%s_%s AFTER %s ON main.%s BEGIN UPDATE coordinator_records_stamp SET revision = revision + 1; END", table, event, event, table)
+			if _, err := tx.ExecContext(ctx, query); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
 
 // WithCoordinatorRecordsSnapshot starts a fresh scope; command and admin
 // contexts without this value retain independent transactionally consistent loads.
@@ -54,8 +90,8 @@ func (s *Store) loadCoordinatorRecordsSnapshot(ctx context.Context, snapshot *Co
 		return s.loadCoordinatorRecords(ctx)
 	}
 	// Keep the connection and read transaction for both the stamp and the load:
-	// data_version detects commits by other connections; total_changes detects
-	// writes on this connection (also conservatively invalidating rolled-back writes).
+	// data_version detects commits by other connections; temporary triggers track
+	// only the tables read by CoordinatorRecords on this connection.
 	// The identity prevents reuse if database/sql replaces the connection.
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -66,13 +102,16 @@ func (s *Store) loadCoordinatorRecordsSnapshot(ctx context.Context, snapshot *Co
 	if err := conn.Raw(func(raw any) error { connection = reflect.ValueOf(raw); return nil }); err != nil {
 		return CoordinatorRecords{}, err
 	}
+	if err := ensureCoordinatorRecordsStamp(ctx, conn); err != nil {
+		return CoordinatorRecords{}, err
+	}
 	tx, err := conn.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return CoordinatorRecords{}, err
 	}
 	defer tx.Rollback()
 	var changes, version int64
-	if err := tx.QueryRowContext(ctx, "SELECT total_changes()").Scan(&changes); err != nil {
+	if err := tx.QueryRowContext(ctx, "SELECT revision FROM temp.coordinator_records_stamp").Scan(&changes); err != nil {
 		return CoordinatorRecords{}, err
 	}
 	if err := tx.QueryRowContext(ctx, "PRAGMA data_version").Scan(&version); err != nil {
@@ -85,13 +124,16 @@ func (s *Store) loadCoordinatorRecordsSnapshot(ctx context.Context, snapshot *Co
 		return cached.records, nil
 	}
 	snapshot.loads++
-	records, err := loadCoordinatorRecordsTx(ctx, tx)
+	records, err := loadCoordinatorRecordsTx(ctx, tx, true)
 	if err != nil {
 		return CoordinatorRecords{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return CoordinatorRecords{}, err
 	}
+	records.loadRunArtifacts = s.loadRunArtifacts
+	records.loadArtifacts = s.LoadArtifacts
+	records.loadCommitArtifactPresence = s.loadCommitArtifactPresence
 	snapshot.entries[s] = coordinatorRecordsEntry{connection: connection, changes: changes, version: version, records: records}
 	return records, nil
 }

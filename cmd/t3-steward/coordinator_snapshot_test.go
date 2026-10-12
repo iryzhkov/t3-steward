@@ -18,7 +18,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
-// Count the full-history query, rather than calls that may hit the snapshot.
+// Count a records query, rather than calls that may hit the snapshot.
 type snapshotCountingConnector struct {
 	driver.Connector
 	loads *atomic.Int64
@@ -38,7 +38,7 @@ type snapshotCountingConn struct {
 }
 
 func (c *snapshotCountingConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if query == "SELECT record FROM coordinator_artifacts ORDER BY id" {
+	if query == "SELECT record FROM coordinator_workflows ORDER BY id" {
 		c.loads.Add(1)
 	}
 	return c.tracingConn.QueryContext(ctx, query, args)
@@ -124,11 +124,10 @@ func TestCoordinatorTickSharesRecordsAcrossWorkers(t *testing.T) {
 			if calls != workers || strings.Contains(logs.String(), "level=ERROR") {
 				t.Fatalf("calls=%d logs=%s", calls, &logs)
 			}
-			// The initial read plus one refresh after each worker's durable observation.
-			// The parked, offer, renewal and throttle reads otherwise share the snapshot.
-			want := int64(1 + workers)
+			// Worker observations do not change any coordinator records.
+			want := int64(1)
 			if got := loads.Load(); got != want {
-				t.Fatalf("record loads=%d, want %d (one plus each writing worker stage)", got, want)
+				t.Fatalf("record loads=%d, want %d (one shared tick snapshot)", got, want)
 			}
 			if !strings.Contains(logs.String(), fmt.Sprintf("record_loads=%d", want)) || !strings.Contains(logs.String(), "duration=") {
 				t.Fatalf("missing tick metrics: %s", &logs)
@@ -140,6 +139,94 @@ func TestCoordinatorTickSharesRecordsAcrossWorkers(t *testing.T) {
 				t.Fatalf("read-only next tick loads=%d, want 1", got)
 			}
 		})
+	}
+}
+
+func TestCoordinatorTickArtifactsBoundedByLiveRuns(t *testing.T) {
+	for _, history := range []int{0, 200} {
+		t.Run(fmt.Sprint(history), func(t *testing.T) {
+			store, _, _ := openSnapshotCountingStore(t)
+			records := sqlite.CoordinatorRecords{
+				WorkflowRuns: []domain.WorkflowRun{{ID: "live", Progress: domain.ProgressActive}},
+				Artifacts:    []domain.Artifact{{ID: "live-artifact", WorkflowRunID: "live"}},
+			}
+			for i := 0; i < history; i++ {
+				id := fmt.Sprintf("terminal-%03d", i)
+				records.WorkflowRuns = append(records.WorkflowRuns, domain.WorkflowRun{
+					ID: id, Progress: domain.ProgressSucceeded,
+					Sink: &domain.SinkTask{Progress: domain.ProgressSucceeded},
+				})
+				records.Artifacts = append(records.Artifacts, domain.Artifact{ID: id, WorkflowRunID: id})
+			}
+			if err := store.SaveCoordinatorRecords(context.Background(), records); err != nil {
+				t.Fatal(err)
+			}
+			ctx, scope := sqlite.WithCoordinatorRecordsSnapshot(context.Background())
+			defer scope.Finish()
+			tick, err := store.LoadCoordinatorRecords(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tick.Artifacts) != 1 || tick.Artifacts[0].ID != "live-artifact" {
+				t.Fatalf("tick decoded %d artifacts with history=%d: %+v", len(tick.Artifacts), history, tick.Artifacts)
+			}
+			if history == 0 {
+				return
+			}
+			loaded, err := tick.WithRunArtifacts(ctx, "terminal-000", "terminal-000")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(loaded.Artifacts) != 2 {
+				t.Fatalf("lazy run artifacts=%+v", loaded.Artifacts)
+			}
+			byID, err := tick.WithArtifactIDs(ctx, "terminal-001", "terminal-001")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(byID.Artifacts) != 2 {
+				t.Fatalf("lazy input artifacts=%+v", byID.Artifacts)
+			}
+			cached, err := store.LoadCoordinatorRecords(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cached.Artifacts) != 1 {
+				t.Fatal("lazy load modified shared snapshot")
+			}
+			command, err := store.LoadCoordinatorRecords(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(command.Artifacts) != history+1 {
+				t.Fatalf("command artifacts=%d", len(command.Artifacts))
+			}
+		})
+	}
+}
+
+func TestCoordinatorRecordsAssignmentIndex(t *testing.T) {
+	store, _, _ := openSnapshotCountingStore(t)
+	records := sqlite.CoordinatorRecords{
+		Attempts: []domain.Attempt{{ID: "attempt-a", WorkflowRunID: "run-a", TaskID: "task-a", Number: 1},
+			{ID: "attempt-b", WorkflowRunID: "run-b", TaskID: "task-b", Number: 1}},
+		Assignments: []domain.Assignment{
+			{ID: "assignment-b", AttemptID: "attempt-b", DispatchToken: "token-b"},
+			{ID: "assignment-a", AttemptID: "attempt-a", DispatchToken: "token-a"},
+		},
+	}
+	if err := store.SaveCoordinatorRecords(context.Background(), records); err != nil {
+		t.Fatal(err)
+	}
+	ctx, scope := sqlite.WithCoordinatorRecordsSnapshot(context.Background())
+	defer scope.Finish()
+	loaded, err := store.LoadCoordinatorRecords(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.AssignmentsByRun["run-a"]) != 1 || loaded.AssignmentsByRun["run-a"][0].ID != "assignment-a" ||
+		len(loaded.AssignmentsByRun["run-b"]) != 1 || loaded.AssignmentsByRun["run-b"][0].ID != "assignment-b" {
+		t.Fatalf("assignment index=%+v", loaded.AssignmentsByRun)
 	}
 }
 

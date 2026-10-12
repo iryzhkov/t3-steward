@@ -35,6 +35,10 @@ func (c ReviewCollector) Tick(ctx context.Context, now time.Time) error {
 		return err
 	}
 	for _, round := range rounds {
+		records, err = records.WithRunArtifacts(ctx, round.WorkflowRunID)
+		if err != nil {
+			return err
+		}
 		for _, member := range round.Reviewers {
 			if member.State != "pending" {
 				continue

@@ -281,6 +281,10 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 	if err != nil {
 		return workerproto.SnapshotRequest{}, err
 	}
+	records, err = withCampaignCommitArtifacts(ctx, records)
+	if err != nil {
+		return workerproto.SnapshotRequest{}, err
+	}
 	if err := stateCampaignRefs(&request, records); err != nil {
 		return workerproto.SnapshotRequest{}, err
 	}
