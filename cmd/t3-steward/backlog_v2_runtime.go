@@ -1318,8 +1318,8 @@ func serveCoordinatorBoundaries(
 	if started, ok := ctx.Value(coordinatorStartedKey{}).(func()); ok && started != nil && ctx.Err() == nil {
 		started()
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	scheduled := time.NewTimer(interval)
+	defer scheduled.Stop()
 	reconnect := &coordinatorReconnect{workers: cycle.workers, pending: cycle.workers != nil}
 	if cycle.workers != nil {
 		cycle.workers = reconnect
@@ -1330,6 +1330,8 @@ func serveCoordinatorBoundaries(
 	if reconnect.pending {
 		retryC = retry.C
 	}
+	// Do not coalesce scheduled passes: a slow pass must leave the database
+	// connection idle for a full interval for admin queries and idle CPU.
 	for {
 		select {
 		case <-ctx.Done():
@@ -1347,8 +1349,11 @@ func serveCoordinatorBoundaries(
 				retryC = nil
 				reconnect.delay = 0
 			}
-		case <-ticker.C:
+		case <-scheduled.C:
 			lastQuotaReport = cycle.TickWithWorkers(ctx)
+			// The one-shot fire was consumed above, so resetting cannot retain
+			// a stale fire that would start an extra scheduled pass.
+			scheduled.Reset(interval)
 			if reconnect.pending && retryC == nil {
 				retry.Reset(reconnect.nextDelay())
 				retryC = retry.C
