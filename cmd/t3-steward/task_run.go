@@ -614,10 +614,10 @@ func (c taskRunCLI) run(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	response, err := submitArchiveClaimingParent(ctx, client, backlogadmin.LocalSubmissionRequest{
+	response, err := submitArchiveRetrying(ctx, client, backlogadmin.LocalSubmissionRequest{
 		IdempotencyKey: key, Principal: c.campaign.submissionPrincipal(),
 		Parent: submissionParentLookup(),
-	}, bundle.Archive)
+	}, bundle.Archive, c.campaign.stderr)
 	if err != nil {
 		return explainSubmissionConflict(err)
 	}
@@ -1311,7 +1311,7 @@ func renderTaskRunRecord(out io.Writer, record taskRunRecord) error {
 	fmt.Fprintf(out, "ref %s\n", ref)
 	fmt.Fprintf(out, "route %s\n", route)
 	fmt.Fprintln(out, taskRunOutputsLine(record.Outputs))
-	fmt.Fprintf(out, "idempotency-key %s (replayed: %t)\n", displayValue(record.IdempotencyKey), record.Replayed)
+	fmt.Fprintf(out, "idempotency-key %s (replayed: %t) replayed=%t\n", displayValue(record.IdempotencyKey), record.Replayed, record.Replayed)
 	if record.InputManifest != nil {
 		fmt.Fprintf(out, "input-manifest %s\n", record.InputManifest.Digest)
 		for _, entry := range record.InputManifest.Entries {

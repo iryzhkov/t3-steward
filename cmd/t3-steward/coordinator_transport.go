@@ -151,6 +151,11 @@ Talking to the coordinator
   Repeating a request with the same key returns the first answer rather than
   performing the work twice, including when the first answer was lost in transit.
 
+  Campaign submit (including fix) and task run retry unavailable (5) and timeout
+  (6) failures automatically, at most three attempts with the same request and
+  key. Delays are 250ms then 500ms plus up to 50% jitter. Each retry is reported
+  on stderr; a replayed answer carries replayed=true in text and JSON.
+
   Common failures. Permanent until something changes: a missing or invalid client
   block (3), a credential that does not resolve or no longer matches (4), a
   request the coordinator refused on its merits such as a stale revision fence

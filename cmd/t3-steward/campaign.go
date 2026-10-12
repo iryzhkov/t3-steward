@@ -679,7 +679,7 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	response, err := submitArchiveClaimingParent(ctx, client,
+	response, err := submitArchiveRetrying(ctx, client,
 		backlogadmin.LocalSubmissionRequest{
 			IdempotencyKey:   parsed.key,
 			RegisterOnly:     parsed.registerOnly,
@@ -688,7 +688,7 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 			Principal:        c.submissionPrincipal(),
 			Parent:           submissionParentLookup(),
 		},
-		bundle.Archive)
+		bundle.Archive, c.stderr)
 	if err != nil {
 		if parsed.registerOnly && strings.Contains(err.Error(), `invalid operation envelope: json: unknown field "registerOnly"`) {
 			return errors.New("coordinator too old for --register-only (needs 0.11.0-rc.103 or later)")
@@ -700,9 +700,9 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 			return fmt.Errorf("coordinator created run %s for register-only; next: t3-steward campaign show %s", response.RunID, response.RunID)
 		}
 		if parsed.asJSON {
-			return encodeCampaignJSON(c.stdout, response)
+			return encodeCampaignJSON(c.stdout, campaignSubmission{LocalSubmissionResponse: response, Replayed: response.Replay})
 		}
-		_, err := fmt.Fprintf(c.stdout, "registered workflow %s (replay=%t); no run started.\nnext: t3-steward schedules put %q --name %q --workflow %s --cron \"0 2 * * *\" --timezone UTC --reason \"schedule registered campaign\"\n", response.WorkflowID, response.Replay, plan.Name, plan.Name, response.WorkflowID)
+		_, err := fmt.Fprintf(c.stdout, "registered workflow %s (replay=%t replayed=%t); no run started.\nnext: t3-steward schedules put %q --name %q --workflow %s --cron \"0 2 * * *\" --timezone UTC --reason \"schedule registered campaign\"\n", response.WorkflowID, response.Replay, response.Replay, plan.Name, plan.Name, response.WorkflowID)
 		return err
 	}
 	// What this submission may promise about a wake is decided by the same
@@ -728,6 +728,7 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 	if parsed.asJSON {
 		return encodeCampaignJSON(c.stdout, campaignSubmission{
 			LocalSubmissionResponse: response,
+			Replayed:                response.Replay,
 			Outcome:                 matrix.Outcome,
 			Matrix:                  campaignWaitingMatrix(matrix),
 			Notify:                  notification,
@@ -757,8 +758,8 @@ func (c campaignCLI) runSubmit(ctx context.Context, args []string) error {
 		}
 	}
 	if _, err := fmt.Fprintf(c.stdout,
-		"submission %s: workflow=%s run=%s state=%s replay=%t digest=%s\n",
-		response.Key, response.WorkflowID, response.RunID, response.State, response.Replay, response.Digest,
+		"submission %s: workflow=%s run=%s state=%s replay=%t replayed=%t digest=%s\n",
+		response.Key, response.WorkflowID, response.RunID, response.State, response.Replay, response.Replay, response.Digest,
 	); err != nil {
 		return err
 	}

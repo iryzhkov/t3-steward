@@ -221,6 +221,7 @@ type campaignFixDocument struct {
 	SchemaVersion int                `json:"schemaVersion"`
 	RunID         string             `json:"runId"`
 	Replay        bool               `json:"replay"`
+	Replayed      bool               `json:"replayed"`
 	SourceRun     string             `json:"sourceRun"`
 	ReviewTask    string             `json:"reviewTask"`
 	Commit        fixReviewedCommit  `json:"reviewedCommit"`
@@ -882,6 +883,7 @@ func (c campaignFixCLI) run(ctx context.Context, args []string) error {
 	}
 	document.RunID = document.Submission.RunID
 	document.Replay = document.Submission.Replay
+	document.Replayed = document.Replay
 	if a.asJSON {
 		return encodeCampaignJSON(c.stdout, document)
 	}
@@ -916,7 +918,7 @@ func (c campaignFixCLI) run(ctx context.Context, args []string) error {
 			return e
 		}
 	}
-	if _, e = fmt.Fprintf(c.stdout, "submission %s: workflow=%s run=%s state=%s replay=%t digest=%s\n", document.Submission.Key, document.Submission.WorkflowID, document.RunID, document.Submission.State, document.Replay, document.Submission.Digest); e != nil {
+	if _, e = fmt.Fprintf(c.stdout, "submission %s: workflow=%s run=%s state=%s replay=%t replayed=%t digest=%s\n", document.Submission.Key, document.Submission.WorkflowID, document.RunID, document.Submission.State, document.Replay, document.Replay, document.Submission.Digest); e != nil {
 		return e
 	}
 	wake := startedRunWake{Run: document.RunID, Notify: document.Submission.Notify}

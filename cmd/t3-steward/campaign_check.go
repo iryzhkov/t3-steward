@@ -191,8 +191,9 @@ type campaignCheck struct {
 // are additions.
 type campaignSubmission struct {
 	backlogadmin.LocalSubmissionResponse
-	Outcome backlogadmin.ViabilityOutcome `json:"outcome,omitempty"`
-	Matrix  *backlogadmin.ViabilityMatrix `json:"matrix,omitempty"`
+	Replayed bool                          `json:"replayed"` // Mirrors the coordinator replay receipt for CLI readers.
+	Outcome  backlogadmin.ViabilityOutcome `json:"outcome,omitempty"`
+	Matrix   *backlogadmin.ViabilityMatrix `json:"matrix,omitempty"`
 	// Notify is present only when --notify-thread registered a wait.
 	Notify *campaignNotification `json:"notify,omitempty"`
 }
