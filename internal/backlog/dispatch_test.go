@@ -50,6 +50,13 @@ func (worker *dispatchWorkerFake) CreateThread(_ context.Context, command Dispat
 	return err
 }
 
+func failUnknownEpisodeIf(t *testing.T, failed bool, details ...any) {
+	t.Helper()
+	if failed {
+		t.Fatal(details...)
+	}
+}
+
 func TestUnknownEpisodeSurvivesDispatchReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
 	store := openDispatchTestStore(t, path)
@@ -58,35 +65,23 @@ func TestUnknownEpisodeSurvivesDispatchReload(t *testing.T) {
 	worker := &dispatchWorkerFake{observations: []dispatchWorkerResult{{err: errors.New("offline")}, {err: errors.New("offline")}}}
 	for _, now := range []time.Time{first, first.Add(19 * time.Minute)} {
 		got, err := ReconcileAssignmentDispatch(context.Background(), store, worker, input, now)
-		if !errors.Is(err, ErrDispatchUncertain) || got.UnknownSince == nil || !got.UnknownSince.Equal(first) || !got.UpdatedAt.Equal(now) {
-			t.Fatalf("episode at %v: %#v, %v", now, got, err)
-		}
+		failUnknownEpisodeIf(t, !errors.Is(err, ErrDispatchUncertain) || got.UnknownSince == nil || !got.UnknownSince.Equal(first) || !got.UpdatedAt.Equal(now), "episode at", now, got, err)
 	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	err := store.Close()
+	failUnknownEpisodeIf(t, err != nil, err)
 	store = openDispatchTestStore(t, path)
 	defer store.Close()
 	got, err := store.LoadAssignmentDispatch(context.Background(), input.ID)
-	if err != nil || got.UnknownSince == nil || !got.UnknownSince.Equal(first) {
-		t.Fatalf("reload: %#v, %v", got, err)
-	}
+	failUnknownEpisodeIf(t, err != nil || got.UnknownSince == nil || !got.UnknownSince.Equal(first), "reload:", got, err)
 	got.SetState(domain.AssignmentClaimed, first.Add(20*time.Minute))
-	if got.UnknownSince != nil {
-		t.Fatal("known episode retained origin")
-	}
+	failUnknownEpisodeIf(t, got.UnknownSince != nil, "known episode retained origin")
 	got.SetState(domain.AssignmentUnknown, first.Add(21*time.Minute))
-	if !got.UnknownSince.Equal(first.Add(21 * time.Minute)) {
-		t.Fatal("new episode retained old origin")
-	}
+	failUnknownEpisodeIf(t, !got.UnknownSince.Equal(first.Add(21*time.Minute)), "new episode retained old origin")
 	got = domain.Assignment{}
-	if err := json.Unmarshal([]byte(`{"state":"unknown"}`), &got); err != nil {
-		t.Fatal(err)
-	}
+	err = json.Unmarshal([]byte(`{"state":"unknown"}`), &got)
+	failUnknownEpisodeIf(t, err != nil, err)
 	got.SetState(domain.AssignmentUnknown, first.Add(time.Hour))
-	if got.UnknownSince != nil {
-		t.Fatal("legacy episode backfilled")
-	}
+	failUnknownEpisodeIf(t, got.UnknownSince != nil, "legacy episode backfilled")
 }
 
 func TestReconcileAssignmentDispatchRecoversLostCreateResponse(t *testing.T) {

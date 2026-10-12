@@ -15,23 +15,15 @@ func TestWorkerUnknownEpisode(t *testing.T) {
 	observation := domain.WorkerAssignmentObservation{AssignmentID: "a", AssignmentEpoch: 1, State: domain.AssignmentUnknown}
 	snapshot := domain.WorkerSnapshot{WorkerEpoch: "w"}
 	a, attempt, _, _, err := planWorkerStateTransition(a, attempt, observation, true, snapshot, nil, now)
-	if err != nil || a.UnknownSince == nil || !a.UnknownSince.Equal(now) {
-		t.Fatalf("entry: %#v, %v", a, err)
-	}
+	failUnknownEpisodeIf(t, err != nil || a.UnknownSince == nil || !a.UnknownSince.Equal(now), "entry:", a, err)
 	repeated, _, _, changed, err := planWorkerStateTransition(a, attempt, observation, true, snapshot, nil, now.Add(time.Minute))
-	if err != nil || changed || !repeated.UnknownSince.Equal(now) {
-		t.Fatal("repeated observation changed episode")
-	}
+	failUnknownEpisodeIf(t, err != nil || changed || !repeated.UnknownSince.Equal(now), "repeated observation changed episode")
 	attempt.Progress, attempt.Control = domain.ProgressSucceeded, domain.ControlRunning
 	terminal, _, _, _, err := planWorkerStateTransition(a, attempt, observation, false, snapshot, nil, now.Add(time.Minute))
-	if err != nil || !terminal.UnknownSince.Equal(now) || !terminal.UpdatedAt.Equal(now.Add(time.Minute)) {
-		t.Fatal("terminal update changed origin")
-	}
+	failUnknownEpisodeIf(t, err != nil || !terminal.UnknownSince.Equal(now) || !terminal.UpdatedAt.Equal(now.Add(time.Minute)), "terminal update changed origin")
 	observation.State = domain.AssignmentClaimed
 	recovered, _, _, _, err := planWorkerStateTransition(a, attempt, observation, true, snapshot, nil, now.Add(2*time.Minute))
-	if err != nil || recovered.UnknownSince != nil {
-		t.Fatal("recovery retained origin")
-	}
+	failUnknownEpisodeIf(t, err != nil || recovered.UnknownSince != nil, "recovery retained origin")
 }
 
 func TestPlanWorkerStateTransitionsReconcilesObservationsAndAcknowledgements(t *testing.T) {
