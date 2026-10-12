@@ -245,8 +245,8 @@ func epochExclusions(request WorkerPlacementRequest, worker domain.WorkerInvento
 }
 
 // capacityExclusions applies the CPU-class floor and the allocatable-capacity
-// constraints. A task that declares no demand constrains nothing, so a worker
-// is never excluded for capacity it was not asked to provide.
+// constraints. Every task requires one slot in a configured positive slot pool,
+// independently of its sized demand. Zero slots retain legacy unknown behavior.
 //
 // These constraints concern configured capacity. Live memory, swap and disk
 // safety floors and the build load ceiling are applied separately by
@@ -257,9 +257,6 @@ func epochExclusions(request WorkerPlacementRequest, worker domain.WorkerInvento
 // counts a sized demand against its slots alone, as it counts unsized work.
 func capacityExclusions(demand domain.ResourceDemand, worker domain.WorkerInventory) []WorkerExclusion {
 	demand = domain.GoverningDemand(demand, worker.Allocatable)
-	if demand.IsZero() {
-		return nil
-	}
 	var exclusions []WorkerExclusion
 	if demand.MinCPUClass != "" {
 		switch {
@@ -279,8 +276,7 @@ func capacityExclusions(demand domain.ResourceDemand, worker domain.WorkerInvent
 	}
 
 	snapshot := worker.CapacitySnapshot()
-	sized := demand.CPUUnits > 0 || demand.MemoryMB > 0 || demand.ScratchMB > 0
-	if sized && snapshot.FreeSlots() < 1 {
+	if snapshot.Allocatable.ExecutorSlots > 0 && snapshot.FreeSlots() < 1 {
 		exclusions = append(exclusions, WorkerExclusion{
 			Code: ExclusionCapacityExhausted,
 			Detail: fmt.Sprintf("worker %q has no free executor slot of %d",

@@ -453,6 +453,28 @@ func candidateNotEligible(candidate backlogadmin.ViabilityCandidate) bool {
 // not look at, in the order they are printed.
 func candidateNotes(candidate backlogadmin.ViabilityCandidate) []string {
 	var notes []string
+	if candidate.Capacity == nil {
+		notes = append(notes, "capacity    unknown")
+	}
+	if capacity := candidate.Capacity; capacity != nil {
+		notes = append(notes, "capacity    "+capacity.State)
+		if slots := capacity.Slots; slots != nil {
+			status := "governed"
+			if slots.Allocatable == 0 {
+				status = "unknown"
+			}
+			notes = append(notes, fmt.Sprintf("slots       %s: %d allocatable, %d reserved, %d free; requires %d",
+				status, slots.Allocatable, slots.Reserved, slots.Free, slots.Required))
+		}
+		if cpu := capacity.CPUUnits; cpu != nil {
+			status := "ungoverned"
+			if cpu.Governed {
+				status = "governed"
+			}
+			notes = append(notes, fmt.Sprintf("cpu units   %s: %g allocatable, %g reserved, %g free; declared %g, governing %g",
+				status, cpu.Allocatable, cpu.Reserved, cpu.Free, cpu.DeclaredDemand, cpu.GoverningDemand))
+		}
+	}
 	// What was not checked is printed with what was. A reader of "ready"
 	// has to be able to tell a passed check from a question nobody asked.
 	if observation := candidate.Repository; observation != nil {
@@ -622,6 +644,9 @@ func renderCampaignCheck(out interface{ Write([]byte) (int, error) }, document c
 			}
 			linef("    not eligible, omitted: %d %s: %s", len(excluded), workers, strings.Join(details, ", "))
 			for _, candidate := range excluded {
+				for _, note := range candidateNotes(backlogadmin.ViabilityCandidate{Capacity: candidate.Capacity}) {
+					linef("      %s: %s", candidate.Worker, note)
+				}
 				if candidate.ResourceEvaluation != nil {
 					linef("      %s", resourceEvaluationText(*candidate.ResourceEvaluation))
 				}

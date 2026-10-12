@@ -432,10 +432,15 @@ per-worker answer about the fleet as it is now.
 
 For every task and every worker the coordinator reports worker freshness,
 enrollment and catalog-digest match, project and eligible-worker policy, CPU
-class, resource requirements, capabilities, required directories, setup profile,
+class, executor slots and CPU units (declared and governing demand), resource
+requirements, capabilities, required directories, setup profile,
 provider instance, model, quota pool, quota-snapshot freshness,
 credential-reference availability, repository and ref reachability, timing
 constraints, resource locks, and the coordinator's message limits.
+
+Each task needs one executor slot regardless of cpu_units. CPU units constrain
+only workers that declare CPU capacity. Readiness observes capacity; it reserves
+nothing and does not promise that every DAG task can start simultaneously.
 
 Outcomes:
   ready             at least one worker can take every task now

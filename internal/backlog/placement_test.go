@@ -249,11 +249,10 @@ func TestMatchWorkersCapacityIsAHardConstraintAndPressureIsNot(t *testing.T) {
 		t.Fatalf("unconfigured worker evaluation = %#v, want no exclusion and the one-slot note", got)
 	}
 
-	// A task that declares no demand is never excluded for capacity it did
-	// not ask for.
+	// Unsized work still needs one free slot in a configured pool.
 	undemanding := mustMatchWorkers(t, placementTask(), []domain.WorkerInventory{busy})
-	if want := []string{"homelab"}; !reflect.DeepEqual(undemanding.EligibleWorkerIDs, want) {
-		t.Fatalf("eligible workers for an undemanding task = %#v, want %#v", undemanding.EligibleWorkerIDs, want)
+	if got := evaluationCodes(t, undemanding, "homelab"); !reflect.DeepEqual(got, []string{ExclusionCapacityExhausted}) {
+		t.Fatalf("unsized task on a full slot pool: exclusions = %#v", got)
 	}
 }
 

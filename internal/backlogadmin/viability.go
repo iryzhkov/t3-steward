@@ -235,12 +235,37 @@ type ViabilityTaskResult struct {
 	Candidates     []ViabilityCandidate  `json:"candidates"`
 }
 
+// ViabilityCapacityObservation separates one task slot from sized CPU demand.
+// Unknown inventory has no counts; stale inventory retains its last observation.
+type ViabilityCapacityObservation struct {
+	State    string                 `json:"state"`
+	Slots    *ViabilitySlotCapacity `json:"slots,omitempty"`
+	CPUUnits *ViabilityCPUCapacity  `json:"cpuUnits,omitempty"`
+}
+
+type ViabilitySlotCapacity struct {
+	Allocatable int `json:"allocatable"`
+	Reserved    int `json:"reserved"`
+	Free        int `json:"free"`
+	Required    int `json:"required"`
+}
+
+type ViabilityCPUCapacity struct {
+	DeclaredDemand  float64 `json:"declaredDemand"`
+	GoverningDemand float64 `json:"governingDemand"`
+	Allocatable     float64 `json:"allocatable"`
+	Reserved        float64 `json:"reserved"`
+	Free            float64 `json:"free"`
+	Governed        bool    `json:"governed"`
+}
+
 // ViabilityCandidate is one worker's answer for one task.
 type ViabilityCandidate struct {
-	ResourceEvaluation *domain.ResourceEvaluation `json:"resourceEvaluation,omitempty"`
-	Worker             string                     `json:"worker"`
-	Outcome            ViabilityOutcome           `json:"outcome"`
-	Reasons            []ViabilityReason          `json:"reasons,omitempty"`
+	Capacity           *ViabilityCapacityObservation `json:"capacity,omitempty"`
+	ResourceEvaluation *domain.ResourceEvaluation    `json:"resourceEvaluation,omitempty"`
+	Worker             string                        `json:"worker"`
+	Outcome            ViabilityOutcome              `json:"outcome"`
+	Reasons            []ViabilityReason             `json:"reasons,omitempty"`
 	// Repository says whether this candidate's repository reachability was
 	// actually observed, and what it observed. It is a separate field from
 	// Reasons because the task-level verdict depends on the difference between

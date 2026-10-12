@@ -634,6 +634,24 @@ func (v view) viabilityCandidate(
 	worker viabilityWorker,
 ) ViabilityCandidate {
 	candidate := ViabilityCandidate{Worker: worker.id}
+	candidate.Capacity = &ViabilityCapacityObservation{State: "unknown"}
+	if worker.hasSnapshot {
+		snapshot := worker.inventory.CapacitySnapshot()
+		candidate.Capacity.State = "current"
+		if worker.dto.Stale || !worker.dto.Snapshot.Connected {
+			candidate.Capacity.State = "stale"
+		}
+		candidate.Capacity.Slots = &ViabilitySlotCapacity{
+			Allocatable: snapshot.Allocatable.ExecutorSlots, Reserved: snapshot.Reserved.ExecutorSlots,
+			Free: snapshot.FreeSlots(), Required: 1,
+		}
+		candidate.Capacity.CPUUnits = &ViabilityCPUCapacity{
+			DeclaredDemand:  domainTask.ResourceDemand.CPUUnits,
+			GoverningDemand: domain.GoverningDemand(domainTask.ResourceDemand, snapshot.Allocatable).CPUUnits,
+			Allocatable:     snapshot.Allocatable.CPUUnits, Reserved: snapshot.Reserved.CPUUnits,
+			Free: snapshot.FreeCPUUnits(), Governed: snapshot.Allocatable.CPUUnits > 0,
+		}
+	}
 	candidate.Reasons = append(candidate.Reasons, enrollmentReasons(worker)...)
 	candidate.Unchecked = append(candidate.Unchecked, enrollmentUnchecked(worker)...)
 	if settings.defaulted(task.Project) {
