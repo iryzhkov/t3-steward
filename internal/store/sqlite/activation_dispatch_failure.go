@@ -31,14 +31,35 @@ func (s *Store) LoadActivationDispatchFailure(ctx context.Context, assignmentID 
 // ListCurrentActivationDispatchFailures returns only failures still bound to the
 // run's current graph, offered assignment, activation attempt, and live activation.
 func (s *Store) ListCurrentActivationDispatchFailures(ctx context.Context, runID string) ([]domain.ActivationDispatchFailure, error) {
+	return s.listCurrentActivationDispatchFailures(ctx, " AND failure.run_id = ?", runID)
+}
+
+// ListAllCurrentActivationDispatchFailures groups current failures in failure.id order.
+// An error invalidates the entire batch; absent keys have no current failures.
+func (s *Store) ListAllCurrentActivationDispatchFailures(ctx context.Context) (map[string][]domain.ActivationDispatchFailure, error) {
+	failures, err := s.listCurrentActivationDispatchFailures(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	grouped := make(map[string][]domain.ActivationDispatchFailure)
+	for _, failure := range failures {
+		grouped[failure.RunID] = append(grouped[failure.RunID], failure)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return grouped, nil
+}
+
+func (s *Store) listCurrentActivationDispatchFailures(ctx context.Context, scope string, args ...any) ([]domain.ActivationDispatchFailure, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT failure.record, run.record, assignment.record, attempt.record, activation.record
 		FROM coordinator_activation_dispatch_failures AS failure
 		JOIN coordinator_workflow_runs AS run ON run.id = failure.run_id
 		JOIN coordinator_assignments AS assignment ON assignment.id = failure.assignment_id AND assignment.assignment_epoch = failure.assignment_epoch
 		JOIN coordinator_attempts AS attempt ON attempt.id = assignment.attempt_id
 		JOIN coordinator_supervision_activations AS activation ON activation.id = failure.activation_id AND activation.run_id = failure.run_id
-		WHERE failure.run_id = ? AND activation.state IN (?, ?)
-		ORDER BY failure.id`, runID, string(domain.ActivationActive), string(domain.ActivationPendingDispatch))
+		WHERE activation.state IN (?, ?)`+scope+`
+		ORDER BY failure.id`, append([]any{string(domain.ActivationActive), string(domain.ActivationPendingDispatch)}, args...)...)
 	if err != nil {
 		return nil, err
 	}

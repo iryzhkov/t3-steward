@@ -581,6 +581,17 @@ func (s *Service) loadView(ctx context.Context) (view, error) {
 		return view{}, err
 	}
 	if source, ok := s.reader.(interface {
+		ListAllCurrentActivationDispatchFailures(context.Context) (map[string][]domain.ActivationDispatchFailure, error)
+	}); ok {
+		failures, loadErr := source.ListAllCurrentActivationDispatchFailures(ctx)
+		if loadErr != nil {
+			return view{}, loadErr
+		}
+		loaded.dispatchFailures = make(map[string][]domain.ActivationDispatchFailure)
+		for _, run := range records.WorkflowRuns {
+			loaded.dispatchFailures[run.ID] = failures[run.ID]
+		}
+	} else if source, ok := s.reader.(interface {
 		ListCurrentActivationDispatchFailures(context.Context, string) ([]domain.ActivationDispatchFailure, error)
 	}); ok {
 		loaded.dispatchFailures = make(map[string][]domain.ActivationDispatchFailure)
