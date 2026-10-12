@@ -279,6 +279,9 @@ func (s *Store) SettleNodeWaits(ctx context.Context, now time.Time) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := reconcileAskNotificationsTx(ctx, tx, now); err != nil {
+		return err
+	}
 	var pending bool
 	if err := tx.QueryRowContext(ctx, `SELECT
 		EXISTS(SELECT 1 FROM coordinator_node_waits

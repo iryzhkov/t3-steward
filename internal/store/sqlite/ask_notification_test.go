@@ -171,6 +171,33 @@ func TestAskNotificationSubmitterDelivery(t *testing.T) {
 				t.Fatal("submitter wake resumed asking attempt")
 			}
 
+			// Both phases use the original host without an owner-channel sink.
+			clock = now.Add(2 * time.Hour)
+			runner.NodeHost = "B"
+			runner.Tick(ctx, nil, nil)
+			reminder := askPhaseEvent(t, reopened, ask.ID, "midpoint")
+			if reminder.Delivery != "pending" || reminder.Host != "A" {
+				t.Fatal(reminder)
+			}
+			if reminder.DeliveryPayload != "Reminder: this ask remains open at half its deadline.\n"+payload {
+				t.Fatal(reminder.DeliveryPayload)
+			}
+			runner.NodeHost = "A"
+			runner.Tick(ctx, nil, nil)
+			runner.Tick(ctx, nil, nil)
+			if got := askPhaseEvent(t, reopened, ask.ID, "midpoint"); got.Delivery != "delivered" {
+				t.Fatal(got)
+			}
+			found := false
+			for i, id := range control.sends {
+				if id == reminder.DeliveryID && control.texts[i] == reminder.DeliveryPayload && control.resumed[i] == original.Request.ThreadID {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("midpoint did not reach original submitter")
+			}
+
 			// The terminal notification remains separate and delivers after completion.
 			if _, err := reopened.AnswerAsk(ctx, domain.AskAnswer{AskID: ask.ID, Options: []string{question.Options[0]}, Source: domain.AskSourceCLI}, "operator", approver, clock); err != nil {
 				t.Fatal(err)
@@ -189,7 +216,7 @@ func TestAskNotificationSubmitterDelivery(t *testing.T) {
 			clock = clock.Add(time.Minute)
 			runner.Tick(ctx, nil, nil)
 			runner.Tick(ctx, nil, nil)
-			if len(control.sends) != 2 || control.sends[1] != original.DeliveryID {
+			if len(control.sends) != 3 || control.sends[2] != original.DeliveryID {
 				t.Fatalf("terminal sends: %v", control.sends)
 			}
 		})
@@ -210,6 +237,9 @@ func TestAskNotificationRequiresExplicitRunRecipient(t *testing.T) {
 				registration = taskWaitRegistration(attempt, "shell", domain.WakeEach)
 			}
 			if _, err := store.RegisterTaskWait(context.Background(), registration, now); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SettleNodeWaits(context.Background(), now.Add(45*time.Minute)); err != nil {
 				t.Fatal(err)
 			}
 			waits, err := store.ListNodeWaits(context.Background())

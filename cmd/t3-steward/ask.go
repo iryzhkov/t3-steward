@@ -61,6 +61,8 @@ Flags:
 
 When the run has a --notify-thread registration, opening an ask immediately
 queues a needs-input wake to that submitter thread on its recorded host.
+An open ask queues one reminder on the first settlement tick at or after half
+its deadline. Arrival depends on the submitter host being available.
 Optional owner channels also notify on registration and at half the deadline;
 "t3-steward triage" lists every open ask with its ready-to-run answer command.
 

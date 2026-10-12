@@ -69,6 +69,9 @@ func saveTaskWaitTx(ctx context.Context, tx *sql.Tx, w domain.TaskWait) error {
 		`INSERT INTO coordinator_task_waits(id,request_id,attempt_id,thread_id,record) VALUES(?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET record=excluded.record`,
 		w.ID, w.RequestID, w.AttemptID, w.ThreadID, raw)
+	if err == nil && w.Kind == domain.WaitKindAsk && w.Settled() {
+		err = cancelAskNotificationsTx(ctx, tx, w.ID)
+	}
 	return err
 }
 
@@ -266,7 +269,7 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 	if err != nil {
 		return domain.TaskWait{}, err
 	}
-	if err := enqueueAskNotificationTx(ctx, tx, wait, now); err != nil {
+	if err := enqueueAskNotificationTx(ctx, tx, wait, "registered", now); err != nil {
 		return domain.TaskWait{}, err
 	}
 	return wait, tx.Commit()
