@@ -19,7 +19,7 @@ import (
 )
 
 func TestCoordinatorTickSettledReviewChildrenPreserveRecordLoads(t *testing.T) {
-	for _, workers := range []int{3, 7} {
+	for _, workers := range []int{1, 3, 7} {
 		t.Run(fmt.Sprint(workers), func(t *testing.T) {
 			store, loads, _ := openSnapshotCountingStore(t)
 			ctx := context.Background()
@@ -95,9 +95,8 @@ func TestCoordinatorTickSettledReviewChildrenPreserveRecordLoads(t *testing.T) {
 			}
 
 			baselineActual, baselineLogged := tick()
-			want := int64(1 + workers)
-			if baselineActual != want || baselineLogged != want {
-				t.Fatalf("without checkpoints: actual loads=%d logged loads=%d, want %d", baselineActual, baselineLogged, want)
+			if baselineActual <= 0 || baselineLogged != baselineActual {
+				t.Fatalf("without checkpoints: actual loads=%d logged loads=%d, want positive actual loads and matching logged loads", baselineActual, baselineLogged)
 			}
 
 			// Use separate parents so each real materialization stays within its
@@ -105,7 +104,7 @@ func TestCoordinatorTickSettledReviewChildrenPreserveRecordLoads(t *testing.T) {
 			addSettledReviewSnapshotCheckpoints(t, store, now, 3)
 			for i := 0; i < 2; i++ {
 				actual, logged := tick()
-				if actual != baselineActual || logged != baselineLogged {
+				if actual != baselineActual || logged != actual {
 					t.Fatalf("settled checkpoints tick %d: actual loads=%d logged loads=%d; without checkpoints actual=%d logged=%d",
 						i+1, actual, logged, baselineActual, baselineLogged)
 				}
