@@ -171,6 +171,53 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// pending resume picks up where it left off.
 	d.pollThreads(ctx)
 
+	// Only wait runners with coalescing work opt into between-poll ticks.
+	var wakeTimer *time.Timer
+	var wakeC <-chan time.Time
+	var armed, fired time.Time
+	stopWake := func() {
+		if wakeTimer != nil && !wakeTimer.Stop() {
+			select {
+			case <-wakeTimer.C:
+			default:
+			}
+		}
+		wakeC = nil
+		armed = time.Time{}
+	}
+	defer stopWake()
+	armWake := func() {
+		reporter, ok := d.Waits.(interface {
+			NextNodeWakeDeadline() (time.Time, bool)
+		})
+		var deadline time.Time
+		var pending bool
+		if ok {
+			deadline, pending = reporter.NextNodeWakeDeadline()
+		}
+		// A failed refresh may leave the cached deadline unchanged. Do not
+		// spin on it; the ordinary poll will retry the wait tick.
+		if !pending || deadline.IsZero() || (!deadline.After(d.now()) && !deadline.After(fired)) {
+			stopWake()
+			return
+		}
+		if wakeC != nil && deadline.Equal(armed) {
+			return
+		}
+		stopWake()
+		delay := deadline.Sub(d.now())
+		if delay < 0 {
+			delay = 0 // The persisted deadline passed during the poll.
+		}
+		if wakeTimer == nil {
+			wakeTimer = time.NewTimer(delay)
+		} else {
+			wakeTimer.Reset(delay)
+		}
+		armed, wakeC = deadline, wakeTimer.C
+	}
+	armWake()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -188,6 +235,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.tickBuckets(ctx)
 		case <-poll.C:
 			d.pollThreads(ctx)
+			armWake()
+		case <-wakeC:
+			fired = armed
+			stopWake()
+			d.tickWaits(ctx)
+			armWake()
 		case <-prune.C:
 			_ = d.store.PruneEvents(ctx, d.now().Add(-7*24*time.Hour))
 			_ = d.store.PruneHistory(ctx, d.now().Add(-d.cfg.Policy.HistoryRetention.D()))
@@ -425,6 +478,25 @@ func (d *Daemon) tickBuckets(ctx context.Context) {
 			d.execute(ctx, a, decision.State)
 		}
 	}
+}
+
+// tickWaits refreshes only the inputs needed by wait delivery. Deadline events
+// must not advance watchdog resumes or the archive/project cleanup cadences.
+func (d *Daemon) tickWaits(ctx context.Context) {
+	if d.Waits == nil {
+		return
+	}
+	threads, err := d.control.ListThreads(ctx)
+	if err != nil {
+		d.log.Warn("cannot list T3 threads for wait deadline", "err", err)
+		return
+	}
+	states, err := d.store.ListBuckets(ctx)
+	if err != nil {
+		d.log.Error("list buckets for wait deadline", "err", err)
+		return
+	}
+	d.Waits.Tick(ctx, threads, states)
 }
 
 // pollThreads reconciles thread state: stops newly running threads in a
