@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -36,6 +37,17 @@ type campaignCompileUnit struct {
 	Plan   *campaignCompilePlanSummary `json:"plan,omitempty"`
 	// Check is present only with --check.
 	Check *campaignCompileCheck `json:"check,omitempty"`
+	Size  *campaignCompileSize  `json:"size,omitempty"`
+}
+
+type campaignCompileSize struct {
+	Raw           int64                             `json:"raw"`
+	Estimate      int64                             `json:"estimate"`
+	Multiplier    float64                           `json:"multiplier"`
+	SampleCount   int                               `json:"sampleCount"`
+	Label         string                            `json:"label"`
+	Threshold     int64                             `json:"threshold"`
+	Contributions []campaign.CompileSizeContributor `json:"contributions"`
 }
 
 type campaignCompilePlanSummary struct {
@@ -59,12 +71,14 @@ func campaignCompileHelpPage() helpPage {
 	return helpPage{
 		Path:    "campaign compile",
 		Purpose: "turn a structured plan into one ready-to-validate campaign directory per unit; never submits.",
-		Usage:   []string{"t3-steward campaign compile PLAN --out DIR [--unit ID]... [--force] [--check] [--json]"},
+		Usage:   []string{"t3-steward campaign compile PLAN --out DIR [--unit ID]... [--force] [--check] [--max-changed-lines N] [--size-calibration FILE] [--json]"},
 		Flags: []helpFlag{
 			{Name: "--out", Value: "DIR", Required: true, Text: "The directory the unit directories are written under, as DIR/<unit id>. It is created when missing."},
 			{Name: "--unit", Value: "ID", Default: "every unit", Text: "Compile only this unit; repeat it for several. A unit the plan does not declare is refused."},
 			{Name: "--force", Default: "off", Text: "Replace the directories of the units being compiled. Without it an existing unit directory is refused and nothing is written; other directories under DIR are never touched."},
 			{Name: "--check", Default: "off", Text: "After writing, run the same live readiness check as \"campaign check\" on every valid unit. Without it compile reaches no coordinator."},
+			{Name: "--max-changed-lines", Value: "N", Default: "300", Text: "Positive additions PLUS deletions estimate threshold; only --check gates annotated units above it, before writes or readiness."},
+			{Name: "--size-calibration", Value: "FILE", Default: "none (uncalibrated)", Text: "Regular JSON file, at most 1 MiB; invalid explicit calibration refuses even legacy plans before writes or readiness."},
 			jsonFlag("one document with one object per unit"),
 		},
 		Exits: append(append([]helpExit{
@@ -72,9 +86,14 @@ func campaignCompileHelpPage() helpPage {
 			{1, "a malformed plan or command line (nothing is written), an existing unit directory without --force, a failed write, or a written unit campaign validate refuses. This is the campaign usage code; there is no separate code 2"},
 		}, coordinatorExits()[2:7]...),
 			helpExit{8, "with --check, a unit can never run as written, as \"campaign check\" exits"}),
-		JSONKeys: []string{"schemaVersion", "out", "units", "id", "directory", "valid", "errors", "plan", "check", "outcome", "reasons"},
-		JSONNote: "Read schemaVersion first. units holds one object per compiled unit in plan order: id, directory, valid, errors (always an array), plan (name, tasks, edges, digest) for a valid unit, and check (outcome and reasons) with --check. " + jsonErrorNote,
-		Notes: "Plan format compile/v1 is a Markdown file whose YAML front matter, between leading --- lines, holds these keys and no others: " +
+		JSONKeys: []string{"schemaVersion", "out", "units", "id", "directory", "valid", "errors", "plan", "check", "outcome", "reasons", "size", "raw", "estimate", "multiplier", "sampleCount", "label", "threshold", "contributions"},
+		JSONNote: "Read schemaVersion first. units holds one object per compiled unit in plan order: id, directory, valid, errors (always an array), plan (name, tasks, edges, digest) for a valid unit, and check (outcome and reasons) with --check. Available size estimates add size (raw, estimate, multiplier, sampleCount, label, threshold, contributions); unavailable legacy estimates omit size. " + jsonErrorNote,
+		Notes: "Size annotations: each bullet in Code map and Tests to add ends with [changed-lines: N], counting additions PLUS deletions including tests. Put literal examples in fenced code. " +
+			"Partial or malformed annotations refuse before any write or readiness; legacy units without annotations remain size unavailable/advisory, including with --check. Ordinary compile reports estimates advisory above threshold; --check allows equality. " +
+			"Uncalibrated fallback is 1.25; calibration uses nearest-rank p90 with floor 1. Supply JSON {samples: [{raw, observed, base, head, accept_ref, gate_ref}]}, or an empty samples array for fallback. " +
+			"Collect samples with the SAME raw estimator, recorded base and accepted head: sum Git numstat additions and deletions across committed files, excluding binary/unestimable samples. " +
+			"Retain independent ACCEPT and passing gate references; references remain operator assertions. Refresh after accepted units and inspect ratios/underestimates; fallback tuning requires a separate reviewed change.\n\n" +
+			"Plan format compile/v1 is a Markdown file whose YAML front matter, between leading --- lines, holds these keys and no others: " +
 			"compile: v1; project, the catalog project; ref, a full 40-character commit every unit is pinned to (a branch name is refused); " +
 			"class, required or surplus (default surplus); template: implement-review (default) or plan-review; " +
 			"type: git (default) requires ref; type: fresh requires plan-review and forbids even an empty ref. " +
@@ -118,10 +137,14 @@ type campaignCompileArgs struct {
 	force  bool
 	check  bool
 	asJSON bool
+
+	maxChangedLines int64
+	sizeCalibration string
 }
 
 func parseCampaignCompileArgs(args []string) (campaignCompileArgs, error) {
-	var parsed campaignCompileArgs
+	parsed := campaignCompileArgs{maxChangedLines: 300}
+	seenSize := map[string]bool{}
 	value := func(index int, flag string) (string, error) {
 		if index+1 >= len(args) || args[index+1] == "" || strings.HasPrefix(args[index+1], "-") {
 			return "", fmt.Errorf("%s needs a value; next: t3-steward campaign compile --help", flag)
@@ -139,6 +162,24 @@ func parseCampaignCompileArgs(args []string) (campaignCompileArgs, error) {
 				return campaignCompileArgs{}, err
 			}
 			parsed.out = out
+			index++
+		case "--max-changed-lines", "--size-calibration":
+			if seenSize[argument] {
+				return campaignCompileArgs{}, fmt.Errorf("%s may be supplied only once", argument)
+			}
+			seenSize[argument] = true
+			text, err := value(index, argument)
+			if err != nil {
+				return campaignCompileArgs{}, err
+			}
+			if argument == "--size-calibration" {
+				parsed.sizeCalibration = text
+			} else {
+				parsed.maxChangedLines, err = strconv.ParseInt(text, 10, 64)
+				if err != nil || parsed.maxChangedLines <= 0 {
+					return campaignCompileArgs{}, errors.New("--max-changed-lines requires a positive integer")
+				}
+			}
 			index++
 		case "--unit":
 			unit, err := value(index, argument)
@@ -196,6 +237,45 @@ func (c campaignCLI) runCompile(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	var calibration campaign.SizeCalibration
+	if parsed.sizeCalibration != "" {
+		data, err := readCompilePlan(parsed.sizeCalibration, 1<<20)
+		if err != nil {
+			return err
+		}
+		calibration, err = campaign.ParseSizeCalibration(data)
+		if err != nil {
+			return fmt.Errorf("campaign compile calibration: %w", err)
+		}
+	}
+	sizes := make([]*campaignCompileSize, len(units))
+	var sizeErrors []string
+	for index, unit := range units {
+		var section []byte
+		for _, file := range unit.Files {
+			if file.Path == "inputs/unit.md" {
+				section = file.Content
+			}
+		}
+		estimate := campaign.EstimateCompileSize(section, calibration)
+		for _, diagnostic := range estimate.Diagnostics {
+			sizeErrors = append(sizeErrors, unit.ID+": "+diagnostic)
+		}
+		if len(estimate.Diagnostics) > 0 || !estimate.Available {
+			continue
+		}
+		sizes[index] = &campaignCompileSize{estimate.Raw, estimate.Estimate, estimate.Multiplier, estimate.SampleCount, estimate.Label, parsed.maxChangedLines, estimate.Contributors}
+		if parsed.check && estimate.Estimate > parsed.maxChangedLines {
+			message := fmt.Sprintf("unit %s estimate %d exceeds threshold %d", unit.ID, estimate.Estimate, parsed.maxChangedLines)
+			for _, contribution := range estimate.Contributors {
+				message += fmt.Sprintf("\n  %s unit line %d: %s (%d)", unit.ID, contribution.Line, contribution.Text, contribution.Raw)
+			}
+			sizeErrors = append(sizeErrors, message+"\nSeparate the largest owner and its tests into prerequisite parts.")
+		}
+	}
+	if len(sizeErrors) > 0 {
+		return fmt.Errorf("campaign compile: nothing was written:\n%s", strings.Join(sizeErrors, "\n"))
+	}
 	// Every refusal below is made before any unit is written, so it leaves the
 	// output directory exactly as it was.
 	for _, unit := range units {
@@ -240,7 +320,7 @@ func (c campaignCLI) runCompile(ctx context.Context, args []string) error {
 			}
 			return fmt.Errorf("campaign compile: unit %s was not written: %w (already written: %s)", unit.ID, err, campaignList(written))
 		}
-		result := campaignCompileUnit{ID: unit.ID, Directory: dir, Errors: []string{}}
+		result := campaignCompileUnit{ID: unit.ID, Directory: dir, Errors: []string{}, Size: sizes[index]}
 		// The same path "campaign validate" and "campaign plan" take, so a unit
 		// compile calls valid is one validate accepts.
 		bundle, projected, err := c.prepare(dir)
@@ -436,6 +516,11 @@ func renderCampaignCompile(out io.Writer, report campaignCompileReport) error {
 			valid, planned = "valid", "plan ok"
 		}
 		line := fmt.Sprintf("  %s\t%s\t%s\t%s", unit.ID, unit.Directory, valid, planned)
+		if unit.Size == nil {
+			line += "\tsize unavailable/advisory"
+		} else {
+			line += fmt.Sprintf("\tsize raw %d estimate %d multiplier %g samples %d %s threshold %d", unit.Size.Raw, unit.Size.Estimate, unit.Size.Multiplier, unit.Size.SampleCount, unit.Size.Label, unit.Size.Threshold)
+		}
 		if unit.Check != nil {
 			line += "\tcheck " + string(unit.Check.Outcome)
 		}
@@ -447,6 +532,13 @@ func renderCampaignCompile(out io.Writer, report campaignCompileReport) error {
 		return err
 	}
 	for _, unit := range report.Units {
+		if unit.Size != nil {
+			for _, contribution := range unit.Size.Contributions {
+				if _, err := fmt.Fprintf(out, "  %s size %s unit line %d: %s (%d)\n", unit.ID, contribution.Section, contribution.Line, contribution.Text, contribution.Raw); err != nil {
+					return err
+				}
+			}
+		}
 		for _, message := range unit.Errors {
 			if _, err := fmt.Fprintf(out, "  %s error: %s\n", unit.ID, message); err != nil {
 				return err

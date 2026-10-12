@@ -306,9 +306,20 @@ func TestCampaignCompileCheckExitCodes(t *testing.T) {
 		{"ready", campaignReadyMatrix, "ready", 0},
 		{"accepted_waiting", campaignWaitingOnQuota, "accepted_waiting", 0},
 		{"impossible", campaignImpossibleMatrix, "impossible", 8},
+		{"legacy ready", campaignReadyMatrix, "ready", 0},
+		{"legacy waiting", campaignWaitingOnQuota, "accepted_waiting", 0},
+		{"legacy impossible", campaignImpossibleMatrix, "impossible", 8},
+		{"mixed ready", campaignReadyMatrix, "ready", 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			planPath, _ := compileFixturePlan(t)
+			budgets := [2]int{10, 20}
+			if strings.HasPrefix(test.name, "legacy") {
+				budgets = [2]int{}
+			}
+			if strings.HasPrefix(test.name, "mixed") {
+				budgets[0] = 0
+			}
+			planPath := compileSizeFixture(t, budgets[0], budgets[1])
 			for _, asJSON := range []bool{false, true} {
 				out := filepath.Join(t.TempDir(), "wave")
 				var stdout bytes.Buffer
@@ -339,7 +350,13 @@ func TestCampaignCompileCheckExitCodes(t *testing.T) {
 				if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
 					t.Fatalf("%v:\n%s", err, stdout.String())
 				}
-				for _, unit := range document.Units {
+				for index, unit := range document.Units {
+					if (unit.Size != nil) != (budgets[index] > 0) {
+						t.Fatalf("size: %+v", unit)
+					}
+					if unit.Size != nil && unit.Size.Raw != int64(budgets[index]) {
+						t.Fatalf("leaked budget: %+v", unit.Size)
+					}
 					if unit.Check == nil || string(unit.Check.Outcome) != test.state {
 						t.Fatalf("unit %s check = %+v", unit.ID, unit.Check)
 					}
