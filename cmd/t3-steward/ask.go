@@ -59,9 +59,10 @@ Flags:
   --text TEXT          free text, with or without options
   --json               print the answered ask as JSON
 
-The owner is notified (needs-input) when the ask is registered and again at
-half its deadline; "t3-steward triage" lists every open ask with its
-ready-to-run answer command.
+When the run has a --notify-thread registration, opening an ask immediately
+queues a needs-input wake to that submitter thread on its recorded host.
+Optional owner channels also notify on registration and at half the deadline;
+"t3-steward triage" lists every open ask with its ready-to-run answer command.
 
 On a worker that cannot reach the coordinator (no coordinator client) the
 ask is refused with ask-relay-unavailable: the task is not parked and no

@@ -266,6 +266,9 @@ func (s *Store) RegisterTaskWait(ctx context.Context, request domain.TaskWaitReg
 	if err != nil {
 		return domain.TaskWait{}, err
 	}
+	if err := enqueueAskNotificationTx(ctx, tx, wait, now); err != nil {
+		return domain.TaskWait{}, err
+	}
 	return wait, tx.Commit()
 }
 
