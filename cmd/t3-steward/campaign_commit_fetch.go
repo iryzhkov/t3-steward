@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 )
 
 func slicesContainInto(args []string) bool {
@@ -89,6 +91,15 @@ func (c campaignCLI) fetchCommitExport(ctx context.Context, args []string) error
 		return fmt.Errorf("commit fetch: bundle head disagrees with provenance")
 	}
 	if err := runGit("fetch", "--no-tags", "--no-write-fetch-head", "--", bundle, "refs/heads/"+request.Branch); err != nil {
+		return err
+	}
+	// Read the base only from the authenticated export's validated receipt.
+	receiptLines := strings.Split(receipt.String(), "\n")
+	if len(receiptLines) < 2 || !strings.HasPrefix(receiptLines[1], "base ") {
+		return fmt.Errorf("commit fetch: missing recorded base provenance")
+	}
+	base := strings.TrimPrefix(receiptLines[1], "base ")
+	if err := backlog.ValidateCampaignCandidate(ctx, repository, head, base); err != nil {
 		return err
 	}
 	// The empty old value is an atomic creation guard, including concurrent

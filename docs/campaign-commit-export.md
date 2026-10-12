@@ -53,7 +53,14 @@ t3-steward campaign commit export RUN/implement/implementation --into . --branch
 
 This verifies the exported bundle and creates a new local branch, printing
 commit, base and SHA-256 provenance. Existing branches are refused. No checkout
-or remote write is performed.
+or remote write is performed. Before branch creation, the candidate and recorded
+base must be commits, with the base an ancestor. A nonempty diff containing only
+exact, case-sensitive `continuation.md` and `handoff.md` basenames at any depth
+is refused as report-only. Renames are inspected as deletion and addition;
+submodule changes count regardless of local diff settings. Mixed work, other
+documentation and unchanged-base chaining remain valid. Inspection failures
+also refuse the import, leaving HEAD, index and worktree unchanged. Imported
+unreferenced objects may remain. Raw `--bundle` exports remain transport-only.
 
 ## Exporting a declared campaign commit
 
