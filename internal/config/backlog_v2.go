@@ -146,6 +146,9 @@ func (c *Config) validateBacklogV2() error {
 	providerInstancePools := make(map[string]string)
 	usedQuotaPools := make(map[string]bool)
 	for id, worker := range v.Workers {
+		if err := ValidateWorkerCaches(id, worker.Caches); err != nil {
+			return err
+		}
 		if worker.Connection != "" && worker.Connection != "persistent-ssh" && worker.Connection != "unix" {
 			return fmt.Errorf("backlog_v2: worker %q connection must be persistent-ssh or unix", id)
 		}

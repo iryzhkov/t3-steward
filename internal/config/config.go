@@ -640,6 +640,7 @@ type V2Containment struct {
 }
 
 type V2Worker struct {
+	Caches        []V2Cache             `yaml:"caches,omitempty" json:"caches,omitempty"`
 	Containment   *V2Containment        `yaml:"containment,omitempty"`
 	Connection    string                `yaml:"connection" json:"connection,omitempty"`
 	Address       string                `yaml:"address"`
