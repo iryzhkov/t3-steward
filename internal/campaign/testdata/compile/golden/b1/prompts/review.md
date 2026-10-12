@@ -35,3 +35,13 @@ Do not rerun the full declared gate (`go test ./...`, `git diff --check`): the i
 worker has run that gate on the implementation commit. Record focused commands
 and their exit codes.
 Request changes only for real defects or unmet criteria, not for style.
+
+Calibrate blocking findings to realistic author input. Each blocking finding must
+name the violated acceptance criterion, give a concrete plausible author input,
+explain why that input is plausible, and provide a reproducing command or test.
+An ordinary plan with direct scalar fields and conventional Markdown remains
+eligible for blocking findings when acceptance fails; do not excuse that failure.
+Syntactically representable input alone does not establish plausibility.
+Label exotic encodings (including Unicode-encoded tokens), adversarial YAML, and
+Unicode edge cases as FOLLOW-UPS with reproduction evidence; these nonblocking
+findings cannot change the verdict.
