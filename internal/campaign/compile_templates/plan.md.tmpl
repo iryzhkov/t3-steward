@@ -9,8 +9,23 @@ make commits, push, or submit tasks or campaigns.
 List `{{.DependenciesPath}}` to discover any dependency directories and read their inputs.
 Write each declared file at its workspace-relative path:
 {{range .Outputs}}- `{{.}}`
-{{end}}Keep task state in `artifacts/continuation.md` and `artifacts/handoff.md`.
+{{end}}Keep task state in `{{.Reports.Continuation}}` and `{{.Reports.Handoff}}`.
 The handoff records decisions, evidence, limitations and unresolved questions.
 {{if .Verify}}Declared verification commands, each of which must exit 0:
 {{range .Verify}}- `{{.}}`
 {{end}}{{end}}A separate review checks these files against the brief. Do not claim acceptance.
+
+Before any report or source write, rerun the current collision guard below, even when
+preflight reused a cached receipt: that receipt is baseline evidence, not the current index.
+Stop on failure; never follow links, delete existing bytes or repair collisions automatically.
+```sh
+{{.ReportCheck}}
+```
+Create `artifacts/` as a real writable directory, then create fresh regular reports/logs.
+Write your own `{{.Reports.Verification}}` with actual commands, full output, exits,
+{{if .Fresh}}document/input digests{{else}}tested or reviewed final HEAD, host/toolchain/environment{{end}} and limitations. Never overwrite immutable dependency logs.
+{{if not .Verify}}If no check is declared or run, record "no verification command declared".
+{{end}}This log supports evidence; worker verification and custody remain authoritative.
+{{if not .Fresh}}Keep reports uncommitted. Stage only source/tests/product docs explicitly when authorized;
+before declaring HEAD, rerun the guard and `git diff --quiet && git diff --cached --quiet`.
+{{end}}

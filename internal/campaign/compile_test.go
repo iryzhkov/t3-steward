@@ -137,7 +137,7 @@ func TestCompiledManifestPinsTheRefRoutesAndEfforts(t *testing.T) {
 	if len(implement.Commits) != 1 || implement.Commits[0].Name != "implementation" || implement.Commits[0].Revision != "HEAD" {
 		t.Fatalf("implement commits = %+v", implement.Commits)
 	}
-	if strings.Join(implement.Verify, "|") != "go test ./...|git diff --check" {
+	if strings.Join(implement.Verify, "|") != strings.Join(compileReportChecks([]string{"go test ./...", "git diff --check"}, compileReportCheck(false), false), "|") {
 		t.Fatalf("implement verify = %q", implement.Verify)
 	}
 	if len(review.Needs) != 1 || review.Needs[0] != "implement" || len(review.InputsFrom["implement"]) == 0 {
@@ -173,8 +173,8 @@ func TestCompiledReviewDeclaresTheVerdictItsPromptAsksFor(t *testing.T) {
 		if implement.ReviewOutput != nil {
 			t.Fatalf("%s: the implement task declares a review output %+v", unit.ID, implement.ReviewOutput)
 		}
-		if review.ReviewOutput == nil || review.ReviewOutput.VerdictLine != "review.md" || review.ReviewOutput.Verdict != "" {
-			t.Fatalf("%s: review output = %+v, want verdict_line: review.md", unit.ID, review.ReviewOutput)
+		if review.ReviewOutput == nil || review.ReviewOutput.VerdictLine != "artifacts/review.md" || review.ReviewOutput.Verdict != "" {
+			t.Fatalf("%s: review output = %+v, want verdict_line: artifacts/review.md", unit.ID, review.ReviewOutput)
 		}
 		prompt := compiledFile(t, unit, "prompts/review.md")
 		lines := regexp.MustCompile("`(VERDICT: [A-Z_]+)`").FindAllStringSubmatch(prompt, -1)

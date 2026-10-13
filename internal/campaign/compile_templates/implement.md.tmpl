@@ -12,7 +12,7 @@ Inputs:
 {{end}}
 Before editing, check that `git rev-parse HEAD` prints {{.Ref}}; the workspace
 is pinned to it, and the pin is also recorded at `.t3/base-commit`. If it does
-not, stop and say so in `handoff.md`.
+not, stop and say so in `{{.Reports.Handoff}}`.
 
 Scope: the change unit {{.UnitID}} asks for and nothing else. No push, tag,
 release or deployment, and no nested campaign, task or review submission.
@@ -20,11 +20,12 @@ release or deployment, and no nested campaign, task or review submission.
 Outputs:
 - The commit, declared as `{{.CommitName}}`: commit the change and its tests.
   HEAD when you finish is what the reviewer receives.
-- `continuation.md`: goal, checklist, current step, blockers and the last
+- `{{.Reports.Continuation}}`: goal, checklist, current step, blockers and the last
   verification, kept current as you work.
-- `handoff.md`: base {{.Ref}}, resulting head, changed paths, design decisions
+- `{{.Reports.Handoff}}`: base {{.Ref}}, resulting head, changed paths, design decisions
   and why, verification commands with their exit codes, limitations and open
   risks.
+- `{{.Reports.Verification}}`: your fresh command log for this final HEAD.
 
 While iterating, run the tests of the packages you changed and of their
 importers rather than the whole suite. In a repository with a `test-affected`
@@ -37,14 +38,28 @@ Verification: {{if .Verify}}these commands run in the workspace after you stop, 
 one must exit 0:
 {{range .Verify}}- `{{.}}`
 {{end}}{{else}}the plan declares no verification commands. Run the checks the
-brief names and record them, with their exit codes, in `handoff.md`.
+brief names and record them, with their exit codes, in `{{.Reports.Handoff}}`.
 {{end}}
-Review: a separate review task reads the commit and `handoff.md` next. Do not
+Review: a separate review task reads the commit and `{{.Reports.Handoff}}` next. Do not
 claim acceptance.
 
 Acceptance criteria: the ones in `{{.UnitPath}}`.
 {{if .AcceptanceTests}}
 Write the named tests first and run them for initial failure where behavior is new.
-Explain cases that cannot fail first, then implement. In `handoff.md`, map every case
+Explain cases that cannot fail first, then implement. In `{{.Reports.Handoff}}`, map every case
 to its test function and result.
+{{end}}
+Before any report or source write, rerun the current collision guard below, even when
+preflight reused a cached receipt: that receipt is baseline evidence, not the current index.
+Stop on failure; never follow links, delete existing bytes or repair collisions automatically.
+```sh
+{{.ReportCheck}}
+```
+Create `artifacts/` as a real writable directory, then create fresh regular reports/logs.
+Write your own `{{.Reports.Verification}}` with actual commands, full output, exits,
+{{if .Fresh}}document/input digests{{else}}tested or reviewed final HEAD, host/toolchain/environment{{end}} and limitations. Never overwrite immutable dependency logs.
+{{if not .Verify}}If no check is declared or run, record "no verification command declared".
+{{end}}This log supports evidence; worker verification and custody remain authoritative.
+{{if not .Fresh}}Keep reports uncommitted. Stage only source/tests/product docs explicitly when authorized;
+before declaring HEAD, rerun the guard and `git diff --quiet && git diff --cached --quiet`.
 {{end}}

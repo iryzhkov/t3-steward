@@ -5,14 +5,15 @@ Read `{{.UnitPath}}` as the authoritative planning brief and `{{.PlanPath}}` for
 {{end}}{{if .Ref}}The checkout is pinned to {{.Ref}}.
 {{else}}This is an empty fresh workspace for project {{.Project}}, with no Git repository.
 {{end}}List `{{.DependenciesPath}}` to discover the planning task's directory.
-Read its `artifacts/handoff.md` and every declared plan output:
+Read its `{{.Reports.Handoff}}`, `{{.Reports.Verification}}` and every declared plan output:
 {{range .Outputs}}- `{{.}}`
 {{end}}Check the produced plans against every criterion in the planning brief.
 Do not change source, execute the plans, make commits, push or submit tasks or campaigns.
-Write `review.md` with the first line exactly `VERDICT: ACCEPT` or
+Write `{{.Reports.Review}}` with the first line exactly `VERDICT: ACCEPT` or
 `VERDICT: CHANGES_REQUESTED`, the existing coordinator verdict contract.
 Include findings with concrete failure scenarios, criteria evidence and verification exit codes.
-Keep task state in `artifacts/continuation.md` and `artifacts/handoff.md`.
+The handoff records {{if .Fresh}}reviewed document/input digests{{else}}the exact reviewed HEAD{{end}}, findings, checks and limitations.
+Keep task state in `{{.Reports.Continuation}}` and `{{.Reports.Handoff}}`.
 Request changes only for defects or unmet criteria.
 
 Calibrate blocking findings to realistic author input. Each blocking finding must
@@ -24,3 +25,18 @@ Syntactically representable input alone does not establish plausibility.
 Label exotic encodings (including Unicode-encoded tokens), adversarial YAML, and
 Unicode edge cases as FOLLOW-UPS with reproduction evidence; these nonblocking
 findings cannot change the verdict.
+
+Before any report or source write, rerun the current collision guard below, even when
+preflight reused a cached receipt: that receipt is baseline evidence, not the current index.
+Stop on failure; never follow links, delete existing bytes or repair collisions automatically.
+```sh
+{{.ReportCheck}}
+```
+Create `artifacts/` as a real writable directory, then create fresh regular reports/logs.
+Write your own `{{.Reports.Verification}}` with actual commands, full output, exits,
+{{if .Fresh}}document/input digests{{else}}tested or reviewed final HEAD, host/toolchain/environment{{end}} and limitations. Never overwrite immutable dependency logs.
+{{if not .Verify}}If no check is declared or run, record "no verification command declared".
+{{end}}This log supports evidence; worker verification and custody remain authoritative.
+{{if not .Fresh}}Keep reports uncommitted. Stage only source/tests/product docs explicitly when authorized;
+before declaring HEAD, rerun the guard and `git diff --quiet && git diff --cached --quiet`.
+{{end}}

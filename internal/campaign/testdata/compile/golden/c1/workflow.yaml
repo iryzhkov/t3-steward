@@ -15,13 +15,23 @@ tasks:
         quota_pool: claude-main
         options: {effort: medium}
     prompt_file: prompts/implement.md
-    outputs: [continuation.md, handoff.md]
+    outputs: [artifacts/continuation.md, artifacts/handoff.md, artifacts/verification.log]
     commits:
       - name: implementation
         revision: HEAD
     verify:
       - go test ./...
       - git diff --check
+      - 'if [ -L artifacts ] || { [ -e artifacts ] && [ ! -d artifacts ]; }; then printf ''%s\n'' ''report-path collision: artifacts parent''; exit 1; fi; if [ ! -d .git ] && [ ! -f .git ]; then printf ''%s\n'' ''report-path check: Git workspace required''; exit 1; fi; inside=$(git rev-parse --is-inside-work-tree 2>/dev/null) && prefix=$(git rev-parse --show-prefix 2>/dev/null) && [ "$inside" = true ] && [ -z "$prefix" ] || { printf ''%s\n'' ''report-path check: Git workspace failed''; exit 1; }; entries=$(git ls-files --stage -- '':(top,literal)artifacts'' 2>/dev/null) || { printf ''%s\n'' ''report-path check: Git index failed''; exit 1; }; tab=$(printf ''\t''); case "$entries" in *"$tab"artifacts) printf ''%s\n'' ''report-path collision: artifacts index entry''; exit 1;; esac; for p in artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md; do if [ -L "$p" ] || { [ -e "$p" ] && [ ! -f "$p" ]; }; then printf ''report-path collision: %s nonregular destination\n'' "$p"; exit 1; fi; entries=$(git ls-files -- '':(top,literal)''"$p" 2>/dev/null) || { printf ''%s\n'' ''report-path check: Git index failed''; exit 1; }; if [ -n "$entries" ]; then printf ''report-path collision: %s index entry\n'' "$p"; exit 1; fi; done'
+      - git diff --quiet && git diff --cached --quiet
+    preflight:
+      steps:
+        - id: report-path-collision
+          kind: check
+          command: [sh, -c, 'if [ -L artifacts ] || { [ -e artifacts ] && [ ! -d artifacts ]; }; then printf ''%s\n'' ''report-path collision: artifacts parent''; exit 1; fi; if [ ! -d .git ] && [ ! -f .git ]; then printf ''%s\n'' ''report-path check: Git workspace required''; exit 1; fi; inside=$(git rev-parse --is-inside-work-tree 2>/dev/null) && prefix=$(git rev-parse --show-prefix 2>/dev/null) && [ "$inside" = true ] && [ -z "$prefix" ] || { printf ''%s\n'' ''report-path check: Git workspace failed''; exit 1; }; entries=$(git ls-files --stage -- '':(top,literal)artifacts'' 2>/dev/null) || { printf ''%s\n'' ''report-path check: Git index failed''; exit 1; }; tab=$(printf ''\t''); case "$entries" in *"$tab"artifacts) printf ''%s\n'' ''report-path collision: artifacts index entry''; exit 1;; esac; for p in artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md; do if [ -L "$p" ] || { [ -e "$p" ] && [ ! -f "$p" ]; }; then printf ''report-path collision: %s nonregular destination\n'' "$p"; exit 1; fi; entries=$(git ls-files -- '':(top,literal)''"$p" 2>/dev/null) || { printf ''%s\n'' ''report-path check: Git index failed''; exit 1; }; if [ -n "$entries" ]; then printf ''report-path collision: %s index entry\n'' "$p"; exit 1; fi; done']
+          failure_policy: require-pass
+          max_output_bytes: 4096
+          timeout: 2m0s
   review:
     routes:
       - instance: codex
@@ -33,9 +43,21 @@ tasks:
     inputs_from:
       implement:
         - implementation
-        - handoff.md
-    outputs: [continuation.md, review.md]
+        - artifacts/handoff.md
+        - artifacts/verification.log
+    outputs: [artifacts/continuation.md, artifacts/handoff.md, artifacts/verification.log, artifacts/review.md]
     review_output:
-      verdict_line: review.md
+      verdict_line: artifacts/review.md
+    verify:
+      - 'if [ -L artifacts ] || { [ -e artifacts ] && [ ! -d artifacts ]; }; then printf ''%s\n'' ''report-path collision: artifacts parent''; exit 1; fi; if [ ! -d .git ] && [ ! -f .git ]; then printf ''%s\n'' ''report-path check: Git workspace required''; exit 1; fi; inside=$(git rev-parse --is-inside-work-tree 2>/dev/null) && prefix=$(git rev-parse --show-prefix 2>/dev/null) && [ "$inside" = true ] && [ -z "$prefix" ] || { printf ''%s\n'' ''report-path check: Git workspace failed''; exit 1; }; entries=$(git ls-files --stage -- '':(top,literal)artifacts'' 2>/dev/null) || { printf ''%s\n'' ''report-path check: Git index failed''; exit 1; }; tab=$(printf ''\t''); case "$entries" in *"$tab"artifacts) printf ''%s\n'' ''report-path collision: artifacts index entry''; exit 1;; esac; for p in artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md; do if [ -L "$p" ] || { [ -e "$p" ] && [ ! -f "$p" ]; }; then printf ''report-path collision: %s nonregular destination\n'' "$p"; exit 1; fi; entries=$(git ls-files -- '':(top,literal)''"$p" 2>/dev/null) || { printf ''%s\n'' ''report-path check: Git index failed''; exit 1; }; if [ -n "$entries" ]; then printf ''report-path collision: %s index entry\n'' "$p"; exit 1; fi; done'
+      - git diff --quiet && git diff --cached --quiet
+    preflight:
+      steps:
+        - id: report-path-collision
+          kind: check
+          command: [sh, -c, 'if [ -L artifacts ] || { [ -e artifacts ] && [ ! -d artifacts ]; }; then printf ''%s\n'' ''report-path collision: artifacts parent''; exit 1; fi; if [ ! -d .git ] && [ ! -f .git ]; then printf ''%s\n'' ''report-path check: Git workspace required''; exit 1; fi; inside=$(git rev-parse --is-inside-work-tree 2>/dev/null) && prefix=$(git rev-parse --show-prefix 2>/dev/null) && [ "$inside" = true ] && [ -z "$prefix" ] || { printf ''%s\n'' ''report-path check: Git workspace failed''; exit 1; }; entries=$(git ls-files --stage -- '':(top,literal)artifacts'' 2>/dev/null) || { printf ''%s\n'' ''report-path check: Git index failed''; exit 1; }; tab=$(printf ''\t''); case "$entries" in *"$tab"artifacts) printf ''%s\n'' ''report-path collision: artifacts index entry''; exit 1;; esac; for p in artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md; do if [ -L "$p" ] || { [ -e "$p" ] && [ ! -f "$p" ]; }; then printf ''report-path collision: %s nonregular destination\n'' "$p"; exit 1; fi; entries=$(git ls-files -- '':(top,literal)''"$p" 2>/dev/null) || { printf ''%s\n'' ''report-path check: Git index failed''; exit 1; }; if [ -n "$entries" ]; then printf ''report-path collision: %s index entry\n'' "$p"; exit 1; fi; done']
+          failure_policy: require-pass
+          max_output_bytes: 4096
+          timeout: 2m0s
     resources:
       preset: review

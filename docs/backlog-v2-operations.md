@@ -1680,7 +1680,7 @@ verdicts fail verification with a `review_output verification failed` reason.
 Only the coordinator parses verdicts, so worker versions do not matter. A
 coordinator before this change (rc.116 and rc.117) refuses the `VERDICT:`
 label, so a review that writes it fails there; `campaign compile` declares
-`review_output: {verdict_line: review.md}` on its review task and its prompt
+`review_output: {verdict_line: artifacts/review.md}` on its review task and its prompt
 asks for the labelled line, so compiled workflows need a coordinator with this
 change, and a coordinator older than rc.116 refuses them at submission as an
 unknown field. Upgrade the coordinator first. Workflows compiled earlier

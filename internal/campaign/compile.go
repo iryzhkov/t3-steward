@@ -589,6 +589,9 @@ type compilePromptData struct {
 	// ExtraInputs are the mount paths of the extra inputs the plan bundles.
 	ExtraInputs []string
 	Outputs     []string
+	Reports     compileReportPaths
+	ReportCheck string
+	Fresh       bool
 }
 
 func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compileUnitSpec, line int, raw, section []byte, extras []CompiledFile) (CompiledUnit, error) {
@@ -604,22 +607,27 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 	if header.MaxTurns != nil {
 		maxTurns = *header.MaxTurns
 	}
+	reports := compilerReports()
+	fresh := header.Type == "fresh"
+	check := compileReportCheck(fresh)
 	implement := compiledTask{
 		PromptFile: "prompts/implement.md",
-		Outputs:    []string{"continuation.md", "handoff.md"},
+		Outputs:    reports.outputs(false),
+		Preflight:  compileReportPreflight(check),
 		Commits:    []compiledCommit{{Name: compiledCommitName, Revision: "HEAD"}},
-		Verify:     append([]string(nil), header.Verify...),
+		Verify:     compileReportChecks(header.Verify, check, fresh),
 		Resources:  newCompiledResources(header.Resources.Implement),
 		MaxTurns:   maxTurns,
 	}
 	review := compiledTask{
 		PromptFile: "prompts/review.md",
 		Needs:      []string{"implement"},
-		InputsFrom: map[string][]string{"implement": {compiledCommitName, "handoff.md"}},
-		Outputs:    []string{"continuation.md", "review.md"},
-		// The coordinator records review.md's first line, which the review
-		// prompt fixes, as the run's verdict.
-		ReviewOutput: &domain.ReviewOutput{VerdictLine: "review.md"},
+		InputsFrom: map[string][]string{"implement": {compiledCommitName, reports.Handoff, reports.Verification}},
+		Outputs:    reports.outputs(true),
+		Preflight:  compileReportPreflight(check),
+		Verify:     compileReportChecks(nil, check, fresh),
+		// The coordinator records the declared report's first line.
+		ReviewOutput: &domain.ReviewOutput{VerdictLine: reports.Review},
 		Resources:    newCompiledResources(header.Resources.Review),
 		MaxTurns:     maxTurns,
 	}
@@ -652,17 +660,17 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 			if strings.TrimSpace(output) == "" || filepath.ToSlash(filepath.Clean(output)) != output || strings.Contains(output, "\\") {
 				return CompiledUnit{}, fmt.Errorf("output %q must be a clean relative file path", output)
 			}
-			for _, reserved := range []string{"artifacts/continuation.md", "artifacts/handoff.md", "review.md"} {
+			for _, reserved := range append(reports.outputs(true), "review.md") {
 				if output == reserved || strings.HasPrefix(reserved, output+"/") || strings.HasPrefix(output, reserved+"/") {
 					return CompiledUnit{}, fmt.Errorf("output %q collides with reserved %s", output, reserved)
 				}
 			}
 		}
 		implement.PromptFile, implement.Commits = "prompts/plan.md", nil
-		implement.Outputs = append(append([]string(nil), spec.Outputs...), "artifacts/continuation.md", "artifacts/handoff.md")
+		implement.Outputs = append(append([]string(nil), spec.Outputs...), reports.outputs(false)...)
 		review.PromptFile, review.Needs = "prompts/plan-review.md", []string{"plan"}
-		review.InputsFrom = map[string][]string{"plan": append(append([]string(nil), spec.Outputs...), "artifacts/handoff.md")}
-		review.Outputs = []string{"review.md", "artifacts/continuation.md", "artifacts/handoff.md"}
+		review.InputsFrom = map[string][]string{"plan": append(append([]string(nil), spec.Outputs...), reports.Handoff, reports.Verification)}
+		review.Outputs = reports.outputs(true)
 		for _, task := range []*compiledTask{&implement, &review} {
 			if task.Role != "" && task.Options["effort"] == "" {
 				task.Options = map[string]string{"effort": "high"}
@@ -707,6 +715,9 @@ func renderCompiledUnit(plan CompilePlan, header compileFrontMatter, spec compil
 		CommitName:       compiledCommitName,
 		Verify:           header.Verify,
 		Outputs:          spec.Outputs,
+		Reports:          reports,
+		ReportCheck:      check,
+		Fresh:            fresh,
 	}
 	for _, extra := range extras {
 		data.ExtraInputs = append(data.ExtraInputs, ".t3/inputs/"+extra.Path)

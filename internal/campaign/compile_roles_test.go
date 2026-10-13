@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,10 +62,19 @@ func TestCompiledV1PlanIsEquivalentToTheLegacyWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// The review preset is the intentional change to the legacy defaults.
-		legacyReview := legacy.Tasks["review"]
-		legacyReview.Resources = compiledManifest(t, unit).Tasks["review"].Resources
-		legacy.Tasks["review"] = legacyReview
+		// Only the named report contract fields and review preset differ.
+		for name, task := range legacy.Tasks {
+			task.Outputs = compilerReports().outputs(name == "review")
+			task.Verify = compileReportChecks(task.Verify, compileReportCheck(false), false)
+			task.Preflight = backlog.ManifestPreflight(*compileReportPreflight(compileReportCheck(false)))
+			task.Preflight.Steps[0].Include = backlog.PreflightIncludeSummary
+			if name == "review" {
+				task.InputsFrom["implement"] = []string{compiledCommitName, compilerReports().Handoff, compilerReports().Verification}
+				task.ReviewOutput = &domain.ReviewOutput{VerdictLine: compilerReports().Review}
+				task.Resources = compiledManifest(t, unit).Tasks[name].Resources
+			}
+			legacy.Tasks[name] = task
+		}
 		got, err := yaml.Marshal(compiledManifest(t, unit))
 		if err != nil {
 			t.Fatal(err)
@@ -85,12 +95,27 @@ func TestCompiledWorkflowIsMinimal(t *testing.T) {
 	for _, fixture := range []string{compilePlanFixture, compileRolesPlanFixture} {
 		for _, unit := range parseCompileFixture(t, fixture).Units {
 			workflow := compiledFile(t, unit, ManifestFileName)
-			for _, unwanted := range []string{"null", `""`, "[]", "{}", "importance", "difficulty", "preflight", "scope:", "type:", "host:"} {
+			var node yaml.Node
+			if err := yaml.Unmarshal([]byte(workflow), &node); err != nil {
+				t.Fatal(err)
+			}
+			var noNull func(*yaml.Node)
+			noNull = func(n *yaml.Node) {
+				if n.Tag == "!!null" {
+					t.Fatal("null YAML field emitted")
+				}
+				for _, child := range n.Content {
+					noNull(child)
+				}
+			}
+			noNull(&node)
+			for _, unwanted := range []string{": null", `""`, "[]", "{}", "importance", "difficulty", "scope:", "type:", "host:"} {
 				if strings.Contains(workflow, unwanted) {
 					t.Fatalf("%s %s: workflow.yaml writes %q:\n%s", fixture, unit.ID, unwanted, workflow)
 				}
 			}
-			if lines := strings.Count(workflow, "\n"); lines > 50 {
+			// Two bounded preflight declarations and final checks add at most 40 lines.
+			if lines := strings.Count(workflow, "\n"); lines > 90 {
 				t.Fatalf("%s %s: workflow.yaml is %d lines:\n%s", fixture, unit.ID, lines, workflow)
 			}
 			if implement, review := strings.Index(workflow, "  implement:"), strings.Index(workflow, "  review:"); implement < 0 || review < implement {

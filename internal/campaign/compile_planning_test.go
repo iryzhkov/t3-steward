@@ -24,6 +24,11 @@ func TestCompilePlanningGoldens(t *testing.T) {
 		}
 		unit := plan.Units[0]
 		workflow := compiledFile(t, unit, ManifestFileName)
+		if *updateCompileGoldens && !fresh {
+			if err := os.WriteFile("testdata/compile/planning/git.yaml", []byte(workflow), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 		want, err := os.ReadFile("testdata/compile/planning/git.yaml")
 		if err != nil {
 			t.Fatal(err)
@@ -34,6 +39,8 @@ func TestCompilePlanningGoldens(t *testing.T) {
 				t.Fatal(err)
 			}
 			want = []byte(strings.Replace(string(want), "environment:\n  project: p\n  ref: "+planningRef+"\n", string(env), 1))
+			want = []byte(strings.ReplaceAll(string(want), strings.ReplaceAll(compileReportCheck(false), "'", "''"), strings.ReplaceAll(compileReportCheck(true), "'", "''")))
+			want = []byte(strings.ReplaceAll(string(want), "      - "+compileCleanSourceCheck+"\n", ""))
 		}
 		if workflow != string(want) {
 			t.Fatalf("fresh=%v workflow:\n%s", fresh, workflow)
@@ -46,6 +53,21 @@ func TestCompilePlanningGoldens(t *testing.T) {
 		}
 		for _, name := range []string{"plan", "plan-review"} {
 			prompt := compiledFile(t, unit, "prompts/"+name+".md")
+			if name == "plan-review" {
+				golden := "testdata/compile/planning/git-review.md"
+				if fresh {
+					golden = "testdata/compile/planning/fresh-review.md"
+				}
+				if *updateCompileGoldens {
+					if err := os.WriteFile(golden, []byte(prompt), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				want, err := os.ReadFile(golden)
+				if err != nil || string(want) != prompt {
+					t.Fatalf("%s differs: %v", golden, err)
+				}
+			}
 			for _, text := range []string{"plan.md", "risks.md", "artifacts/handoff.md", ".t3/dependencies/", "Do not change source"} {
 				if !strings.Contains(prompt, text) {
 					t.Fatalf("%s lacks %q", name, text)
@@ -56,7 +78,7 @@ func TestCompilePlanningGoldens(t *testing.T) {
 			}
 		}
 		if !strings.Contains(compiledFile(t, unit, "prompts/plan-review.md"), "VERDICT: ACCEPT") ||
-			m.Tasks["review"].ReviewOutput.VerdictLine != "review.md" {
+			m.Tasks["review"].ReviewOutput.VerdictLine != "artifacts/review.md" {
 			t.Fatal("missing verdict contract")
 		}
 		for _, roles := range []string{"", "roles: {execute: {effort: medium}, review: {effort: high}}\n"} {

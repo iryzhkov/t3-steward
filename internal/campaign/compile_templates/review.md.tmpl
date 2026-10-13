@@ -10,7 +10,7 @@ Inputs:
 - `{{.PlanPath}}` is the whole plan, for context.
 {{range .ExtraInputs}}- `{{.}}` is supporting material the plan bundles with every unit.
 {{end}}- `{{.DependenciesPath}}` holds one directory for the implement task; list it
-  to find that directory. It contains `handoff.md` and `{{.CommitName}}`, the
+  to find that directory. It contains `{{.Reports.Handoff}}`, `{{.Reports.Verification}}` and `{{.CommitName}}`, the
   provenance record of the implementation commit. The commit itself is
   already fetched into this checkout under the campaign ref the record names.
 
@@ -20,13 +20,14 @@ from it, and review `git diff {{.Ref}}..<implementation commit>`.
 Scope: read and test only. Do not modify, commit or push source.
 
 Outputs:
-- `review.md`: the first line is exactly `VERDICT: ACCEPT` or
+- `{{.Reports.Review}}`: the first line is exactly `VERDICT: ACCEPT` or
   `VERDICT: CHANGES_REQUESTED`. Then the reviewed commit, the findings (each
   with a severity, file:line, a concrete failure scenario and a reproducing
   command), the criteria checked with their evidence, and the commands you
   ran with their exit codes. The coordinator records that first line as the
   review's verdict, and a first line in any other form fails this task.
-- `continuation.md`: kept current as you work.
+- `{{.Reports.Continuation}}`: kept current as you work.
+- `{{.Reports.Handoff}}`: exact reviewed HEAD, findings/criteria, command exits and limitations.
 
 Verification: first reproduce any suspected defect with a focused test or command.
 Then run `make test-affected BASE={{.Ref}}` where the repository has that
@@ -49,4 +50,18 @@ findings cannot change the verdict.
 {{if .AcceptanceTests}}
 Check that each named test exists, matches the case and passes. Missing,
 mismatched or failing tests are unmet criteria.
+{{end}}
+Before any report or source write, rerun the current collision guard below, even when
+preflight reused a cached receipt: that receipt is baseline evidence, not the current index.
+Stop on failure; never follow links, delete existing bytes or repair collisions automatically.
+```sh
+{{.ReportCheck}}
+```
+Create `artifacts/` as a real writable directory, then create fresh regular reports/logs.
+Write your own `{{.Reports.Verification}}` with actual commands, full output, exits,
+{{if .Fresh}}document/input digests{{else}}tested or reviewed final HEAD, host/toolchain/environment{{end}} and limitations. Never overwrite immutable dependency logs.
+{{if not .Verify}}If no check is declared or run, record "no verification command declared".
+{{end}}This log supports evidence; worker verification and custody remain authoritative.
+{{if not .Fresh}}Keep reports uncommitted. Stage only source/tests/product docs explicitly when authorized;
+before declaring HEAD, rerun the guard and `git diff --quiet && git diff --cached --quiet`.
 {{end}}
