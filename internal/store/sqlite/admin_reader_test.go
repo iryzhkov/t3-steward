@@ -386,6 +386,79 @@ func TestAdminReaderCancellationObserverOverlap(t *testing.T) {
 	}
 }
 
+func TestAdminReaderCancellationCloseAdmissionOverlap(t *testing.T) {
+	for _, mode := range []string{"admitted-canceled", "waiting-canceled", "waiting-uncanceled"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, _, r := adminFixture(t)
+			conn, observer, load := r.conn, r.observer, r.load
+			caller, cancel := context.WithCancel(ctx)
+			defer cancel()
+			entered, release := make(chan struct{}), make(chan struct{})
+			activeRelease := make(chan struct{})
+			var active <-chan adminOutcome
+			if mode == "admitted-canceled" {
+				r.admitted = func() { close(entered); <-release }
+			} else {
+				activeEntered := make(chan struct{})
+				active = adminStart(r, ctx, func(ctx context.Context, s *Store) error {
+					close(activeEntered)
+					<-activeRelease
+					_, err := adminFacts(ctx, s, nil)
+					return err
+				})
+				adminAwait(t, ctx, activeEntered)
+				r.waiting = func() { close(entered); <-release }
+			}
+			callbacks := 0
+			result := adminStart(r, caller, func(context.Context, *Store) error {
+				callbacks++
+				return nil
+			})
+			adminAwait(t, ctx, entered)
+			canceled := mode != "waiting-uncanceled"
+			if canceled {
+				cancel()
+			}
+			closed := make(chan error, 1)
+			go func() { closed <- r.Close() }()
+			adminAwait(t, ctx, r.closed)
+			select {
+			case err := <-closed:
+				t.Fatalf("Close completed before lease release: %v", err)
+			default:
+			}
+			close(release) // cancellation and closure are ready before waiting select
+			observed := adminAwait(t, ctx, result)
+			if active != nil {
+				close(activeRelease) // waiter returned while active still owned lease
+				completed := adminAwait(t, ctx, active)
+				adminAssert(t, completed.err, completed.token.Generation == r.generation)
+			}
+			closeErr := adminAwait(t, ctx, closed)
+			adminAssert(t, closeErr, r.Close() == closeErr)
+			adminAssert(t, nil, r.conn == conn && r.observer == observer && r.load == load &&
+				conn.PingContext(ctx) == sql.ErrConnDone && observer.db.PingContext(ctx) != nil &&
+				load.db.PingContext(ctx) != nil && observer.db.Stats().OpenConnections == 0 &&
+				load.db.Stats().OpenConnections == 0 && len(r.lease) == 1)
+			adminAssert(t, nil, callbacks == 0 && observed.token == (AdminReadToken{}))
+			t.Logf("mode=%s canceled=%v closed=%v err=%v; zero token, no callback, owners closed, lease restored",
+				mode, errors.Is(observed.err, context.Canceled), errors.Is(observed.err, ErrAdminReaderClosed), observed.err)
+			if canceled && !errors.Is(observed.err, context.Canceled) {
+				t.Fatalf("caller cancellation lost: %v", observed.err)
+			}
+			if mode == "admitted-canceled" && !errors.Is(observed.err, ErrAdminReaderClosed) {
+				t.Fatalf("admitted closure lost: %v", observed.err)
+			}
+			if mode == "waiting-canceled" && observed.err != context.Canceled && !errors.Is(observed.err, ErrAdminReaderClosed) {
+				t.Fatalf("unexpected waiting result: %v", observed.err)
+			}
+			if !canceled && observed.err != ErrAdminReaderClosed {
+				t.Fatalf("uncanceled closure identity changed: %v", observed.err)
+			}
+		})
+	}
+}
+
 func TestAdminReaderWaitingCancellation(t *testing.T) { adminLease(t, false) }
 func TestAdminReaderCloseCoordination(t *testing.T)   { adminLease(t, true) }
 

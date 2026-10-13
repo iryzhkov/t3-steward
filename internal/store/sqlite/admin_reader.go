@@ -104,6 +104,9 @@ func (r *AdminReader) Assemble(ctx context.Context, callback func(context.Contex
 		case <-ctx.Done():
 			return token, ctx.Err()
 		case <-r.closed:
+			if canceled := ctx.Err(); canceled != nil {
+				return token, errors.Join(ErrAdminReaderClosed, canceled)
+			}
 			return token, ErrAdminReaderClosed
 		case <-r.lease:
 		}
@@ -115,6 +118,9 @@ func (r *AdminReader) Assemble(ctx context.Context, callback func(context.Contex
 	// This check linearizes admission against closing the closed channel.
 	select {
 	case <-r.closed:
+		if canceled := ctx.Err(); canceled != nil {
+			return token, errors.Join(ErrAdminReaderClosed, canceled)
+		}
 		return token, ErrAdminReaderClosed
 	default:
 	}
