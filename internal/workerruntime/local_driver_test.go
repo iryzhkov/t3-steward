@@ -5,12 +5,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +24,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/compat"
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
+	"github.com/iryzhkov/t3-steward/internal/t3api"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -45,6 +52,7 @@ func (p *recordingPublisher) PublishCheckpoint(_ context.Context, _ workerproto.
 }
 
 type recordingT3 struct {
+	dispatch        *t3control.Control
 	thread          *domain.Thread
 	created         []t3control.NewThreadInput
 	projectID       string
@@ -90,8 +98,11 @@ func (c *recordingT3) ResolveProjectID(_ context.Context, project string) (strin
 	return c.projectID, nil
 }
 
-func (c *recordingT3) CreateAndStartThread(_ context.Context, input t3control.NewThreadInput) (string, error) {
+func (c *recordingT3) CreateAndStartThread(ctx context.Context, input t3control.NewThreadInput) (string, error) {
 	c.created = append(c.created, input)
+	if c.dispatch != nil {
+		return c.dispatch.CreateAndStartThread(ctx, input)
+	}
 	c.thread = &domain.Thread{ID: input.ThreadID, Running: true, ModelSelection: input.ModelSelection}
 	return input.ThreadID, nil
 }
@@ -265,6 +276,111 @@ func TestLocalDriverBindsCatalogArtifactsWorkspaceAndT3(t *testing.T) {
 	driver.Credentials = nil
 	if _, err := driver.Prepare(context.Background(), pkg); err == nil || !strings.Contains(err.Error(), "resolver is unavailable") {
 		t.Fatalf("missing credential resolver error = %v", err)
+	}
+}
+
+type optionBoundaryPublisher struct {
+	recordingPublisher
+	snapshots, baselines int
+}
+
+func (p *optionBoundaryPublisher) RecordSecretValues(context.Context, workerproto.ExecutionPackage, []string) error {
+	return nil
+}
+func (p *optionBoundaryPublisher) SnapshotSecrets(context.Context, workerproto.ExecutionPackage) error {
+	p.snapshots++
+	return nil
+}
+func (p *optionBoundaryPublisher) RecordScanBaseline(context.Context, workerproto.ExecutionPackage, string) error {
+	p.baselines++
+	return nil
+}
+
+func TestLocalDriverModelSelectionBoundary(t *testing.T) {
+	tests := []struct {
+		name, instance, wantID string
+		options                map[string]string
+		wantError              string
+	}{
+		{"generic", "codex", "reasoningEffort", map[string]string{"effort": "high"}, ""},
+		{"equal", "codex", "reasoningEffort", map[string]string{"effort": "high", "reasoningEffort": "high"}, ""},
+		{"canonical", "codex", "reasoningEffort", map[string]string{"reasoningEffort": "high"}, ""},
+		{"claude", "claude", "effort", map[string]string{"effort": "high"}, ""},
+		{"conflict", "codex", "", map[string]string{"effort": "high", "reasoningEffort": "medium"}, "conflict"},
+		{"blank generic", "codex", "", map[string]string{"effort": ""}, "blank"},
+		{"blank canonical", "codex", "", map[string]string{"reasoningEffort": " \t"}, "blank"},
+	}
+	for _, tt := range tests {
+		for _, project := range []string{"existing-project", ""} {
+			t.Run(tt.name+"/"+project, func(t *testing.T) {
+				pkg := testPackage()
+				pkg.Route.ProviderInstanceID, pkg.Route.Options = tt.instance, tt.options
+				pkg.Environment.T3Project = project
+				before := maps.Clone(pkg.Route.Options)
+				root, workspace := t.TempDir(), t.TempDir()
+				var mu sync.Mutex
+				var commands []map[string]any
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var command map[string]any
+					if r.URL.Path != "/api/orchestration/dispatch" || json.NewDecoder(r.Body).Decode(&command) != nil {
+						http.Error(w, "unexpected dispatch", http.StatusBadRequest)
+						return
+					}
+					mu.Lock()
+					commands = append(commands, command)
+					mu.Unlock()
+					_, _ = io.WriteString(w, `{"sequence":1}`)
+				}))
+				defer server.Close()
+				control := &recordingT3{dispatch: t3control.New(t3api.New(server.URL, t3api.StaticToken("test-token"), time.Second), nil, false)}
+				publisher := &optionBoundaryPublisher{}
+				driver := &LocalDriver{Config: LocalDriverConfig{ArtifactRoot: root, RunsRoot: root}, T3: control, Publisher: publisher}
+				cachePath := filepath.Join(root, "objects", pkg.Prompt.SHA256)
+				if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(cachePath, []byte("prompt"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				err := driver.CreateThread(context.Background(), pkg, workspace)
+				mu.Lock()
+				defer mu.Unlock()
+				if !reflect.DeepEqual(pkg.Route.Options, before) {
+					t.Fatal("route options mutated")
+				}
+				if tt.wantError != "" {
+					if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+						t.Fatalf("error=%v want=%s", err, tt.wantError)
+					}
+					if len(commands)+len(control.created)+len(control.managedProjects)+publisher.snapshots+publisher.baselines != 0 || control.resolveProject != "" {
+						t.Fatal("invalid options reached project/provider/secret baseline effects")
+					}
+					return
+				}
+				if err != nil || len(control.created) != 1 {
+					t.Fatalf("created=%v error=%v", control.created, err)
+				}
+				in := control.created[0]
+				want := map[string]any{"instanceId": tt.instance, "model": pkg.Route.Model, "options": []any{map[string]any{"id": tt.wantID, "value": "high"}}}
+				if !reflect.DeepEqual(in.ModelSelection, want) || in.ThreadID != pkg.Identity.ThreadID || in.DispatchToken != pkg.Identity.DispatchToken || in.WorktreePath != workspace || in.RuntimeMode != "full-access" || in.InteractionMode != "default" {
+					t.Fatalf("dispatch input=%+v want selection=%v", in, want)
+				}
+				if len(commands) != 2 || commands[0]["type"] != "thread.create" || commands[1]["type"] != "thread.turn.start" {
+					t.Fatalf("wire dispatches=%v", commands)
+				}
+				for _, command := range commands {
+					if !reflect.DeepEqual(command["modelSelection"], want) || command["threadId"] != in.ThreadID || command["runtimeMode"] != in.RuntimeMode || command["interactionMode"] != in.InteractionMode {
+						t.Fatalf("wire command=%v", command)
+					}
+				}
+				if commands[0]["worktreePath"] != workspace || commands[0]["projectId"] != in.ProjectID {
+					t.Fatal("wire workspace/project changed")
+				}
+				if publisher.snapshots != 1 || publisher.baselines != 1 {
+					t.Fatal("valid dispatch skipped secret baseline")
+				}
+			})
+		}
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	t3control "github.com/iryzhkov/t3-steward/internal/control/t3"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/privatefile"
+	"github.com/iryzhkov/t3-steward/internal/t3api"
 	"github.com/iryzhkov/t3-steward/internal/workerproto"
 )
 
@@ -843,6 +844,11 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 		return err
 	}
 
+	selection, err := t3api.BuildModelSelection(pkg.Route.ProviderInstanceID, pkg.Route.Model, pkg.Route.Options)
+	if err != nil {
+		return err
+	}
+
 	if scoped, err := d.scopedDriver(ctx, pkg); err != nil {
 		return err
 	} else if scoped != nil {
@@ -908,19 +914,6 @@ func (d *LocalDriver) CreateThread(ctx context.Context, pkg workerproto.Executio
 	}
 	if err != nil {
 		return err
-	}
-	selection := map[string]any{"instanceId": pkg.Route.ProviderInstanceID, "model": pkg.Route.Model}
-	if len(pkg.Route.Options) != 0 {
-		keys := make([]string, 0, len(pkg.Route.Options))
-		for key := range pkg.Route.Options {
-			keys = append(keys, key)
-		}
-		slices.Sort(keys)
-		options := make([]any, 0, len(keys))
-		for _, key := range keys {
-			options = append(options, map[string]any{"id": key, "value": pkg.Route.Options[key]})
-		}
-		selection["options"] = options
 	}
 	threadID, err := d.T3.CreateAndStartThread(ctx, t3control.NewThreadInput{
 		ThreadID: pkg.Identity.ThreadID, DispatchToken: pkg.Identity.DispatchToken,

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -126,6 +128,54 @@ func TestResolveProjectID(t *testing.T) {
 			}
 			if err != nil || got != test.want {
 				t.Fatalf("ResolveProjectID = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestModelSelectionOptionsReachCreateAndFirstTurn(t *testing.T) {
+	for _, options := range []map[string]string{
+		{"effort": "high"},
+		{"effort": "high", "reasoningEffort": "high"},
+		{"reasoningEffort": "high"},
+	} {
+		t.Run(fmt.Sprint(options), func(t *testing.T) {
+			selection, err := t3api.BuildModelSelection("codex", "gpt-6.1-sol", options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := &dispatchRecorder{}
+			server := httptest.NewServer(recorder)
+			defer server.Close()
+			control := New(t3api.New(server.URL, t3api.StaticToken("test-token"), testtiming.Bound(time.Second)), slog.New(slog.NewTextHandler(io.Discard, nil)), false)
+			input := NewThreadInput{ThreadID: "caller-thread", DispatchToken: "caller-dispatch", ProjectID: "caller-project", WorktreePath: t.TempDir(), ModelSelection: selection, RuntimeMode: "full-access", InteractionMode: "default", Prompt: "caller prompt"}
+			for repeat := 0; repeat < 2; repeat++ {
+				if id, err := control.CreateAndStartThread(context.Background(), input); err != nil || id != input.ThreadID {
+					t.Fatalf("id=%q error=%v", id, err)
+				}
+			}
+			commands := recorder.snapshot()
+			if len(commands) != 4 {
+				t.Fatalf("dispatches=%v", commands)
+			}
+			want := map[string]any{"instanceId": "codex", "model": "gpt-6.1-sol", "options": []any{map[string]any{"id": "reasoningEffort", "value": "high"}}}
+			for i, command := range commands {
+				if !reflect.DeepEqual(command["modelSelection"], want) {
+					t.Fatalf("wire selection=%v", command["modelSelection"])
+				}
+				assertCommandField(t, command, "threadId", input.ThreadID)
+				assertCommandField(t, command, "runtimeMode", input.RuntimeMode)
+				assertCommandField(t, command, "interactionMode", input.InteractionMode)
+				if i%2 == 0 {
+					assertCommandField(t, command, "type", "thread.create")
+					assertCommandField(t, command, "worktreePath", input.WorktreePath)
+					assertCommandField(t, command, "projectId", input.ProjectID)
+				} else {
+					assertCommandField(t, command, "type", "thread.turn.start")
+				}
+			}
+			if commands[0]["commandId"] != commands[2]["commandId"] || commands[1]["commandId"] != commands[3]["commandId"] {
+				t.Fatal("dispatch token lost replay identity")
 			}
 		})
 	}

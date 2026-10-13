@@ -232,6 +232,18 @@ the whole thread, which ends its subagents with it.
 All commands go to `POST /api/orchestration/dispatch` as a JSON body with a
 `commandId` (UUID) and ISO `createdAt`.
 
+For fresh normal worker threads, Steward translates the authorized generic
+`effort` option to T3's `reasoningEffort` only for the exact standard instance
+`codex` (audited against T3 0.0.45). Requested values remain exact; this is not
+an authorization or default policy. Canonical-only values survive, equal dual
+keys deduplicate, and conflicting or blank explicit values fail before scoped
+provider delegation, secret snapshots, project creation or provider calls.
+Options are sorted by ID without mutating the route; absent options stay absent.
+Claude and custom instances retain their original IDs and values. Both create
+and first turn receive the same selection. Resume uses the stored selection;
+existing threads and supervisory activation are outside this translation.
+Custom instance passthrough alone does not prove effective reasoning effort.
+
 Create a thread in a steward-prepared checkout:
 
 ```json
