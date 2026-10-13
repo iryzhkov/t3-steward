@@ -367,11 +367,12 @@ func (u tolerantUsage) WorkerUsageBatch(ctx context.Context, acknowledged []stri
 // the worker's T3 control client, which the probe rule asks whether anything
 // on the host is running that would produce a reading.
 func hostQuotaGuard(cfg config.Config, logger *slog.Logger, threads workerruntime.ThreadLister) workerruntime.QuotaGuard {
-	// Even without a local collector/store, an authenticated catalog must be
-	// able to supply covered-route policy and validate coordinator grants.
+	// Coordinator-owned state is never a local watchdog source. The worker
+	// service installs a policy-only guard after authenticated catalog metadata
+	// activation, independently of this local database constructor.
 	fallback := workerruntime.HostQuotaGuard{Config: cfg, Threads: threads}
 	if cfg.BacklogV2.Mode == "coordinator" {
-		return fallback
+		return nil
 	}
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
@@ -383,7 +384,7 @@ func hostQuotaGuard(cfg config.Config, logger *slog.Logger, threads workerruntim
 	// worker may still resolve the same state path, including while the
 	// coordinator is stopped; it must not open that database either.
 	if _, err := os.Lstat(statePath + ".coordinator.lock"); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return fallback
+		return nil
 	}
 	store, err := sqlite.Open(statePath)
 	if err != nil {

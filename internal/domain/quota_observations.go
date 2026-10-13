@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+// QuotaObservationEpoch supplies the legacy omitted epoch from its own reset.
+// An explicitly reported epoch remains authoritative for conflict detection.
+func QuotaObservationEpoch(state BucketState) string {
+	if state.Epoch != "" {
+		return state.Epoch
+	}
+	return EpochFor(state.ResetsAt)
+}
+
 func ValidQuotaPercent(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 100
 }

@@ -178,6 +178,7 @@ func reconcileAdmissionBucketStates(key domain.BucketKey, states []domain.Bucket
 	}
 	latestAt := states[len(states)-1].ObservedAt
 	latest := states[len(states)-1]
+	latest.Epoch = domain.QuotaObservationEpoch(latest)
 	for index := len(states) - 1; index >= 0 && states[index].ObservedAt.Equal(latestAt); index-- {
 		candidate := states[index]
 		if !validAdmissionPhase(candidate.Phase) {
@@ -186,7 +187,7 @@ func reconcileAdmissionBucketStates(key domain.BucketKey, states []domain.Bucket
 				Detail: fmt.Sprintf("quota bucket %q has invalid phase %q", key.String(), candidate.Phase),
 			}, true
 		}
-		if candidate.Epoch != latest.Epoch || domain.EpochFor(candidate.ResetsAt) != domain.EpochFor(latest.ResetsAt) {
+		if domain.QuotaObservationEpoch(candidate) != latest.Epoch || domain.EpochFor(candidate.ResetsAt) != domain.EpochFor(latest.ResetsAt) {
 			return domain.BucketState{}, &QuotaAdmissionIssue{
 				Code: QuotaAdmissionIssueObservationConflict, Bucket: key,
 				Detail: fmt.Sprintf("quota bucket %q has conflicting epochs at observation time %s", key.String(), latestAt.UTC().Format(time.RFC3339)),

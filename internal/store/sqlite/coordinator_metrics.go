@@ -110,7 +110,7 @@ func (s *QueryOnlyStore) LoadMetricsSnapshot(ctx context.Context) (coordinatorme
 	}
 	// Decode only the observation projection, never worker inventory, paths or
 	// journal excerpts. The bound rejects the entire refresh, preserving cache.
-	rows, err := tx.QueryContext(ctx, `SELECT json_object('connected',json(CASE WHEN connected=1 THEN 'true' ELSE 'false' END),'observedAt',json_extract(record,'$.observedAt'),'validUntil',valid_until,'quotaObservations',json(COALESCE(json_extract(record,'$.quotaObservations'),'[]'))) FROM coordinator_worker_snapshots ORDER BY worker_id LIMIT 10001`)
+	rows, err := tx.QueryContext(ctx, `SELECT json_object('workerId',worker_id,'connected',json(CASE WHEN connected=1 THEN 'true' ELSE 'false' END),'observedAt',json_extract(record,'$.observedAt'),'validUntil',valid_until,'quotaObservations',json(COALESCE(json_extract(record,'$.quotaObservations'),'[]'))) FROM coordinator_worker_snapshots ORDER BY worker_id LIMIT 10001`)
 	if err != nil {
 		return out, err
 	}

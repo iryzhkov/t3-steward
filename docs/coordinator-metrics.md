@@ -27,11 +27,33 @@ All series are gauges. Tasks count the latest retained declared attempt per
 run/task, excluding taskless supervision activations; retries are not extra
 tasks. Assignments and admission states count retained records. Worker freshness
 requires connected=true, unexpired validUntil and configured observation age.
-Quota uses the native freshest-observation merge, admits only fresh workers and
-buckets, and reports the largest observed used percentage per fixed window
-category. It never adds percentages across accounts or runs admission
-reconciliation. Unrecognized states/windows collapse to other, bounding labels.
-The ratio is a conservative fleet summary, not a particular pool's capacity.
+Quota uses domain.MergeQuotaObservations and NewestQuotaStates, retaining
+equally timed competitors. A key counts once among fresh observations, with
+the worst valid percentage among its fresh competitors. Stale and invalid
+diagnostics count unique keys with excluded competitors; these diagnostics
+can overlap a fresh key when another competitor remains usable.
+
+The query projection retains the authenticated worker_id column internally.
+Native merge replaces claimed origins with that identity and limits remote
+origin validity. Immutable configured coverage comes from the same pure
+QuotaBridgePools projection as admission. QuotaObservationMaxAge extends age
+only for a unique source/account/window/origin-qualified collector pool.
+Provider instance IDs alone never select coverage; ambiguous qualified scopes
+receive no extension, and an unrelated known account cannot clamp legacy age;
+unqualified readings in collector pools retain at most60s. QuotaReadingFresh
+also excludes future/zero readings, expired origin validity, and ended resets.
+The existing fallback governs legacy pools. Acquisition time is never restamped
+by metrics refresh, and the90s exporter cache limit is independent of source age.
+
+Ratios report observed windows, including valid windows in a partial acquisition.
+They do not claim that required coverage is complete or that admission is healthy;
+admission gauges remain retained authoritative records. The largest observed
+used percentage per fixed window never adds percentages across accounts.
+Configured model windows, including weekly_fable, map to the fixed other label
+along with other unrecognized windows; qualified observations are retained,
+and exact model/source/account names never become labels. Unknown states also
+collapse to other. The ratio is a conservative fleet summary, not pool capacity.
+No scrape or refresh runs admission reconciliation.
 
 Token aggregation is explicitly unsupported (steward_token_aggregation_supported
 is0). usage_evidence_rows counts only the latest10000 native evidence rows,

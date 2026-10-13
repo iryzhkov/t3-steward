@@ -74,7 +74,7 @@ func TestMetricsSnapshotReadOnlyProjectionLatestAttemptAndUsageCoverage(t *testi
 	if len(s.Tasks) != 1 || s.Tasks["succeeded"] != 1 {
 		t.Fatal(s.Tasks)
 	}
-	if len(s.Workers) != 1 || !s.Workers[0].Connected || s.Workers[0].WorkerID != "" || !s.Workers[0].ObservedAt.Equal(now) {
+	if len(s.Workers) != 1 || !s.Workers[0].Connected || s.Workers[0].WorkerID != "private-worker" || !s.Workers[0].ObservedAt.Equal(now) {
 		t.Fatal(s.Workers)
 	}
 	if s.UsageEvidence["call"] != 2 || s.UsageEvidence["turn"] != 1 || s.UsageEvidence["diagnostic"] != 1 {

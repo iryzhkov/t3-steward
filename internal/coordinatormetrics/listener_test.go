@@ -18,7 +18,7 @@ func (f readyLoader) LoadMetricsSnapshot(context.Context) (Snapshot, error) {
 }
 func TestLoopbackListenerLifecycle(t *testing.T) {
 	ready := make(chan struct{})
-	listener, err := Start(context.Background(), "127.0.0.1:0", readyLoader{ready}, time.Minute, time.Minute)
+	listener, err := Start(context.Background(), "127.0.0.1:0", readyLoader{ready}, time.Minute, time.Minute, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestLoopbackListenerLifecycle(t *testing.T) {
 	}
 }
 func TestConcurrentScrapesAndRefresh(t *testing.T) {
-	cache := NewCache(&fixtureLoader{snapshot: Snapshot{Tasks: map[string]int64{"active": 1}}}, time.Minute, time.Minute)
+	cache := NewCache(&fixtureLoader{snapshot: Snapshot{Tasks: map[string]int64{"active": 1}}}, time.Minute, time.Minute, nil)
 	cache.Refresh(context.Background())
 	var wg sync.WaitGroup
 	for n := 0; n < 10; n++ {

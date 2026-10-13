@@ -150,7 +150,7 @@ func ReadQuotaWindows(pool QuotaPool, states []BucketState, now time.Time, maxAg
 			if pool.Collector != nil && !SameQuotaAcquisition(current.Provenance, state.Provenance) && current.Key.AccountID != "" {
 				set.Unknown = true
 			}
-			if current.Epoch != state.Epoch || EpochFor(current.ResetsAt) != EpochFor(state.ResetsAt) {
+			if QuotaObservationEpoch(current) != QuotaObservationEpoch(state) || EpochFor(current.ResetsAt) != EpochFor(state.ResetsAt) {
 				set.Unknown = true
 			}
 		}

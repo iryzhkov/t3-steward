@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/iryzhkov/t3-steward/internal/domain"
-	"math"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +55,7 @@ func ValidateBind(bind string) error {
 type Cache struct {
 	loader                    Loader
 	workerMaxAge, quotaMaxAge time.Duration
+	pools                     []domain.QuotaPool
 	now                       func() time.Time
 	mu                        sync.RWMutex
 	body                      string
@@ -62,8 +63,30 @@ type Cache struct {
 	success                   bool
 }
 
-func NewCache(loader Loader, workerMaxAge, quotaMaxAge time.Duration) *Cache {
-	return &Cache{loader: loader, workerMaxAge: workerMaxAge, quotaMaxAge: quotaMaxAge, now: time.Now}
+// NewCache owns a copy of validated configuration coverage for this lifecycle.
+// Source/account identities remain internal and are never rendered as labels.
+func NewCache(loader Loader, workerMaxAge, quotaMaxAge time.Duration, pools []domain.QuotaPool) *Cache {
+	return &Cache{loader: loader, workerMaxAge: workerMaxAge, quotaMaxAge: quotaMaxAge, pools: cloneQuotaPools(pools), now: time.Now}
+}
+
+func cloneQuotaPools(pools []domain.QuotaPool) []domain.QuotaPool {
+	out := slices.Clone(pools)
+	for i := range out {
+		out[i].Models = slices.Clone(out[i].Models)
+		out[i].ProviderInstanceIDs = slices.Clone(out[i].ProviderInstanceIDs)
+		out[i].Buckets = slices.Clone(out[i].Buckets)
+		if out[i].Collector == nil {
+			continue
+		}
+		coverage := *out[i].Collector
+		coverage.Origins = slices.Clone(coverage.Origins)
+		coverage.RequiredWindows = slices.Clone(coverage.RequiredWindows)
+		for j := range coverage.RequiredWindows {
+			coverage.RequiredWindows[j].Models = slices.Clone(coverage.RequiredWindows[j].Models)
+		}
+		out[i].Collector = &coverage
+	}
+	return out
 }
 
 // Refresh is called by the timer, never by an HTTP request. Only a successful
@@ -78,7 +101,7 @@ func (c *Cache) Refresh(ctx context.Context) {
 	var body string
 	at := c.now().UTC()
 	if err == nil {
-		body = render(snapshot, at, c.workerMaxAge, c.quotaMaxAge)
+		body = render(snapshot, at, c.workerMaxAge, c.quotaMaxAge, c.pools)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -118,13 +141,14 @@ func (c *Cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type Listener struct {
-	server   *http.Server
-	listener net.Listener
-	cancel   context.CancelFunc
-	done     chan struct{}
+	server    *http.Server
+	listener  net.Listener
+	cancel    context.CancelFunc
+	done      chan struct{}
+	serveDone chan struct{}
 }
 
-func Start(ctx context.Context, bind string, loader Loader, workerMaxAge, quotaMaxAge time.Duration) (*Listener, error) {
+func Start(ctx context.Context, bind string, loader Loader, workerMaxAge, quotaMaxAge time.Duration, pools []domain.QuotaPool) (*Listener, error) {
 	if bind == "" {
 		return nil, nil
 	}
@@ -139,10 +163,13 @@ func Start(ctx context.Context, bind string, loader Loader, workerMaxAge, quotaM
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	cache := NewCache(loader, workerMaxAge, quotaMaxAge)
+	cache := NewCache(loader, workerMaxAge, quotaMaxAge, pools)
 	server := &http.Server{Handler: cache, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
-	result := &Listener{server: server, listener: listener, cancel: cancel, done: make(chan struct{})}
-	go func() { _ = server.Serve(listener) }()
+	result := &Listener{server: server, listener: listener, cancel: cancel, done: make(chan struct{}), serveDone: make(chan struct{})}
+	go func() {
+		defer close(result.serveDone)
+		_ = server.Serve(listener)
+	}()
 	go func() {
 		defer close(result.done)
 		cache.Refresh(ctx)
@@ -167,11 +194,49 @@ func (l *Listener) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), LoadTimeout)
 	defer cancel()
 	err := l.server.Shutdown(ctx)
+	// Shutdown may precede Serve registering the listener. Close the owned
+	// socket explicitly and join both goroutines before returning custody.
+	closeErr := l.listener.Close()
+	if errors.Is(closeErr, net.ErrClosed) {
+		closeErr = nil
+	}
 	<-l.done
-	return err
+	<-l.serveDone
+	return errors.Join(err, closeErr)
 }
 
-func render(s Snapshot, now time.Time, workerAge, quotaAge time.Duration) string {
+func observationMaxAge(state domain.BucketState, pools []domain.QuotaPool, fallback time.Duration) time.Duration {
+	qualified := -1
+	ambiguous := false
+	for i, pool := range pools {
+		if !slices.Contains(pool.ProviderInstanceIDs, state.Key.ProviderInstanceID) ||
+			!domain.CollectorObservationQualified(pool, state) {
+			continue
+		}
+		if qualified >= 0 {
+			ambiguous = true
+		}
+		qualified = i
+	}
+	if qualified >= 0 && !ambiguous {
+		return domain.QuotaObservationMaxAge(pools[qualified], state, fallback)
+	}
+	age := domain.QuotaObservationMaxAge(domain.QuotaPool{}, state, fallback)
+	for _, pool := range pools {
+		if !slices.Contains(pool.ProviderInstanceIDs, state.Key.ProviderInstanceID) ||
+			(state.Key.AccountID != "" && pool.AccountID != state.Key.AccountID) {
+			continue
+		}
+		unqualified := state
+		unqualified.Provenance = nil
+		if scoped := domain.QuotaObservationMaxAge(pool, unqualified, fallback); scoped < age {
+			age = scoped
+		}
+	}
+	return age
+}
+
+func render(s Snapshot, now time.Time, workerAge, quotaAge time.Duration, pools []domain.QuotaPool) string {
 	var b strings.Builder
 	metric := func(name, help string) { fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s gauge\n", name, help, name) }
 	counts := func(name, help, label string, values map[string]int64, known []string) {
@@ -213,28 +278,35 @@ func render(s Snapshot, now time.Time, workerAge, quotaAge time.Duration) string
 	}
 	metric("steward_workers", "Retained worker snapshots by freshness.")
 	fmt.Fprintf(&b, "steward_workers{state=\"reported\"} %d\nsteward_workers{state=\"connected\"} %d\nsteward_workers{state=\"fresh\"} %d\n", len(s.Workers), connected, fresh)
-	var stale, invalid int64
+	staleKeys := map[domain.BucketKey]bool{}
+	invalidKeys := map[domain.BucketKey]bool{}
+	freshUsed := map[domain.BucketKey]float64{}
 	used := map[string]float64{}
 	observed := map[string]int64{}
-	for _, v := range domain.MergeQuotaObservations(s.Buckets, workers) {
-		age := now.Sub(v.ObservedAt)
-		if v.ObservedAt.IsZero() || age < 0 || age > quotaAge {
-			stale++
+	states := domain.NewestQuotaStates(domain.MergeQuotaObservations(s.Buckets, workers))
+	for _, v := range states {
+		if !domain.ValidQuotaPercent(v.UsedPercent) {
+			invalidKeys[v.Key] = true
 			continue
 		}
-		if math.IsNaN(v.UsedPercent) || math.IsInf(v.UsedPercent, 0) || v.UsedPercent < 0 || v.UsedPercent > 100 {
-			invalid++
+		if !domain.QuotaReadingFresh(v, now, observationMaxAge(v, pools, quotaAge)) {
+			staleKeys[v.Key] = true
 			continue
 		}
-		window := v.Key.Window
+		if previous, ok := freshUsed[v.Key]; !ok || v.UsedPercent > previous {
+			freshUsed[v.Key] = v.UsedPercent
+		}
+	}
+	for key, percent := range freshUsed {
+		window := key.Window
 		switch window {
 		case "five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet", "weekly", "daily":
 		default:
 			window = "other"
 		}
 		observed[window]++
-		if v.UsedPercent > used[window] {
-			used[window] = v.UsedPercent
+		if percent > used[window] {
+			used[window] = percent
 		}
 	}
 	metric("steward_quota_observations", "Fresh unique native buckets; stale and invalid observations are omitted.")
@@ -245,10 +317,10 @@ func render(s Snapshot, now time.Time, workerAge, quotaAge time.Duration) string
 			fmt.Fprintf(&b, "steward_quota_worst_used_ratio{window=%q} %g\n", window, used[window]/100)
 		}
 	}
-	metric("steward_quota_stale_observations", "Buckets excluded because freshness is unknown or expired.")
-	fmt.Fprintf(&b, "steward_quota_stale_observations %d\n", stale)
-	metric("steward_quota_invalid_observations", "Buckets excluded because the native percentage is invalid.")
-	fmt.Fprintf(&b, "steward_quota_invalid_observations %d\n", invalid)
+	metric("steward_quota_stale_observations", "Unique bucket keys with stale competitors; may overlap fresh observations.")
+	fmt.Fprintf(&b, "steward_quota_stale_observations %d\n", len(staleKeys))
+	metric("steward_quota_invalid_observations", "Unique bucket keys with invalid competitors; may overlap fresh observations.")
+	fmt.Fprintf(&b, "steward_quota_invalid_observations %d\n", len(invalidKeys))
 	counts("steward_usage_evidence_rows", "Latest bounded evidence rows after in-window local-forwarded duplicate removal; call and turn rows may overlap and are not tokens.", "kind", s.UsageEvidence, []string{"call", "turn", "diagnostic"})
 	counts("steward_usage_field_coverage_rows", "Presence of token fields in retained evidence, not measured token totals.", "coverage", s.UsageFields, []string{"complete", "partial", "absent"})
 	metric("steward_usage_evidence_truncated", "One when older evidence was excluded by the latest10000-row bound.")

@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/iryzhkov/t3-steward/internal/backlog"
 	"github.com/iryzhkov/t3-steward/internal/config"
 	"github.com/iryzhkov/t3-steward/internal/coordinatormetrics"
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
@@ -24,6 +26,10 @@ func startCoordinatorMetrics(ctx context.Context, cfg config.Config) (*coordinat
 	if bind == "" {
 		return nil, nil
 	}
+	pools, err := coordinatorMetricsQuotaPools(cfg)
+	if err != nil {
+		return nil, err
+	}
 	path, err := cfg.ResolveStatePath()
 	if err != nil {
 		return nil, err
@@ -32,10 +38,21 @@ func startCoordinatorMetrics(ctx context.Context, cfg config.Config) (*coordinat
 	if err != nil {
 		return nil, err
 	}
-	listener, err := coordinatormetrics.Start(ctx, bind, source, cfg.BacklogV2.Freshness.WorkerMaxAge.D(), cfg.BacklogV2.Freshness.QuotaMaxAge.D())
+	listener, err := coordinatormetrics.Start(ctx, bind, source, cfg.BacklogV2.Freshness.WorkerMaxAge.D(), cfg.BacklogV2.Freshness.QuotaMaxAge.D(), pools)
 	if err != nil {
 		source.Close()
 		return nil, err
 	}
 	return &coordinatorMetricsListener{listener: listener, source: source}, nil
+}
+
+// coordinatorMetricsQuotaPools reuses admission's pure validated projection.
+// It does not read the store or run reconciliation.
+func coordinatorMetricsQuotaPools(cfg config.Config) ([]domain.QuotaPool, error) {
+	bindings := coordinatorQuotaPoolBindings(cfg)
+	if len(bindings) == 0 {
+		return nil, nil
+	}
+	pools, _, err := backlog.QuotaBridgePools(bindings)
+	return pools, err
 }

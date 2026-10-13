@@ -2,11 +2,12 @@
 
 This branch integrates the existing native coordinator producer from PR73,
 commit `89eb9fb49bfbfe7b8981d152366a00dbd2f21710`, with the fork-retirement
-quota work. Its five published CI jobs passed at that exact producer commit;
-they do not qualify later cherry-picks or reconciliation. The PR73 owner
-branch remains separate. Integration waits for the concurrent quota/policy
-authors, then requires complete source tests, lint, exact CI, and an
-independent Astra review in this root session before handoff.
+quota work. That producer was cherry-picked as `5de9a378593acba7e7841f41e78f38cd49e76710` after M3 candidate
+`5f034585d983c4c29cdd6c4f229a8bdfa018be51`; its owner branch remains separate. The five published CI jobs
+passed at the original producer commit and do not qualify this combined
+candidate. Producer reconciliation and focused checks are branch work;
+complete source tests, lint, exact CI, and independent Astra review in this
+root session remain required before handoff. No runtime was deployed.
 
 The approved monitoring plan is
 `jocasta:9bb096dcbc9f16d032e7c7e1854aa22a@2` (122 lines; SHA-256
@@ -69,23 +70,25 @@ Failed refresh retains the previous complete snapshot and signals failure;
 after 90 seconds the endpoint returns 503 without operational gauges.
 Close the listener and refresh loop before closing the query connection.
 
-PR73 rendering currently applies one global quota age. Reconcile it with
-the final native conservative merge and
-`domain.QuotaObservationMaxAge(pool,state,fallback)`, using validated
-pool collector coverage. Preserve acquisition identity/provenance through
-persisted projections and merge. Include only the internal identity fields
-needed by the final authenticated-origin checks; never export account,
-source, acquisition, worker, task, run, or thread IDs as metric labels.
-An account UUID or worker ID alone cannot qualify a collector source.
+The reconciled rendering uses the native conservative merge,
+`NewestQuotaStates`, `QuotaObservationMaxAge`, and `QuotaReadingFresh`.
+Configured coverage reuses `backlog.QuotaBridgePools` with
+`coordinatorQuotaPoolBindings` and is copied for the cache lifecycle.
+The bounded query projection preserves acquisition provenance and selects
+the authenticated worker_id column internally. Never export account, source,
+acquisition, worker, task, run, or thread IDs as labels. An account UUID or
+worker ID alone cannot qualify a collector source.
 
 Qualified collector observations use their explicitly budgeted scope age;
 anonymous, local, unqualified, and legacy observations retain the existing
 60-second age. Keep quota acquisition time unchanged across refresh/cache/
 forwarding. The 90-second exporter-cache age is a different limit and must
-not widen quota freshness. Match final conservative tie handling, required
-model/batch coverage, outage closure, and local restrictive veto behavior.
-Metrics remain observed worst ratios by fixed window, not pool capacity
-or an admission authorization signal.
+not widen quota freshness. Count each fresh bucket key once and retain the worst valid tied percentage.
+Diagnostic stale/invalid key counts may overlap usable competitors. Partial
+model/batch coverage cannot be described as healthy admission; individual
+fresh ratios remain observed readings and admission counts remain authoritative
+records. Configurable model windows, including weekly_fable, use the fixed
+other label. Metrics are not pool capacity or an admission authorization signal.
 
 Preserve the 17 bounded gauge families and their retained-record semantics.
 `steward_token_aggregation_supported` remains zero: bounded evidence

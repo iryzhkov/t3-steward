@@ -29,7 +29,7 @@ func scrape(c *Cache) (int, string) {
 func TestCacheImmutableFailedRefreshAndStaleness(t *testing.T) {
 	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	loader := &fixtureLoader{snapshot: Snapshot{Tasks: map[string]int64{"active": 1}}}
-	cache := NewCache(loader, time.Minute, time.Minute)
+	cache := NewCache(loader, time.Minute, time.Minute, nil)
 	cache.now = func() time.Time { return now }
 	if code, _ := scrape(cache); code != 503 {
 		t.Fatal(code)
@@ -74,7 +74,7 @@ func TestFreshQuotaMergeDedupAndPrivacy(t *testing.T) {
 			{WorkerID: "private-host-b", Connected: true, ObservedAt: now, ValidUntil: now.Add(time.Minute), QuotaObservations: []domain.WorkerQuotaObservation{{Key: key, UsedPercent: 90, ObservedAt: old}}},
 			{WorkerID: "expired", Connected: true, ObservedAt: now.Add(-time.Hour), ValidUntil: now.Add(-time.Minute), QuotaObservations: []domain.WorkerQuotaObservation{{Key: key, UsedPercent: 100, ObservedAt: now.Add(time.Second)}}},
 		}}
-	body := render(s, now, time.Minute, time.Minute)
+	body := render(s, now, time.Minute, time.Minute, nil)
 	for _, want := range []string{"steward_quota_observations{window=\"five_hour\"} 1", "steward_quota_worst_used_ratio{window=\"five_hour\"} 0.2", "steward_workers{state=\"fresh\"} 2", "steward_token_aggregation_supported 0"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("missing %q in %s", want, body)
@@ -85,7 +85,7 @@ func TestFreshQuotaMergeDedupAndPrivacy(t *testing.T) {
 			t.Fatal("identity exposed", body)
 		}
 	}
-	body = render(s, now.Add(2*time.Minute), time.Minute, time.Minute)
+	body = render(s, now.Add(2*time.Minute), time.Minute, time.Minute, nil)
 	if strings.Contains(body, "steward_quota_worst_used_ratio{window=") {
 		t.Fatal("stale quota exposed", body)
 	}
@@ -101,7 +101,7 @@ func TestBindAndDisabledListener(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	l, err := Start(context.Background(), "", nil, 0, 0)
+	l, err := Start(context.Background(), "", nil, 0, 0, nil)
 	if l != nil || err != nil {
 		t.Fatal(l, err)
 	}
@@ -110,7 +110,7 @@ func TestBindAndDisabledListener(t *testing.T) {
 	}
 }
 func TestOnlyMetricsGet(t *testing.T) {
-	cache := NewCache(&fixtureLoader{}, time.Minute, time.Minute)
+	cache := NewCache(&fixtureLoader{}, time.Minute, time.Minute, nil)
 	for _, tc := range []struct {
 		method, path string
 		code         int

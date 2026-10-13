@@ -39,6 +39,31 @@ func collectorCatalogFixture(t *testing.T) (config.Config, WorkerBootstrap) {
 	bootstrap := WorkerBootstrap{SchemaVersion: 1, WorkerID: "normandy", CoordinatorID: "coordinator", Transport: "ssh", Capabilities: worker.Capabilities, ProviderRoutes: []string{"claudeWorker"}, CredentialRef: worker.Credential}
 	return cfg, bootstrap
 }
+func assertCatalogPolicyOnlyRecoveryGrant(t *testing.T, guard HostQuotaGuard) {
+	t.Helper()
+	if guard.Buckets != nil {
+		t.Fatal("authenticated catalog policy guard opened local watchdog state")
+	}
+	route := domain.ProviderRoute{WorkerID: "normandy", ProviderInstanceID: "claudeWorker", Model: "claude-haiku-5-5", QuotaPoolID: "claude"}
+	pool, covered := guard.Config.CollectorCoverage(route)
+	if !covered {
+		t.Fatal("authenticated catalog lost covered route")
+	}
+	now := time.Now().UTC()
+	acquired := now.Add(-time.Minute)
+	command := domain.ThrottleCommand{Kind: domain.ThrottleCommandResume, Route: route, QuotaPoolID: pool.ID, CreatedAt: now,
+		QuotaRecovery: &domain.QuotaRecoveryGrant{OriginProviderInstanceID: "claudeSource", CoverageDigest: daemon.CollectorRecoveryDigest(guard.Config, pool, route),
+			QuotaPoolID: pool.ID, AccountID: pool.AccountID, StoppedAt: now.Add(-2 * time.Minute),
+			Provenance: domain.QuotaProvenance{SourceID: "native", AcquisitionID: "qualified-test-receipt", OriginWorkerID: "collector", AcquiredAt: acquired},
+			ExpiresAt:  now.Add(30 * time.Second), EvidenceScope: domain.RecoveryEvidenceScope(pool), EvidenceDigest: "qualified-test-source-authority"}}
+	if allowed, why, err := guard.CoordinatorResumeAllowed(context.Background(), command); err != nil || !allowed {
+		t.Fatalf("policy-only grant validation: allowed=%v why=%s err=%v", allowed, why, err)
+	}
+	if allowed, _, err := guard.ResumeAllowed(context.Background(), LocalThrottleRequest{}, route); err != nil || allowed {
+		t.Fatalf("catalog without a store invented autonomous recovery: allowed=%v err=%v", allowed, err)
+	}
+}
+
 func TestCollectorCatalogProjectionPreservesRecoveryWithoutExecutionExpansion(t *testing.T) {
 	cfg, bootstrap := collectorCatalogFixture(t)
 	projection, err := BuildCatalogProjection(cfg.BacklogV2, "normandy")
@@ -112,6 +137,7 @@ func TestCollectorCatalogRefreshRestartAndBusyCustody(t *testing.T) {
 	if !ok || guard.Config.BacklogV2.CollectorRecovery == nil {
 		t.Fatal("activation did not install credential-free guard")
 	}
+	assertCatalogPolicyOnlyRecoveryGrant(t, guard)
 	before, err := os.ReadFile(host.catalogPath())
 	if err != nil {
 		t.Fatal(err)
@@ -145,6 +171,7 @@ func TestCollectorCatalogRefreshRestartAndBusyCustody(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Fatal("busy refusal changed retained bytes")
 	}
+	assertCatalogPolicyOnlyRecoveryGrant(t, host.service.Exchange.Runtime.config.Quota.(HostQuotaGuard))
 	if err := host.service.Exchange.Runtime.journal.update(func(s *journalState) error { delete(s.Attempts, "busy"); return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -156,6 +183,7 @@ func TestCollectorCatalogRefreshRestartAndBusyCustody(t *testing.T) {
 		t.Fatal(err)
 	}
 	guard = restart.service.Exchange.Runtime.config.Quota.(HostQuotaGuard)
+	assertCatalogPolicyOnlyRecoveryGrant(t, guard)
 	if guard.Config.CollectorRecoveryConfig().Resume.BelowPercent != changed.CollectorRecovery.BelowPercent {
 		t.Fatal("restart lost shared recovery policy")
 	}
