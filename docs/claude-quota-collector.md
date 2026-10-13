@@ -6,9 +6,10 @@ a usage GET, then checks that the private credential bytes and file generation
 are unchanged. A profile UUID must equal the configured account UUID. An env-only
 inference token is not a substitute for a stored profile-capable login.
 
-The collector is disabled by default. This branch's first slice implements
-acquisition, configuration, source composition and local status. Do not enable it
-until the remaining admission and transport work below has passed review.
+The collector is disabled by default. The branch implements acquisition,
+configuration, source composition, local status and verified account-bound
+admission and recovery transport. Activation requires the full branch checks,
+independent review and runtime qualification described below.
 
 ## Pinned contract
 
@@ -64,8 +65,8 @@ cover a worker observation exchange tick, its transport deadline, the next
 coordinator scheduler tick, and measured local processing. Configuration checks
 the first three against two scheduling intervals plus the transport timeout.
 
-The pool's explicit `observation_max_age` must cover interval, maximum jitter,
-acquisition and that pipeline budget. The current 10-second scheduler and
+The pool's explicit `observation_max_age` must be strictly greater than interval,
+maximum jitter, acquisition and that pipeline budget combined. The current 10-second scheduler and
 30-second transport bounds require at least 50 seconds of pipeline budget:
 300 + 15 + 10 + 50 = 375 seconds. A scoped 390-second horizon leaves 15 seconds
 for qualified processing delay. A 360-second horizon is rejected. If measured
@@ -92,27 +93,58 @@ suppresses a valid batch. Restart preserves source times and honors Retry-After
 before issuing another request. Status is not account evidence or a health wire
 upgrade. Outages must close admission when existing observations become stale.
 
-## Remaining integration before activation
+## Shared coverage and recovery
 
-The first slice adds pool AccountID and observation age configuration but does
-not yet propagate scoped age through all coordinator, worker, wait and policy
-consumers. Their existing age limits remain conservative and unchanged.
-Snapshot model selectors still use the existing representation. Exact model
-bindings must reach admission without granting additional model authorization.
+Each pool declares a `collector` with `source_id`, explicit `origins` containing
+`worker_id` and `provider_instance_id`, and `required_windows`. Base windows
+are account-wide. Every additional window binds exact `models` already in the
+pool catalog. The local producer's `source_id` and `origin_worker_id` must match
+this declaration and the host's actual configured runtime identity.
 
-The integration slice must preserve tied competing observations in
-`MergeQuotaObservations` and `ReadQuotaWindows`, keep conservative downstream
-reconciliation, and treat fresh unknown-account restrictive evidence as an
-overlay on the explicitly bound pool. It must retain raw empty account keys,
-never relabel them, count them as required coverage, or use them to open a pool.
+A native snapshot carries one source/acquisition/origin identity and true
+acquisition start for the entire batch. Only a complete same-acquisition batch
+gets the pool's scoped age. Plain logs, old peers and guessed formats retain
+their legacy age. An authenticated worker merge overwrites the claimed origin
+with the actual worker ID and bounds evidence by the current worker envelope.
+A partition therefore closes admission even if the last source batch is younger
+than its scoped horizon. Tied observations retain all restrictions.
 
-Qualify account-bound transport, outage/partition and mixed-window behavior
-before removing Claude collector-covered inference-to-get-quota probe paths.
-Do not remove Codex probes without a qualified prompt-free Codex source.
-Keep normalized stable T3 0.0.45 logs, native/unified event parsing and their tests.
+Fresh anonymous restrictive evidence closes the relevant bound pool without
+rewriting its empty account key or counting it as required coverage. Its expiry
+cannot reopen an older account reading. A later full account-bound acquisition
+must supersede that history for a declared compatible window. A restrictive
+window with no proven mapping stays closed until explicit compatible binding or
+owner reconciliation; a later timestamp alone cannot resolve it. Known different
+accounts remain separate.
 
-The complete fork-retirement branch also needs official stable compatibility and
-runtime qualification, replacement tests for removed paths, full make test and
-make lint, independent review and a handoff to the owning Steward session.
-No production enablement, main merge, fleet release or service replacement is
-part of this isolated source slice.
+Bootstrapped workers receive credential-free recovery metadata separately from
+their execution catalog: full pool coverage, account, origins, required models,
+scoped age and shared recovery policy. These fields never authorize additional
+execution routes or models. Catalog identity includes this metadata; policy or
+coverage changes require the existing drain/revision boundary and persist over
+restart. Host stores and unrelated legacy policy remain local.
+
+The existing authenticated catalog ACK advertises collector capability. During
+first enrollment, the coordinator publishes a schema-1 catalog with covered
+routes omitted and backlog acceptance disabled. Only after that signed ACK does
+it publish the enriched catalog and require its exact revision ACK before making
+the worker session usable. Old peers are refused for covered workers. A mixed
+covered/uncovered worker is conservatively unavailable until this completes.
+Noncovered-only enrollment is unchanged. Busy retained workers require normal
+drain custody; discovery never overwrites their active catalog.
+
+Covered Claude routes never resume inference merely to read quota. A recovery
+grant requires current complete below-threshold source evidence after the actual
+durable stop/reset acknowledgement, the settle delay and current policy/coverage
+digest. Workers retain assignment, lease, epoch and newer local restriction
+vetoes. Missing, partial, stale or unqualified evidence cannot issue authority.
+Codex probes remain until a prompt-free Codex source is qualified. Stable T3
+0.0.45 normalized logs and native/unified event parsing remain supported.
+
+## Qualification before activation
+
+The complete fork-retirement branch requires official stable runtime
+qualification, full `make test` and `make lint`, independent review and handoff to
+the owning Steward session. Local mocked checks alone do not establish deployed
+processing latency or account binding on another host. No production enablement,
+main merge, fleet release or service replacement is part of this branch handoff.

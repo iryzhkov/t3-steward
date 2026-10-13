@@ -101,6 +101,9 @@ func TestTimingOverflowAndHorizonFailClosed(t *testing.T) {
 	o.Interval = time.Duration(math.MaxInt64)
 	requireFailure(t, ValidateOptions(o), "insufficient-scoped-age")
 	o = c.options
+	o.MaxObservationAge = 375 * time.Second
+	requireFailure(t, ValidateOptions(o), "insufficient-scoped-age")
+	o = c.options
 	o.MaxObservationAge = 360 * time.Second
 	requireFailure(t, ValidateOptions(o), "insufficient-scoped-age")
 	// Cancellation is returned through Run, never persisted as healthy data.

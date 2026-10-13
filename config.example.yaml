@@ -75,6 +75,8 @@ wait:
 # have passed the integration qualification in docs/claude-quota-collector.md.
 claude_quota_collector:
   enabled: false
+  source_id: ""
+  origin_worker_id: ""
   provider_instance_id: ""
   account_id: ""
   quota_pool: ""
@@ -140,7 +142,9 @@ resume:
   # The worker applies the same duration to a bucket stopped below
   # stop_percent: once the stored reading is that old and nothing on the
   # host is running to refresh it, one paused attempt per bucket epoch is
-  # resumed as a probe. Zero disables both probes.
+  # resumed as a probe. Zero disables both legacy probes.
+  # Declared Claude collector routes never infer to obtain quota, including
+  # during a collector outage; they require complete verified recovery.
   probe_after_reset: 5m
   # prompt: |
   #   Resume is permitted; inspect current instructions and the checkpoint...

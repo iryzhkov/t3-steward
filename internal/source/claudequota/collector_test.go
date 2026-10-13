@@ -31,7 +31,7 @@ func response(status int, body string) *http.Response {
 func testCollector(t *testing.T) *Collector {
 	t.Helper()
 	dir := t.TempDir()
-	o := Options{ProviderInstanceID: "claudeAgent", AccountID: testAccount, CredentialDir: dir,
+	o := Options{SourceID: "native-test", OriginWorkerID: "collector", ProviderInstanceID: "claudeAgent", AccountID: testAccount, CredentialDir: dir,
 		StatusPath: filepath.Join(dir, "status.json"), MaxObservationAge: 390 * time.Second, PipelineBudget: 50 * time.Second,
 		ModelBindings: []ModelBinding{{DisplayName: "Fable", Window: "seven_day_overage_included", Label: "Fable weekly", Selector: "fable", Models: []string{"claude-fable-5-1"}}}}
 	c, err := New(o)

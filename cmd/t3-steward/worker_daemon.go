@@ -299,6 +299,11 @@ type storeQuotaGuard struct {
 
 func (g storeQuotaGuard) Close() error { return g.store.Close() }
 
+func (g storeQuotaGuard) WithCollectorRecovery(settings config.BacklogV2) workerruntime.QuotaGuard {
+	g.HostQuotaGuard.Config.BacklogV2 = settings
+	return g
+}
+
 // hostUsageStore opens the host watchdog's state database, where the provider
 // token readings of this host's sessions are recorded, so the persistent worker
 // can forward them on its exchanges. Only the one-shot worker-exchange command
@@ -362,24 +367,29 @@ func (u tolerantUsage) WorkerUsageBatch(ctx context.Context, acknowledged []stri
 // the worker's T3 control client, which the probe rule asks whether anything
 // on the host is running that would produce a reading.
 func hostQuotaGuard(cfg config.Config, logger *slog.Logger, threads workerruntime.ThreadLister) workerruntime.QuotaGuard {
+	// Even without a local collector/store, an authenticated catalog must be
+	// able to supply covered-route policy and validate coordinator grants.
+	fallback := workerruntime.HostQuotaGuard{Config: cfg, Threads: threads}
 	if cfg.BacklogV2.Mode == "coordinator" {
-		return nil
+		return fallback
 	}
 	statePath, err := cfg.ResolveStatePath()
 	if err != nil {
 		logger.Warn("quota watchdog state path unavailable; owned attempts are not paused locally", "err", err)
-		return nil
+		fallback.Buckets = unavailableQuotaBuckets{}
+		return fallback
 	}
 	// Coordinator ownership leaves a persistent marker. A separately configured
 	// worker may still resolve the same state path, including while the
 	// coordinator is stopped; it must not open that database either.
 	if _, err := os.Lstat(statePath + ".coordinator.lock"); err == nil || !errors.Is(err, os.ErrNotExist) {
-		return nil
+		return fallback
 	}
 	store, err := sqlite.Open(statePath)
 	if err != nil {
 		logger.Warn("quota watchdog state unavailable; owned attempts are not paused locally", "path", statePath, "err", err)
-		return nil
+		fallback.Buckets = unavailableQuotaBuckets{}
+		return fallback
 	}
 	logger.Info("local quota pauses enabled from the watchdog state", "path", statePath)
 	return storeQuotaGuard{HostQuotaGuard: workerruntime.HostQuotaGuard{Config: cfg, Buckets: store, Threads: threads}, store: store}

@@ -6,12 +6,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/source/claudequota"
 )
 
 // ClaudeQuotaCollector uses only an existing local subscription login.
 // Disabled configuration never reads credentials or contacts the provider.
 type ClaudeQuotaCollector struct {
+	SourceID           string                    `yaml:"source_id"`
+	OriginWorkerID     string                    `yaml:"origin_worker_id"`
 	Enabled            bool                      `yaml:"enabled"`
 	ProviderInstanceID string                    `yaml:"provider_instance_id"`
 	AccountID          string                    `yaml:"account_id"`
@@ -39,7 +42,7 @@ type ClaudeQuotaModelBinding struct {
 // Runtime supplies the default status path next to its own state database.
 func (c Config) ClaudeQuotaOptions() claudequota.Options {
 	s := c.ClaudeQuotaCollector
-	o := claudequota.Options{ProviderInstanceID: s.ProviderInstanceID, AccountID: s.AccountID,
+	o := claudequota.Options{SourceID: s.SourceID, OriginWorkerID: s.OriginWorkerID, ProviderInstanceID: s.ProviderInstanceID, AccountID: s.AccountID,
 		CredentialDir: s.CredentialDir, StatusPath: s.StatusPath, Interval: s.Interval.D(), Jitter: s.Jitter.D(),
 		Timeout: s.Timeout.D(), PipelineBudget: s.PipelineBudget.D(),
 		MaxObservationAge: c.BacklogV2.QuotaPools[s.QuotaPool].ObservationMaxAge.D()}
@@ -58,6 +61,9 @@ func (c Config) validateClaudeQuotaCollector() error {
 			return fmt.Errorf("backlog_v2: quota pool %q requires a trimmed account_id and nonnegative observation_max_age", id)
 		}
 	}
+	if err := c.validateCollectorCoverage(); err != nil {
+		return err
+	}
 	s := c.ClaudeQuotaCollector
 	if !s.Enabled {
 		return nil
@@ -65,6 +71,23 @@ func (c Config) validateClaudeQuotaCollector() error {
 	pool, ok := c.BacklogV2.QuotaPools[s.QuotaPool]
 	if !ok || strings.TrimSpace(s.QuotaPool) != s.QuotaPool || pool.Provider != "claude" || pool.AccountID == "" || pool.AccountID != s.AccountID {
 		return errors.New("claude_quota_collector: an explicit matching Claude quota pool account_id is required")
+	}
+	if pool.Collector == nil || pool.Collector.SourceID != s.SourceID {
+		return errors.New("claude_quota_collector: source_id must match declared pool collector coverage")
+	}
+	localID := c.BacklogV2.LocalWorker.ID
+	if c.BacklogV2.Mode == "coordinator" {
+		localID = c.BacklogV2.Coordinator.ID
+	}
+	if localID == "" || localID != s.OriginWorkerID {
+		return errors.New("claude_quota_collector: origin_worker_id must match the configured runtime worker or coordinator identity")
+	}
+	originBound := false
+	for _, origin := range pool.Collector.Origins {
+		originBound = originBound || origin.WorkerID == localID && origin.ProviderInstanceID == s.ProviderInstanceID
+	}
+	if !originBound {
+		return errors.New("claude_quota_collector: local origin must be explicitly bound in the pool coverage")
 	}
 	if c.BacklogV2.Scheduling.Interval.D() <= 0 || c.BacklogV2.Transport.RequestTimeout.D() <= 0 {
 		return errors.New("claude_quota_collector: positive scheduling interval and transport request timeout are required")
@@ -99,7 +122,20 @@ func (c Config) validateClaudeQuotaCollector() error {
 	if !instanceBound {
 		return errors.New("claude_quota_collector: provider_instance_id must be explicitly bound to the quota pool")
 	}
+	requiredModels := map[string]domain.QuotaCollectorWindow{}
+	for _, w := range pool.Collector.RequiredWindows {
+		if w.Window != "five_hour" && w.Window != "seven_day" {
+			requiredModels[w.Window] = w
+		}
+	}
+	if len(requiredModels) != len(s.ModelBindings) {
+		return errors.New("claude_quota_collector: model bindings must exactly cover declared required model windows using exact models")
+	}
 	for _, binding := range s.ModelBindings {
+		w, ok := requiredModels[binding.Window]
+		if !ok || binding.Optional || !sameModelSet(w.Models, binding.Models) {
+			return errors.New("claude_quota_collector: model bindings must exactly cover declared required model windows using exact models")
+		}
 		for _, model := range binding.Models {
 			if !catalog[model] {
 				return errors.New("claude_quota_collector: model binding must name exact models already present in the pool catalog")

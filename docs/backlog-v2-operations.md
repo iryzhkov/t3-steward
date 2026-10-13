@@ -1999,8 +1999,8 @@ record with its evidence, visible in `t3-steward status` and
    once; `--force` overrides that. A store failure leaves the stored phase and
    is reported.
 
-The worker's resume rule treats an operator rearm exactly as a confirmed
-recovery, and its percentage rules apply to a rearm exactly as they apply
+For legacy routes, the worker's resume rule treats an operator rearm as a
+confirmed recovery, and its percentage rules apply to a rearm as they apply
 after a real reset: the recovery time is newer than the pause, so a paused
 owned attempt resumes on the first reconcile after `resume.reset_settle_delay`,
 without a reading, once the stored percentage is below `resume.below_percent`
@@ -2018,7 +2018,34 @@ defect. A bucket with no reset time keeps the consecutive-low-readings rearm.
 Known limitation: a rearm or probe racing a reading in the same millisecond
 can be overwritten by that reading; the action record still shows the rearm.
 
-The probe rule. When a bucket is `stopped` below the current `stop_percent`
+Declared Claude collector coverage overrides the legacy recovery and probe
+rules. Coverage depends on the configured pool, account, exact route and source
+origins, independently of the local producer's enabled state or health. A paused
+attempt needs a fresh complete source-qualified acquisition below the resume
+threshold, acquired after the stop, with a confirmed reset or explicit rearm and
+the settle delay satisfied. A rearm alone supplies no source reading. Historical
+anonymous keys remain unchanged; the explicit account binding and verified
+post-stop evidence resolve their pause. Newer or tied local restrictions veto
+recovery. A credential-free worker cannot resume autonomously from an outage or
+an elapsed reset. Coordinator resume commands also need current source-qualified
+recovery authority in addition to the existing identity and replay fences. Grants
+bind to the durable stop acknowledgement, acquisition, current coverage and policy,
+and an unexpired lease. Intent commit also rechecks a digest of the relevant quota
+facts and authenticated source envelopes inside the existing SQLite transaction;
+a newer central restriction invalidates the grant before it can be committed. Changing or removing coverage of a paused local attempt
+keeps its pause held until the owner reconciles the binding.
+
+The coordinator issues a grant only after the shared recovery rule accepts a fresh,
+complete acquisition for every governing window, below the recovery thresholds and
+past the reset confirmation and settle checks. Missing, partial, stale or unqualified
+evidence and newer restrictive observations cannot issue a grant. The grant carries
+that authenticated authority rather than copies of the quota windows. A credential-free
+worker checks the source, account, origin, acquisition, expiry, current policy binding,
+exact durable stop and assignment lease/epoch, then applies its newer local restriction
+veto. It neither acquires quota nor creates recovery authority from a clock deadline.
+
+The legacy probe rule, retained for Codex and routes without qualified Claude
+coverage. When a bucket is `stopped` below the current `stop_percent`
 (a burn-rate stop, for instance), its stored reading is older than
 `resume.probe_after_reset`, the worker can list the host's threads and none
 that is running matches the bucket, the worker resumes one paused attempt per

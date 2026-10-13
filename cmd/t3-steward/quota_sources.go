@@ -15,6 +15,9 @@ func quotaSources(cfg config.Config, logs daemon.Source) (daemon.Source, error) 
 	if !cfg.ClaudeQuotaCollector.Enabled {
 		return logs, nil
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	options := cfg.ClaudeQuotaOptions()
 	if options.StatusPath == "" {
 		path, err := cfg.ResolveStatePath()

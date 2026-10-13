@@ -36,6 +36,7 @@ type WorkerCommandTransport interface {
 }
 
 type FleetCoordinator struct {
+	QuotaRecoveryGrant CoordinatorQuotaRecoveryGrant
 	Store              FleetCoordinatorStore
 	Now                func() time.Time
 	LeaseRenewInterval time.Duration

@@ -136,6 +136,7 @@ func ReconcileThrottleResumes(
 	admissions []domain.QuotaAdmissionRecord,
 	pools []domain.QuotaPool,
 	now time.Time,
+	recovery ...QuotaRecoveryGrantAuthorizer,
 ) (ThrottleDeliveryReport, error) {
 	if store == nil {
 		return ThrottleDeliveryReport{}, fmt.Errorf("throttle delivery store is required")
@@ -147,7 +148,7 @@ func ReconcileThrottleResumes(
 	if err != nil {
 		return ThrottleDeliveryReport{}, fmt.Errorf("load throttle attempt records: %w", err)
 	}
-	transitions, commands, err := PlanThrottleResumes(previous, admissions, pools, now)
+	transitions, commands, err := PlanThrottleResumes(previous, admissions, pools, now, recovery...)
 	if err != nil {
 		return ThrottleDeliveryReport{}, err
 	}
@@ -377,6 +378,7 @@ func PlanThrottleResumes(
 	admissions []domain.QuotaAdmissionRecord,
 	pools []domain.QuotaPool,
 	now time.Time,
+	recovery ...QuotaRecoveryGrantAuthorizer,
 ) ([]domain.ThrottleAttemptTransition, []domain.ThrottleCommand, error) {
 	if now.IsZero() {
 		return nil, nil, fmt.Errorf("throttle resume time must be set")
@@ -446,6 +448,16 @@ func PlanThrottleResumes(
 		if pool.ActiveAssignments >= pool.MaxConcurrent {
 			continue
 		}
+		var grant *domain.QuotaRecoveryGrant
+		if pool.Collector != nil {
+			if len(recovery) == 0 || recovery[0] == nil {
+				continue
+			}
+			grant = recovery[0](pool, record, now)
+			if grant == nil {
+				continue
+			}
+		}
 		pool.ActiveAssignments++
 		poolByID[pool.ID] = pool
 
@@ -455,6 +467,7 @@ func PlanThrottleResumes(
 		reason := throttleResumeReason(pool, admission)
 		record.Command = followupThrottleCommand(record.Command, domain.ThrottleCommandResume, record.Revision, record.Checkpoint, now)
 		record.Command.Reason = reason
+		record.Command.QuotaRecovery = grant
 		record.Delivery = domain.ThrottleDeliveryPending
 		record.Result = ""
 		record.Control = domain.ControlResuming
@@ -822,6 +835,14 @@ func cloneThrottleCommand(command domain.ThrottleCommand) domain.ThrottleCommand
 	command.BucketEpochs = cloneDomainBucketEpochs(command.BucketEpochs)
 	command.Deadline = cloneTime(command.Deadline)
 	command.Checkpoint = cloneCheckpoint(command.Checkpoint)
+	if command.QuotaRecovery != nil {
+		grant := *command.QuotaRecovery
+		grant.EvidenceScope.ProviderInstanceIDs = append([]string(nil), grant.EvidenceScope.ProviderInstanceIDs...)
+		grant.EvidenceScope.Models = append([]string(nil), grant.EvidenceScope.Models...)
+		grant.EvidenceScope.RequiredWindows = append([]domain.QuotaCollectorWindow(nil), grant.EvidenceScope.RequiredWindows...)
+		for index := range grant.EvidenceScope.RequiredWindows { grant.EvidenceScope.RequiredWindows[index].Models = append([]string(nil), grant.EvidenceScope.RequiredWindows[index].Models...) }
+		command.QuotaRecovery = &grant
+	}
 	return command
 }
 

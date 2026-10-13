@@ -188,10 +188,10 @@ type Resume struct {
 	Prompt string `yaml:"prompt"`
 	// MaxIntentAge cancels intents older than this.
 	MaxIntentAge Duration `yaml:"max_intent_age"`
-	// ProbeAfterReset: when the reset time has passed by this long and no
-	// reading has confirmed it (nothing is running to produce one), one
-	// stopped thread per provider is resumed to obtain that reading. Zero
-	// disables the probe.
+	// ProbeAfterReset permits one inference probe on legacy routes after
+	// reset or an old stopped reading. Zero disables legacy probes.
+	// Declared Claude collector routes never infer to obtain quota, even
+	// when the collector is unavailable.
 	ProbeAfterReset Duration `yaml:"probe_after_reset"`
 }
 
@@ -503,8 +503,9 @@ type V2ResultSecretScan struct {
 }
 
 type BacklogV2 struct {
-	ResultSecretScan V2ResultSecretScan `yaml:"result_secret_scan"`
-	ProviderResume   V2ProviderResume   `yaml:"provider_resume"`
+	CollectorRecovery *CollectorRecoveryMetadata `yaml:"-" json:"collectorRecovery,omitempty"`
+	ResultSecretScan  V2ResultSecretScan         `yaml:"result_secret_scan"`
+	ProviderResume    V2ProviderResume           `yaml:"provider_resume"`
 	// ReviewRoutes classifies explicit routes without choosing routes or applying role policy.
 	ReviewRoutes      map[string]ReviewRouteMetadata `yaml:"review_routes"`
 	Mode              string                         `yaml:"mode"`
@@ -756,8 +757,9 @@ type V2SetupProfile struct {
 }
 
 type V2QuotaPool struct {
-	Provider      string `yaml:"provider"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
+	Collector     *V2QuotaCollectorCoverage `yaml:"collector"`
+	Provider      string                    `yaml:"provider"`
+	MaxConcurrent int                       `yaml:"max_concurrent"`
 	// AccountID is an explicit account binding, never inferred from the pool name.
 	AccountID string `yaml:"account_id"`
 	// ObservationMaxAge scopes a collector horizon to this pool. Zero preserves

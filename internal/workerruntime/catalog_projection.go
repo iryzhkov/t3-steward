@@ -13,25 +13,27 @@ import (
 // CatalogProjection contains only this worker's execution catalog. Host paths,
 // secrets and shared quota admission policy never cross this boundary.
 type CatalogProjection struct {
-	SchemaVersion int                              `json:"schemaVersion"`
-	Revision      string                           `json:"revision"`
-	WorkerID      string                           `json:"workerId"`
-	CoordinatorID string                           `json:"coordinatorId"`
-	Worker        config.V2Worker                  `json:"worker"`
-	Projects      map[string]config.V2Project      `json:"projects"`
-	SetupProfiles map[string]config.V2SetupProfile `json:"setupProfiles"`
-	Transport     config.V2Transport               `json:"transport"`
-	MessageLimits config.V2MessageLimits           `json:"messageLimits"`
-	Freshness     config.V2Freshness               `json:"freshness"`
-	Leases        config.V2Leases                  `json:"leases"`
+	CollectorRecovery *config.CollectorRecoveryMetadata `json:"collectorRecovery,omitempty"`
+	SchemaVersion     int                               `json:"schemaVersion"`
+	Revision          string                            `json:"revision"`
+	WorkerID          string                            `json:"workerId"`
+	CoordinatorID     string                            `json:"coordinatorId"`
+	Worker            config.V2Worker                   `json:"worker"`
+	Projects          map[string]config.V2Project       `json:"projects"`
+	SetupProfiles     map[string]config.V2SetupProfile  `json:"setupProfiles"`
+	Transport         config.V2Transport                `json:"transport"`
+	MessageLimits     config.V2MessageLimits            `json:"messageLimits"`
+	Freshness         config.V2Freshness                `json:"freshness"`
+	Leases            config.V2Leases                   `json:"leases"`
 }
 
 func BuildCatalogProjection(settings config.BacklogV2, workerID string) (CatalogProjection, error) {
+	settings.CollectorRecovery = (config.Config{BacklogV2: settings}).CollectorRecoveryMetadataForWorker(workerID)
 	binding, err := BuildWorkerBinding(settings, workerID, time.Now())
 	if err != nil {
 		return CatalogProjection{}, err
 	}
-	p := CatalogProjection{SchemaVersion: 1, Revision: binding.CatalogRevision, WorkerID: workerID, CoordinatorID: settings.Coordinator.ID, Worker: settings.Workers[workerID],
+	p := CatalogProjection{CollectorRecovery: settings.CollectorRecovery, SchemaVersion: 1, Revision: binding.CatalogRevision, WorkerID: workerID, CoordinatorID: settings.Coordinator.ID, Worker: settings.Workers[workerID],
 		Projects: map[string]config.V2Project{}, SetupProfiles: map[string]config.V2SetupProfile{}, Transport: settings.Transport, MessageLimits: settings.MessageLimits, Freshness: settings.Freshness, Leases: settings.Leases}
 	for name, project := range settings.Projects {
 		if !slices.Contains(project.Workers, workerID) {
@@ -75,7 +77,11 @@ func (p CatalogProjection) Settings(bootstrap WorkerBootstrap, home string) (con
 			return config.BacklogV2{}, fmt.Errorf("provider %q is absent from bootstrap", instance)
 		}
 	}
+	if err := p.CollectorRecovery.Validate(p.Worker); err != nil {
+		return config.BacklogV2{}, err
+	}
 	settings := config.Default().BacklogV2
+	settings.CollectorRecovery = p.CollectorRecovery
 	settings.Mode = "worker"
 	settings.Coordinator.ID = p.CoordinatorID
 	settings.LocalWorker = config.V2LocalWorker{ID: p.WorkerID, Epoch: p.Worker.Epoch}

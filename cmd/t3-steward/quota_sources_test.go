@@ -28,12 +28,16 @@ func TestQuotaSourceCompositionDisabledAndEnabledAreInert(t *testing.T) {
 	}
 	dir := t.TempDir()
 	cfg.StatePath = filepath.Join(dir, "state.db")
+	cfg.ClaudeQuotaCollector.SourceID = "native-test"
+	cfg.ClaudeQuotaCollector.OriginWorkerID = "collector"
+	cfg.BacklogV2.LocalWorker.ID = "collector"
 	cfg.ClaudeQuotaCollector.Enabled = true
 	cfg.ClaudeQuotaCollector.ProviderInstanceID = "claudeAgent"
 	cfg.ClaudeQuotaCollector.AccountID = "11111111-2222-3333-4444-555555555555"
 	cfg.ClaudeQuotaCollector.QuotaPool = "primary"
 	cfg.ClaudeQuotaCollector.CredentialDir = filepath.Join(dir, "missing-auth")
-	cfg.BacklogV2.QuotaPools = map[string]config.V2QuotaPool{"primary": {AccountID: cfg.ClaudeQuotaCollector.AccountID, ObservationMaxAge: config.Duration(390 * time.Second)}}
+	cfg.BacklogV2.Workers = map[string]config.V2Worker{"collector": {Providers: map[string]config.V2Provider{"claudeAgent": {QuotaPool: "primary", Models: []string{"claude-test"}}}}}
+	cfg.BacklogV2.QuotaPools = map[string]config.V2QuotaPool{"primary": {Provider: "claude", MaxConcurrent: 1, Collector: &config.V2QuotaCollectorCoverage{SourceID: "native-test", Origins: []domain.QuotaCollectorOrigin{{WorkerID: "collector", ProviderInstanceID: "claudeAgent"}}, RequiredWindows: []domain.QuotaCollectorWindow{{Window: "five_hour"}, {Window: "seven_day"}}}, AccountID: cfg.ClaudeQuotaCollector.AccountID, ObservationMaxAge: config.Duration(390 * time.Second)}}
 	source, err = quotaSources(cfg, logs)
 	if err != nil || source == logs {
 		t.Fatalf("enabled source=%T err=%v", source, err)

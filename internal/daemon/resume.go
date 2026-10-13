@@ -152,7 +152,7 @@ func (d *Daemon) advanceResumes(ctx context.Context, threads []domain.Thread, st
 		// Remember a probe so only one thread per provider tests a reset
 		// that no reading has confirmed yet.
 		for _, key := range intent.Buckets {
-			if st, ok := byKey[key]; ok && st.ResetsAt != nil && !st.ObservedAt.After(*st.ResetsAt) && now.After(*st.ResetsAt) {
+			if st, ok := byKey[key]; ok && !CollectorBucketInferenceDisabled(d.cfg, st) && st.ResetsAt != nil && !st.ObservedAt.After(*st.ResetsAt) && now.After(*st.ResetsAt) {
 				d.probed[key.ProviderInstanceID] = *st.ResetsAt
 			}
 		}

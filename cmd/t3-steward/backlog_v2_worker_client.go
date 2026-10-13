@@ -131,6 +131,7 @@ func newCoordinatorWorkerSessions(
 	resolver workerruntime.ProtocolCredentialResolver,
 	commandFactory workerproto.CommandFactory,
 	artifacts backlog.CoordinatorArtifactStore,
+	recovery ...backlog.CoordinatorQuotaRecoveryGrant,
 ) (*coordinatorWorkerSessions, error) {
 	if store == nil || coordinatorEpoch < 1 || resolver == nil {
 		return nil, fmt.Errorf("coordinator worker sessions require store, authority, and credential resolver")
@@ -154,6 +155,9 @@ func newCoordinatorWorkerSessions(
 	}
 	sort.Strings(workerIDs)
 	coordinator := backlog.FleetCoordinator{Store: store, ProviderResume: coordinatorProviderResume(settings), LeaseRenewInterval: settings.Leases.RenewInterval.D()}
+	if len(recovery) > 0 {
+		coordinator.QuotaRecoveryGrant = recovery[0]
+	}
 	cached := map[string]coordinatorWorkerSession{}
 	skips := make(map[string]*checkpointScanSkips, len(workerIDs))
 	for _, workerID := range workerIDs {
@@ -681,6 +685,7 @@ func newCoordinatorWorkerSession(
 			return coordinatorWorkerSession{}, err
 		}
 		expectedRevision := projection.Revision
+		collectorCapable := false
 		snapshots, err := store.LoadWorkerSnapshots(ctx)
 		if err != nil {
 			return coordinatorWorkerSession{}, err
@@ -688,14 +693,15 @@ func newCoordinatorWorkerSession(
 		for _, snapshot := range snapshots {
 			if snapshot.WorkerID == workerID && snapshot.Inventory.CatalogRevision != "" {
 				expectedRevision = snapshot.Inventory.CatalogRevision
+				for _, capability := range snapshot.Inventory.Capabilities { if capability == workerproto.CapabilityQuotaCollectorProvenance { collectorCapable = true } }
 			}
 		}
-		accepted, err := catalogClient.Catalog(ctx, workerruntime.CatalogRequest{Projection: projection, ExpectedRevision: expectedRevision})
+		accepted, err := publishCollectorCatalog(ctx, catalogClient, settings, workerID, expectedRevision, collectorCapable)
 		if err != nil {
 			slog.Warn("worker did not accept the catalog", "worker", workerID, "revision", projection.Revision, "expected", expectedRevision, "error", err)
 			return coordinatorWorkerSession{}, err
 		}
-		if accepted["revision"] != binding.CatalogRevision || accepted["workerId"] != workerID {
+		if accepted.Revision != binding.CatalogRevision || accepted.WorkerID != workerID {
 			return coordinatorWorkerSession{}, errors.New("worker accepted wrong catalog")
 		}
 	}

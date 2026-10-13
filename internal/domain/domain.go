@@ -27,7 +27,7 @@ type BucketKey struct {
 	// "claudeAgent").
 	ProviderInstanceID string `json:"providerInstanceId"`
 	// AccountID is the provider account when the provider reports one. Empty
-	// means "the only account this provider instance is signed in to".
+	// means the provider did not report an account; it proves no account binding.
 	AccountID string `json:"accountId"`
 	// LimitID is the provider's stable limit identity. When a provider has no
 	// id the normalizer falls back to the limit name.
@@ -63,7 +63,8 @@ func ParseBucketKey(s string) BucketKey {
 
 // QuotaSnapshot is one observation of one bucket.
 type QuotaSnapshot struct {
-	Key BucketKey `json:"key"`
+	Key        BucketKey        `json:"key"`
+	Provenance *QuotaProvenance `json:"provenance,omitempty"`
 	// LimitName is a human-readable limit name for messages.
 	LimitName string `json:"limitName"`
 	// UsedPercent is 0..100. Providers that report remaining percent are
@@ -119,8 +120,12 @@ func (p Phase) Rank() int {
 
 // BucketState is the persisted state machine of one bucket.
 type BucketState struct {
-	Key   BucketKey `json:"key"`
-	Phase Phase     `json:"phase"`
+	// OriginValidUntil is stamped from an authenticated remote snapshot, not
+	// producer payload. Local native observations leave it nil.
+	OriginValidUntil *time.Time       `json:"originValidUntil,omitempty"`
+	Key              BucketKey        `json:"key"`
+	Provenance       *QuotaProvenance `json:"provenance,omitempty"`
+	Phase            Phase            `json:"phase"`
 	// Epoch identifies the reset window the phase belongs to. It is derived
 	// from ResetsAt; an empty epoch means the provider reported no reset time.
 	Epoch string `json:"epoch"`

@@ -17,6 +17,7 @@ type QuotaBridgeStore interface {
 }
 
 type QuotaPoolBinding struct {
+	Collector           *domain.QuotaCollectorCoverage
 	ID                  string
 	Provider            string
 	AccountID           string
@@ -113,7 +114,10 @@ func (b QuotaBridge) ReconcileObservations(ctx context.Context, reservations []Q
 			continue
 		}
 		pool := &pools[poolIndex[poolID]]
-		if pool.AccountID != "" && state.Key.AccountID != pool.AccountID {
+		if pool.AccountID != "" && state.Key.AccountID != "" && state.Key.AccountID != pool.AccountID {
+			continue
+		}
+		if pool.AccountID != "" && state.Key.AccountID == "" && state.Phase.Rank() == 0 && state.UsedPercent < 100 {
 			continue
 		}
 		if !bucketGovernsPool(bindingByID[poolID], state) {
@@ -229,6 +233,10 @@ func bucketGovernsPool(binding QuotaPoolBinding, state domain.BucketState) bool 
 			return false
 		}
 	}
+	if binding.Collector != nil {
+		pool := domain.QuotaPool{Collector: binding.Collector, Models: binding.Models, AccountID: binding.AccountID, ProviderInstanceIDs: binding.ProviderInstanceIDs}
+		return domain.CollectorBucketRelevant(pool, state)
+	}
 	selector := strings.ToLower(strings.TrimSpace(state.ModelSelector))
 	if selector == "" || len(binding.Models) == 0 {
 		return true
@@ -239,6 +247,11 @@ func bucketGovernsPool(binding QuotaPoolBinding, state domain.BucketState) bool 
 		}
 	}
 	return false
+}
+
+// QuotaBridgePools projects configured bindings without reading runtime state.
+func QuotaBridgePools(bindings []QuotaPoolBinding) ([]domain.QuotaPool, map[string]string, error) {
+	return quotaBridgePools(bindings)
 }
 
 func quotaBridgePools(bindings []QuotaPoolBinding) ([]domain.QuotaPool, map[string]string, error) {
@@ -273,7 +286,7 @@ func quotaBridgePools(bindings []QuotaPoolBinding) ([]domain.QuotaPool, map[stri
 			owners[instance] = binding.ID
 		}
 		pools = append(pools, domain.QuotaPool{
-			ID: binding.ID, Provider: binding.Provider, AccountID: binding.AccountID,
+			ID: binding.ID, Provider: binding.Provider, AccountID: binding.AccountID, Collector: binding.Collector, Models: append([]string(nil), binding.Models...),
 			ProviderInstanceIDs: instances, Admission: domain.AdmissionClosed,
 			MaxConcurrent: binding.MaxConcurrent,
 		})

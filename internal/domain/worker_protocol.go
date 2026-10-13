@@ -49,6 +49,7 @@ type WorkerJournalExcerpt struct {
 }
 
 type WorkerAssignmentObservation struct {
+	QuotaStop       *QuotaStopObservation `json:"quotaStop,omitempty"`
 	Journal         *WorkerJournalExcerpt `json:"journal,omitempty"`
 	AssignmentID    string                `json:"assignmentId"`
 	AssignmentEpoch int64                 `json:"assignmentEpoch"`

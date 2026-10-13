@@ -6,19 +6,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
 const collectorAccount = "11111111-2222-3333-4444-555555555555"
 
 func collectorConfig() Config {
 	c := Default()
+	c.ClaudeQuotaCollector.SourceID = "native-test"
+	c.ClaudeQuotaCollector.OriginWorkerID = "collector"
+	c.BacklogV2.LocalWorker.ID = "collector"
 	c.ClaudeQuotaCollector.Enabled = true
 	c.ClaudeQuotaCollector.ProviderInstanceID = "claudeAgent"
 	c.ClaudeQuotaCollector.AccountID = collectorAccount
 	c.ClaudeQuotaCollector.QuotaPool = "claude-primary"
 	c.ClaudeQuotaCollector.ModelBindings = []ClaudeQuotaModelBinding{{DisplayName: "Fable",
 		Window: "seven_day_overage_included", Label: "Fable weekly", Selector: "fable", Models: []string{"claude-fable-5-1"}}}
-	c.BacklogV2.QuotaPools = map[string]V2QuotaPool{"claude-primary": {Provider: "claude", AccountID: collectorAccount, ObservationMaxAge: Duration(390 * time.Second), MaxConcurrent: 1}}
+	c.BacklogV2.QuotaPools = map[string]V2QuotaPool{"claude-primary": {Collector: &V2QuotaCollectorCoverage{SourceID: "native-test", Origins: []domain.QuotaCollectorOrigin{{WorkerID: "collector", ProviderInstanceID: "claudeAgent"}}, RequiredWindows: []domain.QuotaCollectorWindow{{Window: "five_hour"}, {Window: "seven_day"}, {Window: "seven_day_overage_included", Models: []string{"claude-fable-5-1"}}}}, Provider: "claude", AccountID: collectorAccount, ObservationMaxAge: Duration(390 * time.Second), MaxConcurrent: 1}}
 	c.BacklogV2.Workers = map[string]V2Worker{"collector": {Providers: map[string]V2Provider{"claudeAgent": {QuotaPool: "claude-primary", Models: []string{"claude-fable-5-1"}}}}}
 	return c
 }
@@ -54,6 +59,11 @@ func TestCollectorExplicitAccountScopedHorizonAndCatalog(t *testing.T) {
 			p.ObservationMaxAge = Duration(360 * time.Second)
 			c.BacklogV2.QuotaPools["claude-primary"] = p
 		}, "insufficient-scoped-age"},
+		{"exact acquisition plus pipeline boundary", func(c *Config) {
+			p := c.BacklogV2.QuotaPools["claude-primary"]
+			p.ObservationMaxAge = Duration(375 * time.Second)
+			c.BacklogV2.QuotaPools["claude-primary"] = p
+		}, "insufficient-scoped-age"},
 		{"global age substituted", func(c *Config) {
 			p := c.BacklogV2.QuotaPools["claude-primary"]
 			p.ObservationMaxAge = 0
@@ -62,6 +72,8 @@ func TestCollectorExplicitAccountScopedHorizonAndCatalog(t *testing.T) {
 		{"pipeline missing pass", func(c *Config) { c.ClaudeQuotaCollector.PipelineBudget = Duration(40 * time.Second) }, "pipeline_budget"},
 		{"fast poll", func(c *Config) { c.ClaudeQuotaCollector.Interval = Duration(60 * time.Second) }, "invalid-timing"},
 		{"long timeout", func(c *Config) { c.ClaudeQuotaCollector.Timeout = Duration(11 * time.Second) }, "invalid-timing"},
+		{"false local origin", func(c *Config) { c.ClaudeQuotaCollector.OriginWorkerID = "other" }, "runtime worker"},
+		{"unproven source", func(c *Config) { c.ClaudeQuotaCollector.SourceID = "other" }, "source_id"},
 		{"alias model", func(c *Config) { c.ClaudeQuotaCollector.ModelBindings[0].Models = []string{"fable"} }, "exact models"},
 		{"unbound instance", func(c *Config) { c.ClaudeQuotaCollector.ProviderInstanceID = "claude-other" }, "explicitly bound"},
 		{"duplicate window", func(c *Config) {

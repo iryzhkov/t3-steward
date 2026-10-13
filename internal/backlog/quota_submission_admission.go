@@ -181,14 +181,14 @@ func (a SubmissionQuotaAdmission) evaluate(records sqlite.CoordinatorRecords, sn
 		// ReadQuotaWindows selected each governing reading. Derive budgets only
 		// from those exact newest keys, so irrelevant or older readings cannot drift.
 		var states []domain.BucketState
+		selectedKeys := map[domain.BucketKey]bool{}
 		for _, reading := range entry.WindowSet.Windows {
-			var newest domain.BucketState
-			for _, state := range snapshot.States {
-				if state.Key == reading.Key && (newest.ObservedAt.IsZero() || state.ObservedAt.After(newest.ObservedAt)) {
-					newest = state
-				}
+			selectedKeys[reading.Key] = true
+		}
+		for _, state := range domain.NewestQuotaStates(snapshot.States) {
+			if selectedKeys[state.Key] {
+				states = append(states, state)
 			}
-			states = append(states, newest)
 		}
 		windowOwners := map[string]string{}
 		for _, state := range states {

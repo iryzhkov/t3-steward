@@ -55,6 +55,8 @@ type ModelBinding struct {
 
 // Options names the collector's existing local login and the pool it measures.
 type Options struct {
+	SourceID           string
+	OriginWorkerID     string
 	ProviderInstanceID string
 	AccountID          string
 	CredentialDir      string
@@ -105,6 +107,9 @@ func defaults(options Options) Options {
 // Empty paths let configuration validation run before runtime paths are resolved.
 func ValidateOptions(options Options) error {
 	options = defaults(options)
+	if options.SourceID == "" || strings.TrimSpace(options.SourceID) != options.SourceID || options.OriginWorkerID == "" || strings.TrimSpace(options.OriginWorkerID) != options.OriginWorkerID {
+		return fail("invalid-source-origin")
+	}
 	if options.ProviderInstanceID == "" || strings.TrimSpace(options.ProviderInstanceID) != options.ProviderInstanceID || !validAccountID(options.AccountID) {
 		return fail("invalid-binding")
 	}
@@ -120,6 +125,9 @@ func ValidateOptions(options Options) error {
 			return fail("insufficient-scoped-age")
 		}
 		remaining -= bound
+	}
+	if remaining == 0 {
+		return fail("insufficient-scoped-age")
 	}
 	if options.StatusPath != "" && !filepath.IsAbs(options.StatusPath) {
 		return fail("invalid-status-path")
@@ -374,8 +382,10 @@ func (c *Collector) collect(parent context.Context, started time.Time) ([]domain
 		return nil, fail("event-identity-unavailable")
 	}
 	eventID := "claude-native/" + hex.EncodeToString(eventBytes)
+	provenance := &domain.QuotaProvenance{SourceID: c.options.SourceID, AcquisitionID: eventID, OriginWorkerID: c.options.OriginWorkerID, AcquiredAt: started}
 	for i := range snapshots {
 		snapshots[i].SourceEventID = eventID
+		snapshots[i].Provenance = domain.CloneQuotaProvenance(provenance)
 	}
 	return snapshots, nil
 }
@@ -472,7 +482,7 @@ func validWindow(raw json.RawMessage, now time.Time) (float64, time.Time, error)
 		return 0, time.Time{}, fail("invalid-window")
 	}
 	used := *window.Utilization
-	if math.IsNaN(used) || math.IsInf(used, 0) || used < 0 || used > 100 {
+	if !domain.ValidQuotaPercent(used) {
 		return 0, time.Time{}, fail("invalid-window")
 	}
 	reset, err := time.Parse(time.RFC3339Nano, *window.ResetsAt)
