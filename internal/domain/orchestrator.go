@@ -320,6 +320,7 @@ type Attempt struct {
 	FinalSummaryArtifactID     string            `json:"finalSummaryArtifactId,omitempty"`
 	AdminNotBefore             *time.Time        `json:"adminNotBefore,omitempty"`
 	AdminForceStart            bool              `json:"adminForceStart,omitempty"`
+	AdminImportance            *int              `json:"adminImportance,omitempty"`
 	Failure                    string            `json:"failure,omitempty"`
 	// FailureClass and FailureReason are the coordinator's classification of
 	// Failure (see ClassifyFailure), recorded once the attempt is terminal.

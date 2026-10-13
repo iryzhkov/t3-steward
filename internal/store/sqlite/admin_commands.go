@@ -119,6 +119,7 @@ var (
 )
 
 type adminEventDetail struct {
+	Reprioritize     *domain.ReprioritizeReceipt `json:"reprioritize,omitempty"`
 	CommandKind      domain.AdminCommandKind     `json:"commandKind"`
 	State            domain.AdminCommandState    `json:"state"`
 	ExpectedRevision int64                       `json:"expectedRevision"`

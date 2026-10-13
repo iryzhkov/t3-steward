@@ -57,6 +57,14 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 		return domain.AdminCommandDecision{}, fmt.Errorf("%w: command %q is %q", ErrAdminCommandStateConflict, command.ID, command.State)
 	}
 
+	if command.Kind == domain.AdminCommandReprioritize &&
+		(command.TargetType != domain.AdminTargetWorkflowRun || application.Attempt != nil ||
+			len(application.RelatedAttempts) != 0 || application.NewAttempt != nil ||
+			application.WorkflowRun != nil || application.Schedule != nil || application.ScheduleTrigger != nil ||
+			application.PauseIntent != nil || application.SafetyFingerprint != "" || application.SafetyValidUntil != nil) {
+		return domain.AdminCommandDecision{}, fmt.Errorf("%w: reprioritize requires run intent only", ErrInvalidAdminCommandOutcome)
+	}
+
 	if application.State == domain.AdminCommandApplied &&
 		(command.Kind == domain.AdminCommandPause) != (application.PauseIntent != nil) {
 		return domain.AdminCommandDecision{}, fmt.Errorf("%w: pause intent does not match command kind", ErrInvalidAdminCommandOutcome)
@@ -177,6 +185,7 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 		application.Attempt, application.RelatedAttempts, application.NewAttempt, application.WorkflowRun, application.Schedule = nil, nil, nil, nil, nil
 	}
 
+	var reprioritizeReceipt *domain.ReprioritizeReceipt
 	if application.State == domain.AdminCommandApplied {
 		switch command.TargetType {
 		case domain.AdminTargetAttempt:
@@ -211,6 +220,17 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 				}
 			}
 		case domain.AdminTargetWorkflowRun:
+			if command.Kind == domain.AdminCommandReprioritize {
+				var failure string
+				reprioritizeReceipt, failure, err = applyRunReprioritizeTx(ctx, tx, command, application.AppliedAt)
+				if err != nil {
+					return domain.AdminCommandDecision{}, err
+				}
+				if failure != "" {
+					application.State, application.Failure = domain.AdminCommandRejected, failure
+				}
+				break
+			}
 			// Only a whole-run cancel of a run with no live task targets the run
 			// itself: there is no attempt left to fence on, so the run's own
 			// revision is the fence.
@@ -273,7 +293,7 @@ func (s *Store) ApplyAdminCommand(ctx context.Context, application domain.AdminC
 	}
 	detail, err := json.Marshal(adminEventDetail{
 		CommandKind: command.Kind, State: command.State, ExpectedRevision: command.ExpectedRevision,
-		CurrentTarget: currentTarget, Failure: command.Failure,
+		CurrentTarget: currentTarget, Failure: command.Failure, Reprioritize: reprioritizeReceipt,
 	})
 	if err != nil {
 		return domain.AdminCommandDecision{}, fmt.Errorf("encode admin application audit detail: %w", err)

@@ -240,6 +240,10 @@ func planAdminCommandWithWaits(records sqlite.CoordinatorRecords, workers []doma
 			}
 		}
 	case domain.AdminTargetWorkflowRun:
+		if command.Kind == domain.AdminCommandReprioritize {
+			// Selection belongs to the application transaction, not this snapshot.
+			return application, nil, nil
+		}
 		if !domain.AdminCommandRunScoped(command.Kind, command.Payload) {
 			return rejectApplication(application, "unsupported admin target"), nil, nil
 		}
