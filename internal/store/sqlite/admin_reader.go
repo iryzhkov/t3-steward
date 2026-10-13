@@ -35,6 +35,7 @@ type AdminReader struct {
 	invalid        bool                                            // protected by lease
 	fence          func(context.Context, *sql.Conn) (int64, error) // per-instance failure seam
 	waiting        func()                                          // per-instance contended-wait proof
+	admitted       func()                                          // per-instance acquired-lease proof
 }
 
 // OpenAdminReader opens an existing file, without ownership or migrations.
@@ -108,6 +109,9 @@ func (r *AdminReader) Assemble(ctx context.Context, callback func(context.Contex
 		}
 	}
 	defer func() { r.lease <- struct{}{} }()
+	if r.admitted != nil {
+		r.admitted()
+	}
 	// This check linearizes admission against closing the closed channel.
 	select {
 	case <-r.closed:
@@ -115,7 +119,8 @@ func (r *AdminReader) Assemble(ctx context.Context, callback func(context.Contex
 	default:
 	}
 	if r.invalid {
-		return token, ErrAdminObserver
+		// Admission can win against cancellation when the released lease is ready.
+		return token, errors.Join(ErrAdminObserver, ctx.Err())
 	}
 	defer func() {
 		if canceled := ctx.Err(); canceled != nil {

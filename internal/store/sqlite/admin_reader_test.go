@@ -318,6 +318,74 @@ func adminLease(t *testing.T, closing bool) {
 	}
 }
 
+func TestAdminReaderCancellationObserverOverlap(t *testing.T) {
+	for _, mode := range []string{"contended-invalid", "available-invalid", "contended-healthy"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, _, r := adminFixture(t)
+			conn, generation := r.conn, r.generation
+			lost := mode != "contended-healthy"
+			canceled, cancel := context.WithCancel(ctx)
+			defer cancel()
+			invoked := false
+			callback := func(context.Context, *Store) error {
+				invoked = true
+				return errors.New("canceled callback must not run")
+			}
+			var waiter <-chan adminOutcome
+			if mode == "available-invalid" {
+				adminAssert(t, conn.Close(), true)
+				rejected := adminAwait(t, ctx, adminStart(r, ctx, callback))
+				adminAssert(t, nil, errors.Is(rejected.err, ErrAdminObserver) && rejected.token == (AdminReadToken{}) && !invoked)
+				r.admitted = cancel // cancel AFTER the fast lease acquisition
+				waiter = adminStart(r, canceled, callback)
+			} else {
+				entered, release := make(chan struct{}), make(chan struct{})
+				active := adminStart(r, ctx, func(context.Context, *Store) error {
+					close(entered)
+					<-release
+					return nil
+				})
+				adminAwait(t, ctx, entered)
+				waiting, admit := make(chan struct{}), make(chan struct{})
+				r.waiting = func() { close(waiting); <-admit }
+				r.admitted = cancel // force cancellation before the invalid-reader branch
+				waiter = adminStart(r, canceled, callback)
+				adminAwait(t, ctx, waiting)
+				if lost {
+					adminAssert(t, conn.Close(), true)
+				}
+				close(release)
+				completed := adminAwait(t, ctx, active) // invalidation and lease release precede admission
+				adminAssert(t, nil, errors.Is(completed.err, ErrAdminObserver) == lost && (completed.token == (AdminReadToken{})) == lost)
+				close(admit) // only lease is ready; cancellation is forced by admitted
+			}
+			result := adminAwait(t, ctx, waiter)
+			adminAssert(t, nil, errors.Is(result.err, context.Canceled) && errors.Is(result.err, ErrAdminObserver) == lost && result.token == (AdminReadToken{}) && !invoked)
+			adminAssert(t, nil, r.conn == conn && r.generation == generation && r.invalid == lost)
+			r.admitted, r.waiting = nil, nil // all assembly goroutines have joined
+			select {
+			case <-r.lease:
+				r.lease <- struct{}{}
+			default:
+				t.Fatal("canceled admission leaked its lease")
+			}
+			if lost {
+				rejected := adminAwait(t, ctx, adminStart(r, ctx, callback))
+				adminAssert(t, nil, errors.Is(rejected.err, ErrAdminObserver) && rejected.token == (AdminReadToken{}) && !invoked && r.conn == conn)
+			} else {
+				adminStable(t, ctx, r, [2]int64{1, 1})
+			}
+			closeErr := r.Close()
+			if lost {
+				adminAssert(t, nil, errors.Is(closeErr, sql.ErrConnDone) && closeErr.Error() == sql.ErrConnDone.Error())
+			} else {
+				adminAssert(t, closeErr, true)
+			}
+			adminAssert(t, nil, conn.PingContext(ctx) == sql.ErrConnDone && r.load.db.PingContext(ctx) != nil && r.observer.db.PingContext(ctx) != nil)
+		})
+	}
+}
+
 func TestAdminReaderWaitingCancellation(t *testing.T) { adminLease(t, false) }
 func TestAdminReaderCloseCoordination(t *testing.T)   { adminLease(t, true) }
 
