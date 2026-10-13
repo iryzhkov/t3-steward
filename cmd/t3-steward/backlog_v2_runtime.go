@@ -1287,6 +1287,11 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		return fmt.Errorf("start coordinator alerts: %w", err)
 	}
 	defer stopAlerts.Close()
+	stopMetrics, err := startCoordinatorMetrics(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("start coordinator metrics: %w", err)
+	}
+	defer stopMetrics.Close()
 	ready()
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }
