@@ -113,7 +113,7 @@ func (c coordinatorSupervision) DispatchActivations(ctx context.Context, admissi
 			c.logger.Info("released unclaimed offers of activations that ended", "assignments", released)
 		}
 	}
-	records, err := c.store.LoadCoordinatorRecords(ctx)
+	records, err := c.store.LoadActiveCoordinatorRecords(ctx)
 	if err != nil {
 		c.logger.Error("load records for activation dispatch", "error", err)
 		return

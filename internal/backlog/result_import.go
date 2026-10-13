@@ -73,7 +73,7 @@ func (i CoordinatorResultImporter) Import(ctx context.Context, response workerpr
 	if err := validateWorkerUploadCustody(response, i.CoordinatorID); err != nil {
 		return ResultImportReport{}, err
 	}
-	records, err := i.Store.LoadCoordinatorRecords(ctx)
+	records, err := i.Store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return ResultImportReport{}, err
 	}

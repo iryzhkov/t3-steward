@@ -101,7 +101,7 @@ func (c coordinatorSupervision) at() time.Time {
 
 // Tick advances every supervised run of this coordinator.
 func (c coordinatorSupervision) Tick(ctx context.Context) {
-	records, err := c.store.LoadCoordinatorRecords(ctx)
+	records, err := c.store.LoadActiveCoordinatorRecords(ctx)
 	if err != nil {
 		c.logger.Error("load records for supervision boundary", "error", err)
 		return

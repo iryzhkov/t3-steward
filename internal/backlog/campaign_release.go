@@ -179,7 +179,7 @@ func (r *CampaignRefReleaseReconciler) Tick(ctx context.Context) CampaignRefRele
 	if r == nil || r.Records == nil || r.Refs == nil {
 		return report
 	}
-	records, err := r.Records(ctx)
+	records, err := r.Records(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		report.Errors = append(report.Errors, fmt.Errorf("load records for campaign commit release: %w", err))
 		return report

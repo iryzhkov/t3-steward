@@ -146,7 +146,7 @@ type CoordinatorRecords struct {
 	loadCommitArtifactPresence func(context.Context, string, map[string]bool) (bool, error)
 	// AssignmentsByRun is built once per loaded snapshot and is read-only.
 	AssignmentsByRun    map[string][]domain.Assignment `json:"-"`
-	omittedArtifactRuns map[string]bool
+	checkedArtifactRuns map[string]bool
 	loadArtifacts       func(context.Context, []string) ([]domain.Artifact, error)
 	loadRunArtifacts    func(context.Context, string) ([]domain.Artifact, error)
 	ReviewRounds        []review.Round
@@ -430,12 +430,16 @@ func (s *Store) loadCoordinatorRecords(ctx context.Context) (CoordinatorRecords,
 		return CoordinatorRecords{}, fmt.Errorf("begin coordinator load: %w", err)
 	}
 	defer tx.Rollback()
-	records, err := loadCoordinatorRecordsTx(ctx, tx, false)
+	active, _ := ctx.Value(activeCoordinatorRecordsKey{}).(bool)
+	records, err := loadCoordinatorRecordsTx(ctx, tx, active)
 	if err != nil {
 		return CoordinatorRecords{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return CoordinatorRecords{}, fmt.Errorf("commit coordinator load: %w", err)
+	}
+	if active {
+		records = s.attachArtifactLoaders(records)
 	}
 	return records, nil
 }
@@ -472,21 +476,9 @@ func loadCoordinatorRecordsTx(ctx context.Context, tx *sql.Tx, tick bool) (Coord
 	}
 	artifactQuery := "SELECT record FROM coordinator_artifacts ORDER BY id"
 	if tick {
-		// Filter before decoding. Run-less definition artifacts and artifacts of
-		// unknown runs retain the ordinary load semantics.
-		artifactQuery = `WITH terminal_runs AS MATERIALIZED (
-			SELECT id FROM coordinator_workflow_runs
-			WHERE json_extract(record, '$.sink.progress')
-			IN ('succeeded', 'failed', 'cancelled', 'skipped')
-		)
-		SELECT record FROM coordinator_artifacts
-		WHERE workflow_run_id NOT IN (SELECT id FROM terminal_runs) ORDER BY id`
-		records.omittedArtifactRuns = make(map[string]bool)
-		for _, run := range records.WorkflowRuns {
-			if run.Sink != nil && run.Sink.Progress.Terminal() {
-				records.omittedArtifactRuns[run.ID] = true
-			}
-		}
+		// Select eligible run keys before fetching artifact payloads.
+		// The orphan arm reads only the existing covering run-key index.
+		artifactQuery = activeArtifactQuery
 	}
 	if records.Artifacts, err = loadJSONQuery[domain.Artifact](ctx, tx, "coordinator_artifacts", artifactQuery); err != nil {
 		return CoordinatorRecords{}, err

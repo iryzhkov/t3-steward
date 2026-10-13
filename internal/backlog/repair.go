@@ -34,7 +34,7 @@ type RepairReport struct {
 // observations or explicit recovery.
 func RepairCoordinatorState(ctx context.Context, store RepairStore, now time.Time) (RepairReport, error) {
 	var report RepairReport
-	records, err := store.LoadCoordinatorRecords(ctx)
+	records, err := store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return report, fmt.Errorf("load records for repair: %w", err)
 	}

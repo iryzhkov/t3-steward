@@ -104,7 +104,7 @@ func (s ReviewAdmissionService) Resolve(ctx context.Context, request AdmissionRe
 	if s.Store == nil || s.Projects == nil || s.Catalog == nil || s.Artifacts.Catalog == nil {
 		return fail("trusted records, project, artifact and authored catalog sources required")
 	}
-	records, err := s.Store.LoadCoordinatorRecords(ctx)
+	records, err := s.Store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return AdmissionSnapshot{}, err
 	}

@@ -35,7 +35,7 @@ func (s *Service) ExecutePendingCommands(ctx context.Context) (CommandExecutionR
 	}
 	report := CommandExecutionReport{}
 	for {
-		records, err := store.LoadCoordinatorRecords(ctx)
+		records, err := store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 		if err != nil {
 			return report, fmt.Errorf("load command execution snapshot: %w", err)
 		}

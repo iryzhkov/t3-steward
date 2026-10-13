@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/review"
+	"github.com/iryzhkov/t3-steward/internal/store/sqlite"
 )
 
 // DeclaredAdmissionRequest accepts identity only. Authority comes from saved declaration and configured adapters.
@@ -28,7 +29,7 @@ func (s ReviewAdmissionService) ResolveDeclared(ctx context.Context, request Dec
 	if !ok {
 		return AdmissionSnapshot{}, fmt.Errorf("review admission: declaration-backed storage required")
 	}
-	records, err := store.LoadCoordinatorRecords(ctx)
+	records, err := store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return AdmissionSnapshot{}, err
 	}

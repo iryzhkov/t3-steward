@@ -98,7 +98,7 @@ func ProjectWorkflowRuns(ctx context.Context, store ProjectionStore, now time.Ti
 // automatic retries and is exactly ProjectWorkflowRuns.
 func ProjectWorkflowRunsWithRetries(ctx context.Context, store ProjectionStore, now time.Time, coordinatorMax int) (ProjectionReport, error) {
 	var report ProjectionReport
-	records, err := store.LoadCoordinatorRecords(ctx)
+	records, err := store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return report, fmt.Errorf("load records for projection: %w", err)
 	}

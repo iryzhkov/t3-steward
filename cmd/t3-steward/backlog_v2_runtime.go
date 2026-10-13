@@ -189,7 +189,7 @@ type coordinatorQuotaReconciler struct {
 }
 
 func (r coordinatorQuotaReconciler) Tick(ctx context.Context) (backlog.QuotaBridgeReport, error) {
-	records, err := r.store.LoadCoordinatorRecords(ctx)
+	records, err := r.store.LoadActiveCoordinatorRecords(ctx)
 	if err != nil {
 		return backlog.QuotaBridgeReport{}, fmt.Errorf("load quota coordinator snapshot: %w", err)
 	}
@@ -343,7 +343,7 @@ func (p coordinatorPlanner) yieldToOlderActivationContender(ctx context.Context,
 	if _, err := backlog.RepairCoordinatorState(ctx, p.store, now); err != nil {
 		slog.Warn("coordinator state repair failed; activation arbitration continues", "error", err)
 	}
-	records, err := p.store.LoadCoordinatorRecords(ctx)
+	records, err := p.store.LoadActiveCoordinatorRecords(ctx)
 	if err != nil {
 		return false, fmt.Errorf("load activation arbitration snapshot: %w", err)
 	}
@@ -503,7 +503,7 @@ func (p coordinatorPlanner) tick(ctx context.Context, quota backlog.QuotaBridgeR
 	if _, err := backlog.RepairCoordinatorState(ctx, p.store, now); err != nil {
 		slog.Warn("coordinator state repair failed; planning continues", "error", err)
 	}
-	records, err := p.store.LoadCoordinatorRecords(ctx)
+	records, err := p.store.LoadActiveCoordinatorRecords(ctx)
 	if err != nil {
 		return backlog.AssignmentPlanningReport{}, fmt.Errorf("load planning coordinator snapshot: %w", err)
 	}

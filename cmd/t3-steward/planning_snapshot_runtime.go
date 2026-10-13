@@ -31,7 +31,7 @@ func (p coordinatorPlanner) annotateCapacityDeadlocks(ctx context.Context, plan 
 	var records sqlite.CoordinatorRecords
 	waits, err := p.store.ListTaskWaits(ctx)
 	if err == nil {
-		records, err = p.store.LoadCoordinatorRecords(ctx)
+		records, err = p.store.LoadActiveCoordinatorRecords(ctx)
 	}
 	if err != nil {
 		slog.Warn("capacity deadlock detection skipped", "error", err)

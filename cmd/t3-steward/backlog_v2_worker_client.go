@@ -317,7 +317,7 @@ func importCoordinatorWorkerResult(ctx context.Context, session coordinatorWorke
 			upload = candidate
 			break
 		}
-		records, err := session.Records.LoadCoordinatorRecords(ctx)
+		records, err := session.Records.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 		if err != nil {
 			return report, err
 		}

@@ -39,7 +39,7 @@ func (s *Service) SubmitAutomaticRetries(ctx context.Context, coordinatorMax int
 	if !ok {
 		return report, ErrReadOnly
 	}
-	records, err := s.reader.LoadCoordinatorRecords(ctx)
+	records, err := s.reader.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return report, fmt.Errorf("load automatic retry snapshot: %w", err)
 	}

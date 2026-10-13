@@ -24,7 +24,7 @@ func (c coordinatorSupervision) observeRecoveryFailures(ctx context.Context, run
 	if err := config.Validate(); err != nil {
 		return fmt.Errorf("invalid durable recovery contract: %w", err)
 	}
-	records, err := c.store.LoadCoordinatorRecords(ctx)
+	records, err := c.store.LoadActiveCoordinatorRecords(ctx)
 	if err != nil {
 		return err
 	}

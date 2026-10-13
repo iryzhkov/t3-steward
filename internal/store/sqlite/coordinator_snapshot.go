@@ -129,9 +129,7 @@ func (s *Store) loadCoordinatorRecordsSnapshot(ctx context.Context, snapshot *Co
 	if err := tx.Commit(); err != nil {
 		return CoordinatorRecords{}, err
 	}
-	records.loadRunArtifacts = s.loadRunArtifacts
-	records.loadArtifacts = s.LoadArtifacts
-	records.loadCommitArtifactPresence = s.loadCommitArtifactPresence
+	records = s.attachArtifactLoaders(records)
 	snapshot.entries[s] = coordinatorRecordsEntry{connection: connection, changes: changes, version: version, records: records}
 	return records, nil
 }

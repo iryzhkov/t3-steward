@@ -163,7 +163,7 @@ func (r *LedgerReconciler) Tick(ctx context.Context) LedgerReport {
 			return report
 		}
 	}
-	records, err := r.Records(ctx)
+	records, err := r.Records(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		report.Errors = append(report.Errors, fmt.Errorf("load records for the milestone ledger: %w", err))
 		return report
@@ -224,12 +224,17 @@ func (r *LedgerReconciler) Tick(ctx context.Context) LedgerReport {
 		if state.NextAttemptAt != nil && now.Before(*state.NextAttemptAt) {
 			continue
 		}
-		view := newLedgerRunView(records, workflow, run)
+		runRecords, err := records.WithRunArtifacts(ctx, run.ID)
+		if err != nil {
+			report.Errors = append(report.Errors, err)
+			continue
+		}
+		view := newLedgerRunView(runRecords, workflow, run)
 		pending := view.pending(state.Applied)
 		if len(pending) == 0 {
 			continue
 		}
-		err := r.advance(ctx, &state, view, facts, pending, &report)
+		err = r.advance(ctx, &state, view, facts, pending, &report)
 		if err == nil {
 			continue
 		}

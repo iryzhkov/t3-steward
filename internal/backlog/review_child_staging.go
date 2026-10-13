@@ -347,7 +347,7 @@ func childStageCustody(root *os.Root, stageDir string, lock *fileLock) error {
 // childStageFiles selects the entire admitted manifest from current retained
 // lineage; clone/rerun reference IDs are selected from their immutable task.
 func (s *DeclaredReviewStaging) childStageFiles(ctx context.Context, snap AdmissionSnapshot, cp review.CheckpointAuthority, created time.Time) ([]review.RetainedFile, error) {
-	records, err := s.store.LoadCoordinatorRecords(ctx)
+	records, err := s.store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return nil, err
 	}

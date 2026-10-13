@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"sort"
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -24,16 +25,16 @@ func IndexAssignmentsByRun(attempts []domain.Attempt, assignments []domain.Assig
 	return index
 }
 
-// WithRunArtifacts fills only requested runs omitted from a tick snapshot.
+// WithRunArtifacts fills requested settled runs omitted from an active load.
 // Ordinary command snapshots already contain all artifacts. Returned slices and
-// omission metadata belong to the caller, never to the shared tick cache.
+// hydration metadata belong to the caller, never to the shared tick cache.
 func (r CoordinatorRecords) WithRunArtifacts(ctx context.Context, runIDs ...string) (CoordinatorRecords, error) {
 	if r.loadRunArtifacts == nil {
 		return r, nil
 	}
-	omitted := make(map[string]bool, len(r.omittedArtifactRuns))
-	for id, missing := range r.omittedArtifactRuns {
-		omitted[id] = missing
+	hydrated := make(map[string]bool, len(r.checkedArtifactRuns))
+	for id, missing := range r.checkedArtifactRuns {
+		hydrated[id] = missing
 	}
 	artifacts := append([]domain.Artifact(nil), r.Artifacts...)
 	seen := make(map[string]bool, len(artifacts))
@@ -41,7 +42,16 @@ func (r CoordinatorRecords) WithRunArtifacts(ctx context.Context, runIDs ...stri
 		seen[artifact.ID] = true
 	}
 	for _, id := range runIDs {
-		if !omitted[id] {
+		if hydrated[id] || id == "" {
+			continue
+		}
+		for _, run := range r.WorkflowRuns {
+			if run.ID == id && (run.Sink == nil || !run.Sink.Progress.Terminal()) {
+				hydrated[id] = true // Active-run artifacts are already complete.
+				break
+			}
+		}
+		if hydrated[id] {
 			continue
 		}
 		loaded, err := r.loadRunArtifacts(ctx, id)
@@ -54,9 +64,10 @@ func (r CoordinatorRecords) WithRunArtifacts(ctx context.Context, runIDs ...stri
 				seen[artifact.ID] = true
 			}
 		}
-		delete(omitted, id)
+		hydrated[id] = true
 	}
-	r.Artifacts, r.omittedArtifactRuns = artifacts, omitted
+	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].ID < artifacts[j].ID })
+	r.Artifacts, r.checkedArtifactRuns = artifacts, hydrated
 	return r, nil
 }
 
@@ -85,6 +96,7 @@ func (r CoordinatorRecords) WithArtifactIDs(ctx context.Context, ids ...string) 
 		return CoordinatorRecords{}, err
 	}
 	r.Artifacts = append(append([]domain.Artifact(nil), r.Artifacts...), loaded...)
+	sort.Slice(r.Artifacts, func(i, j int) bool { return r.Artifacts[i].ID < r.Artifacts[j].ID })
 	return r, nil
 }
 
@@ -137,7 +149,9 @@ func (s *Store) loadRunArtifacts(ctx context.Context, runID string) ([]domain.Ar
 	}
 	defer tx.Rollback()
 	artifacts, err := loadJSONQuery[domain.Artifact](ctx, tx, "coordinator_artifacts",
-		"SELECT record FROM coordinator_artifacts WHERE workflow_run_id = ? ORDER BY id", runID)
+		`SELECT record FROM coordinator_artifacts WHERE workflow_run_id = ?
+		AND EXISTS (SELECT 1 FROM coordinator_workflow_runs WHERE id = ?
+		AND json_extract(record, '$.sink.progress') IN ('succeeded', 'failed', 'cancelled', 'skipped')) ORDER BY id`, runID, runID)
 	if err != nil {
 		return nil, err
 	}

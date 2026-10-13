@@ -30,7 +30,7 @@ func (c ReviewCollector) Tick(ctx context.Context, now time.Time) error {
 	if len(rounds) == 0 {
 		return nil
 	}
-	records, err := c.Store.LoadCoordinatorRecords(ctx)
+	records, err := c.Store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return err
 	}

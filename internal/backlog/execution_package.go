@@ -83,7 +83,7 @@ func (b CoordinatorOfferBuilder) BuildAssignmentOffer(
 	if b.Authorization != nil && !b.Authorization.AuthorizesRoute(assignment.Route) {
 		return workerproto.AssignmentOffer{}, errors.New("execution package route is no longer authorized")
 	}
-	records, err := b.Store.LoadCoordinatorRecords(ctx)
+	records, err := b.Store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return workerproto.AssignmentOffer{}, err
 	}

@@ -36,7 +36,7 @@ func newCoordinatorLedger(cfg config.Config, store *sqlite.Store, artifacts back
 	return &coordinatorLedger{
 		reconciler: &backlog.LedgerReconciler{
 			Pending:      store.PendingLedgerWork,
-			Records:      store.LoadCoordinatorRecords,
+			Records:      store.LoadActiveCoordinatorRecords,
 			ReviewRounds: store.ListReviewRoundsForRun,
 			States:       store,
 			Client:       jocasta.CLI{TempDir: filepath.Join(cfg.BacklogV2.Storage.Workspaces, "jocasta-ledger")},

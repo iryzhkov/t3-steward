@@ -28,7 +28,7 @@ func (s coordinatorRoleScheduleStore) CommitScheduleTrigger(ctx context.Context,
 // Both the recurring timer and manual admin command invoke this seam before the
 // store's occurrence transaction. Resolution errors suppress rather than fail runs.
 func (s coordinatorRoleScheduleStore) ResolveScheduleTrigger(ctx context.Context, r domain.ScheduleTriggerRequest) (domain.ScheduleTriggerRequest, error) {
-	records, err := s.Store.LoadCoordinatorRecords(ctx)
+	records, err := s.Store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return r, err
 	}

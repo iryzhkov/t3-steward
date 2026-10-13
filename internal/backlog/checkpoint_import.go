@@ -72,7 +72,7 @@ func (i CoordinatorCheckpointImporter) Import(ctx context.Context, response work
 		!strings.HasPrefix(object.Path, "checkpoints/") {
 		return domain.Artifact{}, errors.New("checkpoint import object identity mismatch")
 	}
-	records, err := i.Store.LoadCoordinatorRecords(ctx)
+	records, err := i.Store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return domain.Artifact{}, err
 	}
@@ -169,7 +169,7 @@ func (i CoordinatorCheckpointImporter) importContinuation(ctx context.Context, r
 	if err := validateWorkerUploadCustody(response, i.CoordinatorID); err != nil {
 		return domain.Artifact{}, err
 	}
-	records, err := i.Store.LoadCoordinatorRecords(ctx)
+	records, err := i.Store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return domain.Artifact{}, err
 	}

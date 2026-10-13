@@ -45,7 +45,7 @@ func (t ScheduleTimer) Tick(ctx context.Context) (ScheduleTickReport, error) {
 	if t.Now != nil {
 		now = t.Now().UTC()
 	}
-	records, err := t.Store.LoadCoordinatorRecords(ctx)
+	records, err := t.Store.LoadCoordinatorRecords(sqlite.WithActiveCoordinatorRecords(ctx))
 	if err != nil {
 		return ScheduleTickReport{}, fmt.Errorf("load schedule timer state: %w", err)
 	}
