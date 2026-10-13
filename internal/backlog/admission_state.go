@@ -196,18 +196,7 @@ func reconcileAdmissionBucketStates(key domain.BucketKey, states []domain.Bucket
 		if candidate.Phase.Rank() > latest.Phase.Rank() {
 			latest.Phase = candidate.Phase
 		}
-		if candidate.UsedPercent > latest.UsedPercent {
-			latest.UsedPercent = candidate.UsedPercent
-		}
-		if candidate.RatePerMinute > latest.RatePerMinute {
-			latest.RatePerMinute = candidate.RatePerMinute
-		}
-		if !domain.SameQuotaAcquisition(latest.Provenance, candidate.Provenance) {
-			latest.Provenance = nil
-		}
-		if candidate.OriginValidUntil != nil && (latest.OriginValidUntil == nil || candidate.OriginValidUntil.Before(*latest.OriginValidUntil)) {
-			latest.OriginValidUntil = candidate.OriginValidUntil
-		}
+		latest = domain.FoldQuotaEvidence(latest, candidate)
 		latest.Healthy = latest.Healthy && candidate.Healthy
 	}
 	return latest, nil, true

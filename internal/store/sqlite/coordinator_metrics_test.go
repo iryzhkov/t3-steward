@@ -10,7 +10,8 @@ import (
 )
 
 func TestMetricsSnapshotReadOnlyProjectionLatestAttemptAndUsageCoverage(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	t.Parallel()
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,8 @@ func TestMetricsSnapshotReadOnlyProjectionLatestAttemptAndUsageCoverage(t *testi
 	}
 }
 func TestMetricsSnapshotEvidenceBoundMarksPartialWindow(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	t.Parallel()
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +121,8 @@ func TestMetricsSnapshotEvidenceBoundMarksPartialWindow(t *testing.T) {
 	}
 }
 func TestMetricsSnapshotMalformedObservationFailsWholeRead(t *testing.T) {
-	store, err := OpenMigrated(filepath.Join(t.TempDir(), "state.db"))
+	t.Parallel()
+	store, err := openMigratedFixture(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -97,9 +97,17 @@ func validateCollectorResumeIntentTx(ctx context.Context, tx *sql.Tx, record dom
 		if err := json.Unmarshal(priorRaw, &prior); err != nil {
 			return err
 		}
-		if prior.Command.ID != grant.StopCommandID || prior.Command.AttentionStop != nil || prior.Delivery != domain.ThrottleDeliveryAcknowledged ||
-			prior.AcknowledgedAt == nil || !prior.AcknowledgedAt.Equal(grant.StoppedAt) ||
-			(prior.Result != domain.ThrottleResultCheckpointed && prior.Result != domain.ThrottleResultStopped) {
+		history, err := scanJSONRows[domain.ThrottleAttemptRecord](ctx, tx, "SELECT record FROM coordinator_throttle_attempts ORDER BY directive_id, attempt_id")
+		if err != nil {
+			return err
+		}
+		if domain.QuotaStopSuperseded(prior, history) {
+			return fmt.Errorf("collector recovery stop was superseded before commit")
+		}
+		stop, accepted := prior.AcceptedQuotaStop()
+		_, proposedAccepted := record.AcceptedQuotaStop()
+		if !accepted || !proposedAccepted || stop.Command.ID != grant.StopCommandID || !stop.AcknowledgedAt.Equal(grant.StoppedAt) ||
+			!reflect.DeepEqual(stop.Command.BucketEpochs, command.BucketEpochs) || !reflect.DeepEqual(record.StopReceipt, stop) {
 			return fmt.Errorf("collector recovery stop acknowledgement changed before commit")
 		}
 	}

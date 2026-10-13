@@ -354,6 +354,7 @@ func PlanThrottleDeadlineExpirations(
 		record.Revision++
 		record.PriorCommandIDs = append(record.PriorCommandIDs, record.Command.ID)
 		record.Command = followupThrottleCommand(record.Command, domain.ThrottleCommandHardStop, record.Revision, nil, now)
+		record.StopReceipt = nil
 		record.Delivery = domain.ThrottleDeliveryPending
 		record.Result = ""
 		record.AcknowledgedAt = nil
@@ -461,6 +462,11 @@ func PlanThrottleResumes(
 		pool.ActiveAssignments++
 		poolByID[pool.ID] = pool
 
+		if stop, accepted := record.AcceptedQuotaStop(); accepted {
+			receipt := *stop
+			receipt.Command = cloneThrottleCommand(stop.Command)
+			record.StopReceipt = &receipt
+		}
 		previousRevision := record.Revision
 		record.Revision++
 		record.PriorCommandIDs = append(record.PriorCommandIDs, record.Command.ID)
@@ -553,6 +559,11 @@ func PlanThrottleAcknowledgements(
 		}
 		record.Revision++
 		record.AcknowledgedAt = cloneTime(&acknowledgement.AcknowledgedAt)
+		if stop, accepted := record.AcceptedQuotaStop(); accepted && acknowledgement.Accepted && record.Command.Kind != domain.ThrottleCommandResume {
+			receipt := *stop
+			receipt.Command = cloneThrottleCommand(stop.Command)
+			record.StopReceipt = &receipt
+		}
 		record.UpdatedAt = now
 		transitions = append(transitions, domain.ThrottleAttemptTransition{
 			ExpectedRevision: record.Revision - 1,
@@ -610,6 +621,7 @@ func applyThrottleAcknowledgement(record *domain.ThrottleAttemptRecord, acknowle
 			return invalidThrottleResult(record.Command, acknowledgement.Result)
 		}
 		record.Control = domain.ControlRunning
+		record.StopReceipt = nil
 	default:
 		return fmt.Errorf("throttle command %q has invalid kind %q", record.Command.ID, record.Command.Kind)
 	}
@@ -816,6 +828,11 @@ func throttleRecordIsNewer(candidate, current domain.ThrottleAttemptRecord) bool
 
 func cloneThrottleAttemptRecord(record domain.ThrottleAttemptRecord) domain.ThrottleAttemptRecord {
 	record.Command = cloneThrottleCommand(record.Command)
+	if record.StopReceipt != nil {
+		receipt := *record.StopReceipt
+		receipt.Command = cloneThrottleCommand(receipt.Command)
+		record.StopReceipt = &receipt
+	}
 	record.PriorCommandIDs = append([]string(nil), record.PriorCommandIDs...)
 	record.Checkpoint = cloneCheckpoint(record.Checkpoint)
 	record.AcknowledgedAt = cloneTime(record.AcknowledgedAt)

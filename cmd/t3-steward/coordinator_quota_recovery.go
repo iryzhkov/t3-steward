@@ -65,12 +65,17 @@ func newCoordinatorQuotaRecoveryGrant(cfg config.Config, store *sqlite.Store) ba
 		stopID := ""
 		sequence := int64(0)
 		epochs := record.Command.BucketEpochs
-		if record.Delivery == domain.ThrottleDeliveryAcknowledged && record.AcknowledgedAt != nil &&
-			(record.Command.Kind == domain.ThrottleCommandDrain || record.Command.Kind == domain.ThrottleCommandHardStop) &&
-			(record.Result == domain.ThrottleResultCheckpointed || record.Result == domain.ThrottleResultStopped) &&
-			record.Command.AttentionStop == nil {
-			stoppedAt = *record.AcknowledgedAt
-			stopID = record.Command.ID
+		if stop, accepted := record.AcceptedQuotaStop(); accepted {
+			stoppedAt = stop.AcknowledgedAt
+			stopID = stop.Command.ID
+			epochs = stop.Command.BucketEpochs
+			prior, err := store.LoadThrottleAttemptRecords(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if domain.QuotaStopSuperseded(record, prior) {
+				return nil, nil
+			}
 		} else {
 			for _, observation := range snapshot.Assignments {
 				if observation.AssignmentID == record.Command.AssignmentID && observation.AssignmentEpoch == record.Command.AssignmentEpoch &&

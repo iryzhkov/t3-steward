@@ -169,6 +169,7 @@ type ThrottleAttemptRecord struct {
 	AttemptID       string                        `json:"attemptId"`
 	Revision        int64                         `json:"revision"`
 	Command         ThrottleCommand               `json:"command"`
+	StopReceipt     *QuotaStopReceipt             `json:"stopReceipt,omitempty"`
 	PriorCommandIDs []string                      `json:"priorCommandIds,omitempty"`
 	Delivery        ThrottleDeliveryState         `json:"delivery"`
 	Result          ThrottleAcknowledgementResult `json:"result,omitempty"`

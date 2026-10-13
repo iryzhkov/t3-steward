@@ -177,7 +177,12 @@ func (g HostQuotaGuard) ResumeAllowed(ctx context.Context, pause LocalThrottleRe
 	}
 	now := g.now()
 	if covered {
-		ok, why := daemon.CollectorBucketsRecovered(g.Config, pool, []domain.BucketKey{pause.Bucket}, pause.RequestedAt, routeThread(route), byKey, now)
+		// The drain request precedes the actual stop. Evidence obtained while
+		// draining cannot authorize a new turn after the stop is acknowledged.
+		if pause.StoppedAt == nil || pause.StoppedAt.IsZero() || pause.StoppedAt.After(now) {
+			return false, "collector recovery waits for a durable actual stop acknowledgement", nil
+		}
+		ok, why := daemon.CollectorBucketsRecovered(g.Config, pool, []domain.BucketKey{pause.Bucket}, *pause.StoppedAt, routeThread(route), byKey, now)
 		if ok {
 			why = fmt.Sprintf("%s recovered from a fresh complete verified collector acquisition", pause.Bucket)
 		}

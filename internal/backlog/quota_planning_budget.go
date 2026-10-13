@@ -59,18 +59,7 @@ func deriveQuotaPlanningWindows(
 				thresholds := *candidate.AppliedThresholds
 				state.AppliedThresholds = &thresholds
 			}
-			if candidate.UsedPercent > state.UsedPercent {
-				state.UsedPercent = candidate.UsedPercent
-			}
-			if candidate.RatePerMinute > state.RatePerMinute {
-				state.RatePerMinute = candidate.RatePerMinute
-			}
-			if !domain.SameQuotaAcquisition(state.Provenance, candidate.Provenance) {
-				state.Provenance = nil
-			}
-			if candidate.OriginValidUntil != nil && (state.OriginValidUntil == nil || candidate.OriginValidUntil.Before(*state.OriginValidUntil)) {
-				state.OriginValidUntil = candidate.OriginValidUntil
-			}
+			state = domain.FoldQuotaEvidence(state, candidate)
 		}
 		newest[key] = state
 	}
