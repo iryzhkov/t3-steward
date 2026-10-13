@@ -115,6 +115,7 @@ func (f *coordinatorStopFixture) plan(t *testing.T) ([]domain.ThrottleAttemptTra
 }
 
 func TestCoordinatorExpiredResumeReissuesFromDurableStopAfterRestart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	f := newCoordinatorStopFixture(t)
 	originalStop := f.record.StopReceipt
@@ -196,6 +197,7 @@ func (f stopReceiptTransport) DeliverThrottleCommands(_ context.Context, _ strin
 func TestCoordinatorRetainedStopRejectsChangedAuthorityBeforeCommit(t *testing.T) {
 	for _, change := range []string{"forged receipt", "changed stop ACK", "missing lineage", "lease expired", "assignment epoch", "worker epoch", "cancelled", "source changed", "new stop"} {
 		t.Run(change, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			f := newCoordinatorStopFixture(t)
 			planned, _ := f.plan(t)

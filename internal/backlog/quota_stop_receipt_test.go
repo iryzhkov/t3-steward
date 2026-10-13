@@ -10,6 +10,7 @@ import (
 )
 
 func TestQuotaStopReceiptSurvivesRejectedResumeAndClearsOnSuccess(t *testing.T) {
+	t.Parallel()
 	now := throttleDeliveryTime
 	binding := throttleBinding("attempt", "worker", domain.ControlRunning)
 	directive := throttleDirectiveFixture(domain.ThrottleStop)

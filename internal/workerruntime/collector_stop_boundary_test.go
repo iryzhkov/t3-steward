@@ -10,6 +10,7 @@ import (
 )
 
 func TestCoveredClaudeResumeRequiresAcquisitionAfterDurableStop(t *testing.T) {
+	t.Parallel()
 	now := runtimeTestNow
 	f := newRecoveryFixture(t, &now)
 	f.guard.Config = coveredClaudeConfig()
@@ -49,6 +50,7 @@ func TestCoveredClaudeResumeRequiresAcquisitionAfterDurableStop(t *testing.T) {
 }
 
 func TestCoveredClaudeReconcileDoesNotResumeFromAcquisitionDuringDrain(t *testing.T) {
+	t.Parallel()
 	now := runtimeTestNow
 	requestedAt := now
 	f := newRecoveryFixture(t, &now)
