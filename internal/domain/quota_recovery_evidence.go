@@ -10,9 +10,9 @@ import (
 
 // QuotaRecoveryEvidenceScope is a quota-only pool projection, never a model catalog.
 type QuotaRecoveryEvidenceScope struct {
-	ProviderInstanceIDs []string `json:"providerInstanceIds"`
-	Models []string `json:"models"`
-	RequiredWindows []QuotaCollectorWindow `json:"requiredWindows"`
+	ProviderInstanceIDs []string               `json:"providerInstanceIds"`
+	Models              []string               `json:"models"`
+	RequiredWindows     []QuotaCollectorWindow `json:"requiredWindows"`
 }
 
 func RecoveryEvidenceScope(pool QuotaPool) QuotaRecoveryEvidenceScope {
@@ -26,7 +26,7 @@ func RecoveryEvidenceScope(pool QuotaPool) QuotaRecoveryEvidenceScope {
 	}
 	sort.Strings(scope.ProviderInstanceIDs)
 	sort.Strings(scope.Models)
-	sort.Slice(scope.RequiredWindows, func(i,j int) bool { return scope.RequiredWindows[i].Window < scope.RequiredWindows[j].Window })
+	sort.Slice(scope.RequiredWindows, func(i, j int) bool { return scope.RequiredWindows[i].Window < scope.RequiredWindows[j].Window })
 	return scope
 }
 

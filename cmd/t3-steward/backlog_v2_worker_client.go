@@ -693,7 +693,11 @@ func newCoordinatorWorkerSession(
 		for _, snapshot := range snapshots {
 			if snapshot.WorkerID == workerID && snapshot.Inventory.CatalogRevision != "" {
 				expectedRevision = snapshot.Inventory.CatalogRevision
-				for _, capability := range snapshot.Inventory.Capabilities { if capability == workerproto.CapabilityQuotaCollectorProvenance { collectorCapable = true } }
+				for _, capability := range snapshot.Inventory.Capabilities {
+					if capability == workerproto.CapabilityQuotaCollectorProvenance {
+						collectorCapable = true
+					}
+				}
 			}
 		}
 		accepted, err := publishCollectorCatalog(ctx, catalogClient, settings, workerID, expectedRevision, collectorCapable)

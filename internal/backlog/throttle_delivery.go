@@ -840,7 +840,9 @@ func cloneThrottleCommand(command domain.ThrottleCommand) domain.ThrottleCommand
 		grant.EvidenceScope.ProviderInstanceIDs = append([]string(nil), grant.EvidenceScope.ProviderInstanceIDs...)
 		grant.EvidenceScope.Models = append([]string(nil), grant.EvidenceScope.Models...)
 		grant.EvidenceScope.RequiredWindows = append([]domain.QuotaCollectorWindow(nil), grant.EvidenceScope.RequiredWindows...)
-		for index := range grant.EvidenceScope.RequiredWindows { grant.EvidenceScope.RequiredWindows[index].Models = append([]string(nil), grant.EvidenceScope.RequiredWindows[index].Models...) }
+		for index := range grant.EvidenceScope.RequiredWindows {
+			grant.EvidenceScope.RequiredWindows[index].Models = append([]string(nil), grant.EvidenceScope.RequiredWindows[index].Models...)
+		}
 		command.QuotaRecovery = &grant
 	}
 	return command
