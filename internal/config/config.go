@@ -758,6 +758,11 @@ type V2SetupProfile struct {
 type V2QuotaPool struct {
 	Provider      string `yaml:"provider"`
 	MaxConcurrent int    `yaml:"max_concurrent"`
+	// AccountID is an explicit account binding, never inferred from the pool name.
+	AccountID string `yaml:"account_id"`
+	// ObservationMaxAge scopes a collector horizon to this pool. Zero preserves
+	// the existing global quota_max_age default.
+	ObservationMaxAge Duration `yaml:"observation_max_age"`
 }
 
 type V2Storage struct {
@@ -852,18 +857,19 @@ type Config struct {
 		// t3-steward ask to the owner in T3.
 		AskRelay AskRelayConfig `yaml:"ask_relay"`
 	} `yaml:"wait"`
-	T3            T3            `yaml:"t3"`
-	Policy        Policy        `yaml:"policy"`
-	Resume        Resume        `yaml:"resume"`
-	Polling       Polling       `yaml:"polling"`
-	Overrides     []Override    `yaml:"overrides"`
-	Messages      Messages      `yaml:"messages"`
-	Notifications Notifications `yaml:"notifications"`
-	Report        Report        `yaml:"report"`
-	Backlog       Backlog       `yaml:"backlog"`
-	BacklogV2     BacklogV2     `yaml:"backlog_v2"`
-	Archive       Archive       `yaml:"archive"`
-	UIArchive     UIArchive     `yaml:"ui_archive"`
+	ClaudeQuotaCollector ClaudeQuotaCollector `yaml:"claude_quota_collector"`
+	T3                   T3                   `yaml:"t3"`
+	Policy               Policy               `yaml:"policy"`
+	Resume               Resume               `yaml:"resume"`
+	Polling              Polling              `yaml:"polling"`
+	Overrides            []Override           `yaml:"overrides"`
+	Messages             Messages             `yaml:"messages"`
+	Notifications        Notifications        `yaml:"notifications"`
+	Report               Report               `yaml:"report"`
+	Backlog              Backlog              `yaml:"backlog"`
+	BacklogV2            BacklogV2            `yaml:"backlog_v2"`
+	Archive              Archive              `yaml:"archive"`
+	UIArchive            UIArchive            `yaml:"ui_archive"`
 
 	ProjectCleanup ProjectCleanup `yaml:"project_cleanup"`
 	// StatePath is the SQLite database. Empty means the platform default.
@@ -890,6 +896,10 @@ func (c Config) QuotaChecksEnabled() bool { return c.QuotaChecks == nil || *c.Qu
 // Default returns the shipped defaults.
 func Default() Config {
 	var c Config
+	c.ClaudeQuotaCollector.Interval = Duration(300 * time.Second)
+	c.ClaudeQuotaCollector.Jitter = Duration(15 * time.Second)
+	c.ClaudeQuotaCollector.Timeout = Duration(10 * time.Second)
+	c.ClaudeQuotaCollector.PipelineBudget = Duration(50 * time.Second)
 	c.T3.TokenTTL = Duration(1 * time.Hour)
 	c.T3.RequestTimeout = Duration(30 * time.Second)
 	c.T3.DiscoveryTimeout = Duration(2 * time.Minute)
@@ -1311,6 +1321,9 @@ func (c *Config) Validate() error {
 		return errors.New("messages: warn and drain must not be empty")
 	}
 	if err := c.Notifications.validate(c.BacklogV2.Mode == "coordinator"); err != nil {
+		return err
+	}
+	if err := c.validateClaudeQuotaCollector(); err != nil {
 		return err
 	}
 	return c.validateBacklogV2()

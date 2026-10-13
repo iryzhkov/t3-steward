@@ -816,12 +816,16 @@ func buildWatchdog(cfg config.Config, logger *slog.Logger, store *sqlite.Store) 
 	}
 	control := t3control.New(client, logger, cfg.Policy.DryRun)
 	usageCh := make(chan domain.UsageSample, 256)
-	d := daemon.New(cfg, logger, store, control, providerlog.NewTailer(providerlog.Options{
+	sources, err := quotaSources(cfg, providerlog.NewTailer(providerlog.Options{
 		Dir:          t3api.ProviderLogDir(dataDir),
 		ScanInterval: cfg.Polling.LogScanInterval.D(),
 		Logger:       logger,
 		Usage:        usageCh,
 	}, store))
+	if err != nil {
+		return nil, nil, err
+	}
+	d := daemon.New(cfg, logger, store, control, sources)
 	d.Usage = usageCh
 	// Threads a live steward attempt owns on this host are the worker's to
 	// pause and resume; the watchdog reads the ownership from the worker's
