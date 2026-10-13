@@ -299,8 +299,10 @@ func decodeManifestStrict(raw []byte, into any) error {
 			var node yaml.Node
 			nodes := yaml.NewDecoder(bytes.NewReader(raw))
 			line := 0
-			if nodes.Decode(&node) == nil && nodes.Decode(&node) == nil {
-				line = node.Line
+			if nodes.Decode(&node) == nil {
+				if nodes.Decode(&node) == nil {
+					line = node.Line
+				}
 			}
 			return diagnostics.Attach(cause, diagnostics.Refusal("yaml-multiple-documents", "workflow.yaml", line, cause.Error(), "Use a single YAML document."))
 		}
