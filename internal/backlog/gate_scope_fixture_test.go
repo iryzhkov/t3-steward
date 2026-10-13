@@ -113,8 +113,11 @@ func TestGateScenarioIdentity(t *testing.T) {
 		t.Fatal("invocation identities collided")
 	}
 	root := t.TempDir()
-	if gateScenarioID(root, "scenario") != gateScenarioID(root, "scenario") {
-		t.Fatal("identity unstable")
+	expectedID := fmt.Sprintf("gate-%x", sha256.Sum256([]byte(root+"\x00scenario")))
+	expectedScopeDigest := sha256.Sum256([]byte("verify-" + expectedID + "-gate-0"))
+	expectedUnit := fmt.Sprintf("t3-steward-%x.scope", expectedScopeDigest[:12])
+	if got := gateScenarioID(root, "scenario"); got != expectedID || unit(got) != expectedUnit {
+		t.Fatalf("identity/provenance mismatch: attempt=%s unit=%s, want %s %s", got, unit(got), expectedID, expectedUnit)
 	}
 }
 
