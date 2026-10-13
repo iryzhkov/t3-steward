@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/diagnostics"
 )
 
 // ManifestFileName is the only campaign authoring file. A campaign is a
@@ -123,7 +124,19 @@ func (c *Campaign) InputPaths() []string {
 // symbolic link anywhere under the root, because the archive carries regular
 // files only and a link is a second spelling of a path the archive can hold
 // just once.
-func Load(reference string, limits Limits) (*Campaign, error) {
+func Load(reference string, limits Limits) (loaded *Campaign, loadErr error) {
+	file := reference
+	defer func() {
+		if loadErr != nil {
+			document := diagnostics.FromError(loadErr, file)
+			for i := range document.Entries {
+				if document.Entries[i].File == ManifestFileName {
+					document.Entries[i].File = file
+				}
+			}
+			loadErr = diagnostics.Attach(loadErr, document)
+		}
+	}()
 	if err := limits.validate(); err != nil {
 		return nil, err
 	}
@@ -132,6 +145,7 @@ func Load(reference string, limits Limits) (*Campaign, error) {
 		return nil, err
 	}
 	manifestPath := filepath.Join(root, ManifestFileName)
+	file = manifestPath
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return nil, fmt.Errorf("campaign: read %s: %w", ManifestFileName, err)

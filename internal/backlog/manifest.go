@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iryzhkov/t3-steward/internal/diagnostics"
 	"github.com/iryzhkov/t3-steward/internal/directoryresource"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"github.com/iryzhkov/t3-steward/internal/review"
@@ -272,14 +273,38 @@ func decodeManifestStrict(raw []byte, into any) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(into); err != nil {
-		return fmt.Errorf("decode workflow manifest: %w", describeUnknownFields(err, into))
+		cause := describeUnknownFields(err, into)
+		hints := map[string]string{}
+		var unknown *UnknownManifestFieldError
+		if errors.As(cause, &unknown) {
+			for i, line := range unknown.Lines {
+				hint := fmt.Sprintf("This field is unsupported by release %s; a newer release may be required.", unknown.Release)
+				if unknown.Suggestions[i] != "" {
+					hint = fmt.Sprintf("Did you mean %s? %s", unknown.Suggestions[i], hint)
+				}
+				if unknown.Fields[i] == "prompt" {
+					hint = "Put the prompt in a file and name it with prompt_file; see campaign help authoring."
+				}
+				hints[fmt.Sprintf("%d:%s", line, unknown.Fields[i])] = hint
+			}
+		}
+		document := diagnostics.YAML(err, raw, "workflow.yaml", manifestObjectNames, hints)
+		return diagnostics.Attach(fmt.Errorf("decode workflow manifest: %w", cause), document)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return errors.New("decode workflow manifest: multiple YAML documents are not allowed")
+			cause := errors.New("decode workflow manifest: multiple YAML documents are not allowed")
+			// Locate the extra document without changing the owner's decode target.
+			var node yaml.Node
+			nodes := yaml.NewDecoder(bytes.NewReader(raw))
+			line := 0
+			if nodes.Decode(&node) == nil && nodes.Decode(&node) == nil {
+				line = node.Line
+			}
+			return diagnostics.Attach(cause, diagnostics.Refusal("yaml-multiple-documents", "workflow.yaml", line, cause.Error(), "Use a single YAML document."))
 		}
-		return fmt.Errorf("decode workflow manifest: %w", err)
+		return diagnostics.Attach(fmt.Errorf("decode workflow manifest: %w", err), diagnostics.YAML(err, raw, "workflow.yaml", manifestObjectNames, nil))
 	}
 	return nil
 }

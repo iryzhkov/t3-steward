@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,7 +48,11 @@ func TestCompileAcceptanceTestsMultiUnitNoWrites(t *testing.T) {
 					t.Fatal(e)
 				}
 			}
-			if strings.Count(e.Error(), "unit \"") != want {
+			var textError authoringTextError
+			if !errors.As(e, &textError) {
+				t.Fatalf("missing diagnostic text wrapper: %v", e)
+			}
+			if strings.Count(textError.Unwrap().Error(), "unit \"") != want {
 				t.Fatal(e)
 			}
 			if existing {

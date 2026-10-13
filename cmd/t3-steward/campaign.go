@@ -13,6 +13,7 @@ import (
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
 	"github.com/iryzhkov/t3-steward/internal/config"
+	"github.com/iryzhkov/t3-steward/internal/diagnostics"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 )
 
@@ -28,6 +29,7 @@ backlog workflow and run records; there is no separate campaign record.
 
 Offline (no configuration or coordinator):
   validate <directory|workflow.yaml> [--json]
+    Refusals include authoring locations and hints; --json adds diagnostics/v1.
   plan     <directory|workflow.yaml> [--json|--dot]
   repin DIR --to SHA [--check] [--json]
   compile PLAN --out DIR [--unit ID] [--force] [--json]
@@ -572,11 +574,62 @@ func admitCampaignHelp(out io.Writer, args []string) (bool, error) {
 	return reference()
 }
 
-func (c campaignCLI) runValidate(args []string) error {
+// authoringFailure composes local diagnostics with the existing error envelope.
+// documentPrinted still owns the single-document fence; transport is unchanged.
+func (c campaignCLI) authoringFailure(err error, file string, asJSON bool) error {
+	if err == nil {
+		return nil
+	}
+	var printed documentPrinted
+	if errors.As(err, &printed) {
+		return err
+	}
+	if !asJSON {
+		return authoringTextError{error: err, file: file}
+	}
+	envelope, classified := backlogadmin.NewTransportErrorEnvelope(err)
+	if !classified {
+		envelope = backlogadmin.TransportErrorEnvelope{
+			Version: backlogadmin.Version, Kind: "error", Class: unclassifiedErrorClass,
+			Operation: "campaign", Message: err.Error(),
+		}
+	}
+	var versioned versionedFailure
+	if errors.As(err, &versioned) {
+		envelope.SchemaVersion = versioned.schemaVersion
+	}
+	out := c.stdout
+	if out == nil {
+		out = os.Stdout
+	}
+	document := struct {
+		backlogadmin.TransportErrorEnvelope
+		Diagnostics diagnostics.Document `json:"diagnostics"`
+	}{envelope, diagnostics.FromError(err, file)}
+	if writeErr := encodeCampaignJSON(out, document); writeErr != nil {
+		return errors.Join(err, writeErr)
+	}
+	return afterDocument(err)
+}
+
+type authoringTextError struct {
+	error
+	file string
+}
+
+func (e authoringTextError) Error() string {
+	return e.error.Error() + diagnostics.Text(e.error, e.file)
+}
+func (e authoringTextError) Unwrap() error { return e.error }
+
+func (c campaignCLI) runValidate(args []string) (err error) {
+	var source string
+	defer func() { err = c.authoringFailure(err, source, requestsJSON(args)) }()
 	parsed, err := parseCampaignArgs("validate", args, false, false)
 	if err != nil {
 		return withSchemaVersion(err, campaignValidationSchemaVersion)
 	}
+	source = parsed.source
 	bundle, plan, err := c.prepare(parsed.source)
 	if err != nil {
 		return withSchemaVersion(err, campaignValidationSchemaVersion)

@@ -14,6 +14,7 @@ import (
 	"text/template"
 
 	"github.com/iryzhkov/t3-steward/internal/backlog"
+	"github.com/iryzhkov/t3-steward/internal/diagnostics"
 	"github.com/iryzhkov/t3-steward/internal/domain"
 	"gopkg.in/yaml.v3"
 )
@@ -68,6 +69,8 @@ type CompilePlanError struct {
 	Line   int
 	Reason string
 }
+
+func (e *CompilePlanError) DiagnosticsLocation() (string, int) { return e.Source, e.Line }
 
 func (e *CompilePlanError) Error() string {
 	return fmt.Sprintf("%s:%d: %s", e.Source, e.Line, e.Reason)
@@ -221,7 +224,8 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 	}
 	lines := splitPlanLines(raw)
 	if len(lines) == 0 || planLineText(raw, lines[0]) != "---" {
-		return CompilePlan{}, refuse(1, "the plan has no YAML front matter: its first line must be --- (format compile: %s)", CompileFormat)
+		cause := refuse(1, "the plan has no YAML front matter: its first line must be --- (format compile: %s)", CompileFormat)
+		return CompilePlan{}, diagnostics.Attach(cause, diagnostics.Refusal("front-matter-missing", source, 1, cause.Error(), "Start the plan with a --- front matter fence."))
 	}
 	closing := -1
 	for index := 1; index < len(lines); index++ {
@@ -231,7 +235,8 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 		}
 	}
 	if closing < 0 {
-		return CompilePlan{}, refuse(1, "the front matter opened on line 1 has no closing --- line")
+		cause := refuse(1, "the front matter opened on line 1 has no closing --- line")
+		return CompilePlan{}, diagnostics.Attach(cause, diagnostics.Refusal("front-matter-unclosed", source, 1, cause.Error(), "Close the front matter with a --- line before the Markdown body."))
 	}
 	// One leading newline stands for the opening --- line, so the decoder's
 	// line numbers are the plan's own.
@@ -243,7 +248,7 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 		if errors.Is(err, io.EOF) {
 			return CompilePlan{}, refuse(1, "the front matter is empty; it must say compile: %s", CompileFormat)
 		}
-		return CompilePlan{}, compileDecodeError(source, err)
+		return CompilePlan{}, compileDecodeError(source, err, frontMatter)
 	}
 	// The front matter is exactly one YAML document. Whatever follows an
 	// explicit document end (... or a --- with content) would otherwise be
@@ -254,11 +259,11 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 	case errors.Is(err, io.EOF):
 	case err != nil:
 		var refusal *CompilePlanError
-		if errors.As(compileDecodeError(source, err), &refusal) {
+		if errors.As(compileDecodeError(source, err, frontMatter), &refusal) {
 			refusal.Reason = secondDocument + ": " + refusal.Reason
-			return CompilePlan{}, refusal
+			return CompilePlan{}, diagnostics.Attach(refusal, diagnostics.Refusal("yaml-multiple-documents", source, refusal.Line, refusal.Error(), "Use a single YAML document in the front matter."))
 		}
-		return CompilePlan{}, compileDecodeError(source, err)
+		return CompilePlan{}, compileDecodeError(source, err, frontMatter)
 	default:
 		// The document node starts at its --- line; an empty document's
 		// content node sits wherever the parser read next.
@@ -266,11 +271,12 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 		if line == 0 && len(trailing.Content) > 0 {
 			line = trailing.Content[0].Line
 		}
-		return CompilePlan{}, refuse(line, "%s", secondDocument)
+		cause := refuse(line, "%s", secondDocument)
+		return CompilePlan{}, diagnostics.Attach(cause, diagnostics.Refusal("yaml-multiple-documents", source, line, cause.Error(), "Use a single YAML document in the front matter."))
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(frontMatter, &document); err != nil {
-		return CompilePlan{}, compileDecodeError(source, err)
+		return CompilePlan{}, compileDecodeError(source, err, frontMatter)
 	}
 	var root *yaml.Node
 	if len(document.Content) == 1 && document.Content[0].Kind == yaml.MappingNode {
@@ -418,7 +424,8 @@ func ParseCompilePlanWith(source string, raw []byte, options CompileOptions) (Co
 }
 
 // compileDecodeError turns a decoder refusal into a refusal at its line.
-func compileDecodeError(source string, err error) error {
+func compileDecodeError(source string, err error, raw []byte) error {
+	document := diagnostics.YAML(err, raw, source, compileObjectNames.Replace, nil)
 	message := err.Error()
 	var typeErr *yaml.TypeError
 	if errors.As(err, &typeErr) && len(typeErr.Errors) > 0 {
@@ -427,10 +434,10 @@ func compileDecodeError(source string, err error) error {
 	message = compileObjectNames.Replace(message)
 	if match := yamlLinePattern.FindStringSubmatch(message); match != nil {
 		if line, convErr := strconv.Atoi(match[1]); convErr == nil {
-			return &CompilePlanError{Source: source, Line: line, Reason: match[2]}
+			return diagnostics.Attach(&CompilePlanError{Source: source, Line: line, Reason: match[2]}, document)
 		}
 	}
-	return &CompilePlanError{Source: source, Line: 1, Reason: strings.TrimPrefix(message, "yaml: ")}
+	return diagnostics.Attach(&CompilePlanError{Source: source, Line: 1, Reason: strings.TrimPrefix(message, "yaml: ")}, document)
 }
 
 func mappingValue(node *yaml.Node, key string) *yaml.Node {

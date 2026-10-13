@@ -14,6 +14,7 @@ import (
 
 	"github.com/iryzhkov/t3-steward/internal/backlogadmin"
 	"github.com/iryzhkov/t3-steward/internal/campaign"
+	"github.com/iryzhkov/t3-steward/internal/diagnostics"
 )
 
 // campaignCompileSchemaVersion versions the compile document.
@@ -32,9 +33,10 @@ type campaignCompileUnit struct {
 	Directory string `json:"directory"`
 	// Valid and Errors are what "campaign validate" said about the written
 	// directory.
-	Valid  bool                        `json:"valid"`
-	Errors []string                    `json:"errors"`
-	Plan   *campaignCompilePlanSummary `json:"plan,omitempty"`
+	Valid       bool                        `json:"valid"`
+	Errors      []string                    `json:"errors"`
+	Diagnostics *diagnostics.Document       `json:"diagnostics,omitempty"`
+	Plan        *campaignCompilePlanSummary `json:"plan,omitempty"`
 	// Check is present only with --check.
 	Check *campaignCompileCheck `json:"check,omitempty"`
 	Size  *campaignCompileSize  `json:"size,omitempty"`
@@ -86,8 +88,8 @@ func campaignCompileHelpPage() helpPage {
 			{1, "a malformed plan or command line (nothing is written), an existing unit directory without --force, a failed write, or a written unit campaign validate refuses. This is the campaign usage code; there is no separate code 2"},
 		}, coordinatorExits()[2:7]...),
 			helpExit{8, "with --check, a unit can never run as written, as \"campaign check\" exits"}),
-		JSONKeys: []string{"schemaVersion", "out", "units", "id", "directory", "valid", "errors", "plan", "check", "outcome", "reasons", "size", "raw", "estimate", "multiplier", "sampleCount", "label", "threshold", "contributions"},
-		JSONNote: "Read schemaVersion first. units holds one object per compiled unit in plan order: id, directory, valid, errors (always an array), plan (name, tasks, edges, digest) for a valid unit, and check (outcome and reasons) with --check. Available size estimates add size (raw, estimate, multiplier, sampleCount, label, threshold, contributions); unavailable legacy estimates omit size. " + jsonErrorNote,
+		JSONKeys: []string{"schemaVersion", "out", "units", "id", "directory", "valid", "errors", "diagnostics", "plan", "check", "outcome", "reasons", "size", "raw", "estimate", "multiplier", "sampleCount", "label", "threshold", "contributions"},
+		JSONNote: "Read schemaVersion first. units holds one object per compiled unit in plan order: id, directory, valid, errors (always an array), plan (name, tasks, edges, digest) for a valid unit, and check (outcome and reasons) with --check. Failed units add a diagnostics/v1 diagnostics document; malformed plans add it to the existing error envelope. Text refusals append diagnostic locations and hints. Available size estimates add size (raw, estimate, multiplier, sampleCount, label, threshold, contributions); unavailable legacy estimates omit size. " + jsonErrorNote,
 		Notes: "Size annotations: each bullet in Code map and Tests to add ends with [changed-lines: N], counting additions PLUS deletions including tests. Put literal examples in fenced code. " +
 			"Partial or malformed annotations refuse before any write or readiness; legacy units without annotations remain size unavailable/advisory, including with --check. Ordinary compile reports estimates advisory above threshold; --check allows equality. " +
 			"Uncalibrated fallback is 1.25; calibration uses nearest-rank p90 with floor 1. Supply JSON {samples: [{raw, observed, base, head, accept_ref, gate_ref}]}, or an empty samples array for fallback. " +
@@ -223,11 +225,14 @@ func parseCampaignCompileArgs(args []string) (campaignCompileArgs, error) {
 // runs the validate and plan paths on each, plus the check path with --check.
 // It never submits: the directories it writes are the input to "campaign
 // submit", which a lead runs on purpose.
-func (c campaignCLI) runCompile(ctx context.Context, args []string) error {
+func (c campaignCLI) runCompile(ctx context.Context, args []string) (err error) {
+	var source string
+	defer func() { err = c.authoringFailure(err, source, requestsJSON(args)) }()
 	parsed, err := parseCampaignCompileArgs(args)
 	if err != nil {
 		return err
 	}
+	source = parsed.plan
 	raw, err := readCompilePlan(parsed.plan, c.limits.MaxBytes)
 	if err != nil {
 		return err
@@ -329,6 +334,8 @@ func (c campaignCLI) runCompile(ctx context.Context, args []string) error {
 		bundle, projected, err := c.prepare(dir)
 		if err != nil {
 			result.Errors = append(result.Errors, err.Error())
+			document := diagnostics.FromError(err, filepath.Join(dir, "workflow.yaml"))
+			result.Diagnostics = &document
 		} else {
 			result.Valid = true
 			result.Plan = &campaignCompilePlanSummary{
@@ -543,6 +550,9 @@ func renderCampaignCompile(out io.Writer, report campaignCompileReport) error {
 			}
 		}
 		for _, message := range unit.Errors {
+			if unit.Diagnostics != nil {
+				message += diagnostics.Text(diagnostics.Attach(errors.New(message), *unit.Diagnostics), "")
+			}
 			if _, err := fmt.Fprintf(out, "  %s error: %s\n", unit.ID, message); err != nil {
 				return err
 			}
