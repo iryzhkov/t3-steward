@@ -336,6 +336,9 @@ func orderedPlanningTasks(input PlanInput) ([]planningTaskEntry, error) {
 				return nil, fmt.Errorf("plan attempt %q prior deferrals must not be negative", attempt.ID)
 			}
 			order := planningOrder(input, task, history)
+			if attempt.AdminImportance != nil {
+				order.Importance = *attempt.AdminImportance
+			}
 			order.InFlight = inFlight
 			entries = append(entries, planningTaskEntry{
 				workflow: workflow.Workflow,
