@@ -324,7 +324,7 @@ func TestGeneratedFixChainPersistsRerunFromEveryNode(t *testing.T) {
 						t.Fatalf("carried wrong gate log: %s", raw)
 					}
 				}
-				for _, name := range []string{"fix", "handoff.md", "verification.log", "gate/log.txt"} {
+				for _, name := range []string{"fix", "artifacts/handoff.md", "artifacts/verification.log", "gate/log.txt"} {
 					if !found[name] {
 						t.Fatalf("missing carried fix2 output %s", name)
 					}

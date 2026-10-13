@@ -64,8 +64,9 @@ func TestFixChainExistingCleanTreeVerificationPreservesOrder(t *testing.T) {
 	}
 	for name, task := range fixManifest(t, unit).Tasks {
 		if name == "fix1" || name == "fix2" {
-			if !reflect.DeepEqual(task.Verify, before) {
-				t.Fatalf("%s: got %v want %v", name, task.Verify, before)
+			want := append(append([]string(nil), before...), fixReportPathCheck)
+			if !reflect.DeepEqual(task.Verify, want) {
+				t.Fatalf("%s: got %v want %v", name, task.Verify, want)
 			}
 		}
 	}

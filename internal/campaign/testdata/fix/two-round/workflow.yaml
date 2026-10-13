@@ -42,15 +42,16 @@ tasks:
                 - verdict.json
         context: null
         outputs:
-            - continuation.md
-            - handoff.md
-            - verification.log
+            - artifacts/continuation.md
+            - artifacts/handoff.md
+            - artifacts/verification.log
         commits:
             - name: fix
               revision: HEAD
         verify:
             - go test ./...
             - git diff --quiet && git diff --cached --quiet
+            - 'tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf ''report-path collision: %s\n'' "$tracked" >&2; exit 1; }; }'
         gate: null
         placement:
             hosts:
@@ -64,7 +65,19 @@ tasks:
             memory_mb: null
             scratch_mb: null
         preflight:
-            steps: []
+            steps:
+                - id: report-path-collision
+                  kind: check
+                  command:
+                    - sh
+                    - -c
+                    - 'tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf ''report-path collision: %s\n'' "$tracked" >&2; exit 1; }; }'
+                  probe: ""
+                  failure_policy: require-pass
+                  include: ""
+                  max_output_bytes: 0
+                  timeout: 0s
+                  required: false
         routes:
             - host: ""
               instance: codex
@@ -92,21 +105,22 @@ tasks:
         inputs_from:
             fix1:
                 - fix
-                - handoff.md
+                - artifacts/handoff.md
             review2:
-                - review.md
-                - verdict.json
+                - artifacts/review.md
+                - artifacts/verdict.json
         context: null
         outputs:
-            - continuation.md
-            - handoff.md
-            - verification.log
+            - artifacts/continuation.md
+            - artifacts/handoff.md
+            - artifacts/verification.log
         commits:
             - name: fix
               revision: HEAD
         verify:
             - go test ./...
             - git diff --quiet && git diff --cached --quiet
+            - 'tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf ''report-path collision: %s\n'' "$tracked" >&2; exit 1; }; }'
         gate:
             commands:
                 - make check-review
@@ -123,7 +137,19 @@ tasks:
             memory_mb: null
             scratch_mb: null
         preflight:
-            steps: []
+            steps:
+                - id: report-path-collision
+                  kind: check
+                  command:
+                    - sh
+                    - -c
+                    - 'tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf ''report-path collision: %s\n'' "$tracked" >&2; exit 1; }; }'
+                  probe: ""
+                  failure_policy: require-pass
+                  include: ""
+                  max_output_bytes: 0
+                  timeout: 0s
+                  required: false
         routes:
             - host: ""
               instance: codex
@@ -141,7 +167,7 @@ tasks:
         expires_at: null
     review2:
         review_output:
-            verdict: verdict.json
+            verdict: artifacts/verdict.json
         review_requirements: null
         directories: []
         class: ""
@@ -151,16 +177,17 @@ tasks:
         inputs_from:
             fix1:
                 - fix
-                - handoff.md
-                - verification.log
+                - artifacts/handoff.md
+                - artifacts/verification.log
         context: null
         outputs:
-            - continuation.md
-            - review.md
-            - verdict.json
+            - artifacts/continuation.md
+            - artifacts/review.md
+            - artifacts/verdict.json
         commits: []
         verify:
-            - 'head -1 review.md | grep -Eq ''^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'''
+            - 'tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf ''report-path collision: %s\n'' "$tracked" >&2; exit 1; }; }'
+            - 'head -1 artifacts/review.md | grep -Eq ''^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'''
         gate: null
         placement:
             hosts: []
@@ -173,7 +200,19 @@ tasks:
             memory_mb: null
             scratch_mb: null
         preflight:
-            steps: []
+            steps:
+                - id: report-path-collision
+                  kind: check
+                  command:
+                    - sh
+                    - -c
+                    - 'tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf ''report-path collision: %s\n'' "$tracked" >&2; exit 1; }; }'
+                  probe: ""
+                  failure_policy: require-pass
+                  include: ""
+                  max_output_bytes: 0
+                  timeout: 0s
+                  required: false
         routes:
             - host: ""
               instance: claude
@@ -190,7 +229,7 @@ tasks:
         expires_at: null
     review3:
         review_output:
-            verdict: verdict.json
+            verdict: artifacts/verdict.json
         review_requirements: null
         directories: []
         class: ""
@@ -201,20 +240,21 @@ tasks:
         inputs_from:
             fix2:
                 - fix
-                - handoff.md
-                - verification.log
+                - artifacts/handoff.md
+                - artifacts/verification.log
                 - gate/log.txt
             review2:
-                - review.md
-                - verdict.json
+                - artifacts/review.md
+                - artifacts/verdict.json
         context: null
         outputs:
-            - continuation.md
-            - review.md
-            - verdict.json
+            - artifacts/continuation.md
+            - artifacts/review.md
+            - artifacts/verdict.json
         commits: []
         verify:
-            - 'head -1 review.md | grep -Eq ''^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'''
+            - 'tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf ''report-path collision: %s\n'' "$tracked" >&2; exit 1; }; }'
+            - 'head -1 artifacts/review.md | grep -Eq ''^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'''
         gate: null
         placement:
             hosts: []
@@ -227,7 +267,19 @@ tasks:
             memory_mb: null
             scratch_mb: null
         preflight:
-            steps: []
+            steps:
+                - id: report-path-collision
+                  kind: check
+                  command:
+                    - sh
+                    - -c
+                    - 'tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf ''report-path collision: %s\n'' "$tracked" >&2; exit 1; }; }'
+                  probe: ""
+                  failure_policy: require-pass
+                  include: ""
+                  max_output_bytes: 0
+                  timeout: 0s
+                  required: false
         routes:
             - host: ""
               instance: claude

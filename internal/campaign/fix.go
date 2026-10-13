@@ -20,6 +20,18 @@ import (
 
 const FixLineageSchema = "steward.fix-lineage/v1"
 
+// Check only generated report destinations; legacy source outputs retain their names.
+// Run before the session and again during verification to catch accidental staging.
+const fixReportPathCheck = `tracked=$(git ls-files -- artifacts/continuation.md artifacts/handoff.md artifacts/verification.log artifacts/review.md artifacts/verdict.json) && { [ -z "$tracked" ] || { printf 'report-path collision: %s\n' "$tracked" >&2; exit 1; }; }`
+
+func fixReportPreflight() backlog.ManifestPreflight {
+	return backlog.ManifestPreflight{Steps: []backlog.ManifestPreflightStep{{
+		ID: "report-path-collision", Kind: backlog.PreflightKindCheck,
+		Command:       []string{"sh", "-c", fixReportPathCheck},
+		FailurePolicy: backlog.PreflightPolicyRequirePass,
+	}}}
+}
+
 // WriteFixChain publishes a fully validated private staging directory.
 // A parent directory descriptor serializes publication without a persistent
 // reservation. The kernel releases its advisory lock even if a writer is killed.
@@ -240,24 +252,34 @@ func GenerateFixChain(source FixSource, options FixOptions) (CompiledUnit, error
 	if !foundCleanTree {
 		verification = append(verification, cleanTreeVerification)
 	}
+	foundReportCheck := false
+	for _, command := range verification {
+		if command == fixReportPathCheck {
+			foundReportCheck = true
+			break
+		}
+	}
+	if !foundReportCheck {
+		verification = append(verification, fixReportPathCheck)
+	}
 	fixTask := func(name string, needs []string, from map[string][]string) backlog.ManifestTask {
-		return backlog.ManifestTask{PromptFile: "prompts/" + name + ".md", Needs: needs, InputsFrom: from, Outputs: []string{"continuation.md", "handoff.md", "verification.log"}, Commits: []backlog.ManifestCommit{{Name: "fix", Revision: "HEAD"}}, Verify: append([]string(nil), verification...), Routes: routes(source.Producer), Placement: backlog.ManifestPlacement{Hosts: append([]string(nil), source.Producer.Placement.Hosts...)}, Resources: backlog.ManifestResources{Preset: source.Producer.ResourcePreset}, MaxTurns: source.Producer.MaxTurns}
+		return backlog.ManifestTask{Preflight: fixReportPreflight(), PromptFile: "prompts/" + name + ".md", Needs: needs, InputsFrom: from, Outputs: []string{"artifacts/continuation.md", "artifacts/handoff.md", "artifacts/verification.log"}, Commits: []backlog.ManifestCommit{{Name: "fix", Revision: "HEAD"}}, Verify: append([]string(nil), verification...), Routes: routes(source.Producer), Placement: backlog.ManifestPlacement{Hosts: append([]string(nil), source.Producer.Placement.Hosts...)}, Resources: backlog.ManifestResources{Preset: source.Producer.ResourcePreset}, MaxTurns: source.Producer.MaxTurns}
 	}
 	reviewTask := func(name string, needs []string, from map[string][]string) backlog.ManifestTask {
-		return backlog.ManifestTask{PromptFile: "prompts/" + name + ".md", Needs: needs, InputsFrom: from, Outputs: []string{"continuation.md", "review.md", "verdict.json"}, ReviewOutput: &domain.ReviewOutput{Verdict: "verdict.json"}, Verify: []string{"head -1 review.md | grep -Eq '^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'"}, Routes: routes(source.Review), Resources: backlog.ManifestResources{Preset: backlog.ResourcePresetReview}, MaxTurns: source.Review.MaxTurns}
+		return backlog.ManifestTask{Preflight: fixReportPreflight(), PromptFile: "prompts/" + name + ".md", Needs: needs, InputsFrom: from, Outputs: []string{"artifacts/continuation.md", "artifacts/review.md", "artifacts/verdict.json"}, ReviewOutput: &domain.ReviewOutput{Verdict: "artifacts/verdict.json"}, Verify: []string{fixReportPathCheck, "head -1 artifacts/review.md | grep -Eq '^VERDICT: (ACCEPT|CHANGES_REQUESTED)$'"}, Routes: routes(source.Review), Resources: backlog.ManifestResources{Preset: backlog.ResourcePresetReview}, MaxTurns: source.Review.MaxTurns}
 	}
 	tasks := map[string]backlog.ManifestTask{
 		"fix1":    fixTask("fix1", []string{producer, review}, map[string][]string{producer: outputs(source.Producer), review: outputs(source.Review)}),
-		"review2": reviewTask("review2", []string{"fix1"}, map[string][]string{"fix1": {"fix", "handoff.md", "verification.log"}}),
+		"review2": reviewTask("review2", []string{"fix1"}, map[string][]string{"fix1": {"fix", "artifacts/handoff.md", "artifacts/verification.log"}}),
 	}
 	lastFix := "fix1"
 	if lineage.RoundsDeclared == 2 {
-		tasks["fix2"] = fixTask("fix2", []string{"fix1", "review2"}, map[string][]string{"fix1": {"fix", "handoff.md"}, "review2": {"review.md", "verdict.json"}})
-		downstream := []string{"fix", "handoff.md", "verification.log"}
+		tasks["fix2"] = fixTask("fix2", []string{"fix1", "review2"}, map[string][]string{"fix1": {"fix", "artifacts/handoff.md"}, "review2": {"artifacts/review.md", "artifacts/verdict.json"}})
+		downstream := []string{"fix", "artifacts/handoff.md", "artifacts/verification.log"}
 		if options.Gate != nil {
 			downstream = append(downstream, "gate/log.txt")
 		}
-		tasks["review3"] = reviewTask("review3", []string{"fix2", "review2"}, map[string][]string{"fix2": downstream, "review2": {"review.md", "verdict.json"}})
+		tasks["review3"] = reviewTask("review3", []string{"fix2", "review2"}, map[string][]string{"fix2": downstream, "review2": {"artifacts/review.md", "artifacts/verdict.json"}})
 		lastFix = "fix2"
 	}
 	last := tasks[lastFix]
@@ -288,7 +310,7 @@ func GenerateFixChain(source FixSource, options FixOptions) (CompiledUnit, error
 		}
 		return add(p, append(bytes.TrimRight(b.Bytes(), "\n"), '\n'))
 	}
-	if err = render("inputs/fix/rules.md", "rules.md.tmpl", nil); err != nil {
+	if err = render("inputs/fix/rules.md", "rules.md.tmpl", struct{ ReportPathCheck string }{fixReportPathCheck}); err != nil {
 		return CompiledUnit{}, err
 	}
 	taskNames := make([]string, 0, len(tasks))

@@ -76,15 +76,15 @@ func TestFixChainTwoRoundTemplate(t *testing.T) {
 	if f.MaxTurns != 8 || f.Resources.Preset != "build" || !reflect.DeepEqual(f.Placement.Hosts, []string{"worker"}) || f.Routes[0].Options["effort"] != "medium" {
 		t.Fatal(f)
 	}
-	if f.Commits[0].Name != "fix" || f.Verify[len(f.Verify)-1] != "git diff --quiet && git diff --cached --quiet" {
+	if f.Commits[0].Name != "fix" || f.Verify[len(f.Verify)-2] != "git diff --quiet && git diff --cached --quiet" {
 		t.Fatal(f)
 	}
 	for _, n := range []string{"review2", "review3"} {
-		if m.Tasks[n].ReviewOutput.Verdict != "verdict.json" || m.Tasks[n].MaxTurns != 5 || m.Tasks[n].Resources.Preset != backlog.ResourcePresetReview || len(m.Tasks[n].Placement.Hosts) != 0 {
+		if m.Tasks[n].ReviewOutput.Verdict != "artifacts/verdict.json" || m.Tasks[n].MaxTurns != 5 || m.Tasks[n].Resources.Preset != backlog.ResourcePresetReview || len(m.Tasks[n].Placement.Hosts) != 0 {
 			t.Fatal(m.Tasks[n])
 		}
 	}
-	if !reflect.DeepEqual(m.Tasks["review3"].InputsFrom["fix2"], []string{"fix", "handoff.md", "verification.log", "gate/log.txt"}) {
+	if !reflect.DeepEqual(m.Tasks["review3"].InputsFrom["fix2"], []string{"fix", "artifacts/handoff.md", "artifacts/verification.log", "gate/log.txt"}) {
 		t.Fatal(m.Tasks["review3"])
 	}
 	for _, f := range u.Files {
