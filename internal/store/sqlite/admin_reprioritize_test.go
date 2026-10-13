@@ -24,7 +24,7 @@ func reprioritizeFixture(t *testing.T, states ...domain.ProgressState) (*Store, 
 	}
 	for i, state := range states {
 		id := fmt.Sprintf("task-%02d", i)
-		r.Workflows[0].TaskIDs = append(r.Workflows[0].TaskIDs, id)
+		reprioritizeRecord(t, r.Workflows, "wf").TaskIDs = append(reprioritizeRecord(t, r.Workflows, "wf").TaskIDs, id)
 		r.Tasks = append(r.Tasks, domain.Task{ID: id, WorkflowID: "wf", Name: "name-" + id, Importance: 2, ResourceLocks: []string{"kept"}})
 		r.Attempts = append(r.Attempts, domain.Attempt{ID: "attempt-" + id, WorkflowRunID: "run", TaskID: id, Number: 1, Progress: state, Control: domain.ControlUnassigned, Revision: 7, UpdatedAt: adminCommandTestTime})
 	}
@@ -45,6 +45,42 @@ func reprioritizeLoad(t *testing.T, s *Store) CoordinatorRecords {
 	}
 	return r
 }
+
+// Index complete records by durable identity, independent of loader order.
+func reprioritizeByID[T any](t *testing.T, records []T) map[string]*T {
+	t.Helper()
+	if records == nil {
+		return nil
+	}
+	byID := make(map[string]*T, len(records))
+	for i := range records {
+		id := reflect.ValueOf(records[i]).FieldByName("ID").String()
+		if id == "" || byID[id] != nil {
+			t.Fatalf("missing or duplicate record ID: %q", id)
+		}
+		byID[id] = &records[i]
+	}
+	return byID
+}
+func reprioritizeRecord[T any](t *testing.T, records []T, id string) *T {
+	t.Helper()
+	record := reprioritizeByID(t, records)[id]
+	if record == nil {
+		t.Fatalf("missing record %q", id)
+	}
+	return record
+}
+func reprioritizeSameRecords(t *testing.T, before, after CoordinatorRecords) bool {
+	t.Helper()
+	same := reflect.DeepEqual(reprioritizeByID(t, before.Attempts), reprioritizeByID(t, after.Attempts)) &&
+		reflect.DeepEqual(reprioritizeByID(t, before.WorkflowRuns), reprioritizeByID(t, after.WorkflowRuns)) &&
+		reflect.DeepEqual(reprioritizeByID(t, before.Tasks), reprioritizeByID(t, after.Tasks))
+	before.Attempts, after.Attempts = nil, nil
+	before.WorkflowRuns, after.WorkflowRuns = nil, nil
+	before.Tasks, after.Tasks = nil, nil
+	return same && reflect.DeepEqual(before, after)
+}
+
 func reprioritizeSubmit(t *testing.T, s *Store, id string, revision int64, importance int) domain.AdminCommandApplication {
 	t.Helper()
 	c := domain.AdminCommand{ID: id, Kind: domain.AdminCommandReprioritize, TargetType: domain.AdminTargetWorkflowRun, TargetID: "run", ExpectedRevision: revision, RequestedBy: "operator", Reason: "priority only", State: domain.AdminCommandPending, CreatedAt: adminCommandTestTime, Payload: json.RawMessage(fmt.Sprintf("{\"importance\":%d}", importance))}
@@ -93,19 +129,19 @@ func reprioritizeReceipt(t *testing.T, d domain.AdminCommandDecision) reprioriti
 func TestRunReprioritizeHistoryAndApplyRace(t *testing.T) {
 	s, _, r := reprioritizeFixture(t, domain.ProgressReady, domain.ProgressReady, domain.ProgressReady, domain.ProgressReady, domain.ProgressReady)
 	a := reprioritizeSubmit(t, s, "history", 3, 5)
-	old := r.Attempts[0]
+	old := *reprioritizeRecord(t, r.Attempts, "attempt-task-00")
 	old.ID = "old"
 	old.Number = 0
 	old.StartedAt = &adminCommandTestTime
-	r.Attempts[0].Number = 2
+	reprioritizeRecord(t, r.Attempts, "attempt-task-00").Number = 2
 	r.Attempts = append(r.Attempts, old)
-	r.Attempts[1].Number = 2
-	old = r.Attempts[2]
+	reprioritizeRecord(t, r.Attempts, "attempt-task-01").Number = 2
+	old = *reprioritizeRecord(t, r.Attempts, "attempt-task-02")
 	old.ID = "thread-history"
 	old.Number = 0
 	old.ThreadID = "cleared-current-thread"
 	r.Attempts = append(r.Attempts, old)
-	r.Assignments = []domain.Assignment{{ID: "historical-row", AttemptID: r.Attempts[3].ID, State: domain.AssignmentReleased}}
+	r.Assignments = []domain.Assignment{{ID: "historical-row", AttemptID: reprioritizeRecord(t, r.Attempts, "attempt-task-03").ID, State: domain.AssignmentReleased}}
 	// Writer is ordered after intent/submission, before application, with a barrier.
 	committed := make(chan struct{})
 	go func() {
@@ -115,7 +151,7 @@ func TestRunReprioritizeHistoryAndApplyRace(t *testing.T) {
 		}
 	}()
 	<-committed
-	newest := r.Attempts[4]
+	newest := *reprioritizeRecord(t, r.Attempts, "attempt-task-04")
 	newest.Number = 2
 	newest.ID = "new-current"
 	newest.Control = domain.ControlPreparing
@@ -133,7 +169,7 @@ func TestRunReprioritizeHistoryAndApplyRace(t *testing.T) {
 			t.Fatalf("reason: %#v", receipt)
 		}
 	}
-	if !reflect.DeepEqual(before.Attempts, reprioritizeLoad(t, s).Attempts) {
+	if !reflect.DeepEqual(reprioritizeByID(t, before.Attempts), reprioritizeByID(t, reprioritizeLoad(t, s).Attempts)) {
 		t.Fatal("fresh history overwritten")
 	}
 }
@@ -144,7 +180,7 @@ func TestRunReprioritizeApplicationFencesReplaysAndPersists(t *testing.T) {
 			s, _, r := reprioritizeFixture(t, domain.ProgressReady)
 			a := reprioritizeSubmit(t, s, "fence", 3, 5)
 			if fence == "current" {
-				r.WorkflowRuns[0].Revision++
+				reprioritizeRecord(t, r.WorkflowRuns, "run").Revision++
 				reprioritizeSave(t, s, r)
 			} else {
 				a.ExpectedTargetRevision++
@@ -152,7 +188,7 @@ func TestRunReprioritizeApplicationFencesReplaysAndPersists(t *testing.T) {
 			before := reprioritizeLoad(t, s)
 			d := reprioritizeApply(t, s, a)
 			after := reprioritizeLoad(t, s)
-			if d.Command.State != domain.AdminCommandRejected || d.CurrentTarget == nil || !reflect.DeepEqual(before.Attempts, after.Attempts) || !reflect.DeepEqual(before.WorkflowRuns, after.WorkflowRuns) {
+			if d.Command.State != domain.AdminCommandRejected || d.CurrentTarget == nil || !reflect.DeepEqual(reprioritizeByID(t, before.Attempts), reprioritizeByID(t, after.Attempts)) || !reflect.DeepEqual(reprioritizeByID(t, before.WorkflowRuns), reprioritizeByID(t, after.WorkflowRuns)) {
 				t.Fatal("stale fence writes")
 			}
 		})
@@ -168,17 +204,17 @@ func TestRunReprioritizeApplicationFencesReplaysAndPersists(t *testing.T) {
 	}
 	s = openAdminCommandStore(t, path)
 	before := reprioritizeLoad(t, s)
-	if before.Attempts[0].AdminImportance == nil || *before.Attempts[0].AdminImportance != 1 {
+	if reprioritizeRecord(t, before.Attempts, "attempt-task-00").AdminImportance == nil || *reprioritizeRecord(t, before.Attempts, "attempt-task-00").AdminImportance != 1 {
 		t.Fatal("override not persisted")
 	}
-	later := before.Attempts[0]
+	later := *reprioritizeRecord(t, before.Attempts, "attempt-task-00")
 	later.ThreadID = "post-application"
 	later.Revision++
 	reprioritizeSave(t, s, CoordinatorRecords{Attempts: []domain.Attempt{later}, Assignments: []domain.Assignment{{ID: "later", AttemptID: later.ID, State: domain.AssignmentReleased}}})
 	before = reprioritizeLoad(t, s)
 	replay := reprioritizeApply(t, s, a)
 	after := reprioritizeLoad(t, s)
-	if string(first.Event.Detail) != string(replay.Event.Detail) || !reflect.DeepEqual(before, after) {
+	if string(first.Event.Detail) != string(replay.Event.Detail) || !reprioritizeSameRecords(t, before, after) {
 		t.Fatal("replay recomputed/wrote receipt")
 	}
 	var legacy adminEventDetail
@@ -188,7 +224,7 @@ func TestRunReprioritizeApplicationFencesReplaysAndPersists(t *testing.T) {
 	t.Run("corrupt-payload", func(t *testing.T) {
 		s, _, _ := reprioritizeFixture(t, domain.ProgressReady)
 		a := reprioritizeSubmit(t, s, "corrupt", 3, 5)
-		c := reprioritizeLoad(t, s).AdminCommands[0]
+		c := *reprioritizeRecord(t, reprioritizeLoad(t, s).AdminCommands, a.CommandID)
 		c.Payload = json.RawMessage(`{"importance":0}`)
 		raw, _ := json.Marshal(c)
 		if _, err := s.db.Exec("UPDATE coordinator_admin_commands SET record=? WHERE id=?", raw, c.ID); err != nil {
@@ -197,7 +233,7 @@ func TestRunReprioritizeApplicationFencesReplaysAndPersists(t *testing.T) {
 		before := reprioritizeLoad(t, s)
 		d := reprioritizeApply(t, s, a)
 		after := reprioritizeLoad(t, s)
-		if d.Command.State != domain.AdminCommandRejected || !reflect.DeepEqual(before.Attempts, after.Attempts) || !reflect.DeepEqual(before.WorkflowRuns, after.WorkflowRuns) {
+		if d.Command.State != domain.AdminCommandRejected || !reflect.DeepEqual(reprioritizeByID(t, before.Attempts), reprioritizeByID(t, after.Attempts)) || !reflect.DeepEqual(reprioritizeByID(t, before.WorkflowRuns), reprioritizeByID(t, after.WorkflowRuns)) {
 			t.Fatal("malformed durable payload applied")
 		}
 	})
@@ -212,7 +248,7 @@ func TestRunReprioritizeAllSkipped(t *testing.T) {
 			}
 			r.Attempts = []domain.Attempt{{ID: "overseer", WorkflowRunID: "run", TaskID: "missing", Number: 1, Progress: domain.ProgressReady, Control: domain.ControlUnassigned, Revision: 1, SupervisionActivationID: "activation"}}
 			if mode == "final" {
-				r.WorkflowRuns[0].Sink = &domain.SinkTask{Progress: domain.ProgressSucceeded}
+				reprioritizeRecord(t, r.WorkflowRuns, "run").Sink = &domain.SinkTask{Progress: domain.ProgressSucceeded}
 			}
 			reprioritizeSave(t, s, r)
 			if mode == "closed" {
@@ -226,7 +262,7 @@ func TestRunReprioritizeAllSkipped(t *testing.T) {
 			d := reprioritizeApply(t, s, a)
 			after := reprioritizeLoad(t, s)
 			if mode == "final" || mode == "closed" {
-				if d.Command.State != domain.AdminCommandRejected || !reflect.DeepEqual(before.WorkflowRuns, after.WorkflowRuns) {
+				if d.Command.State != domain.AdminCommandRejected || !reflect.DeepEqual(reprioritizeByID(t, before.WorkflowRuns), reprioritizeByID(t, after.WorkflowRuns)) {
 					t.Fatal("closed/final run modified")
 				}
 			} else {
@@ -238,11 +274,11 @@ func TestRunReprioritizeAllSkipped(t *testing.T) {
 				if mode == "zero" {
 					want = 0
 				}
-				if len(receipt.Skipped) != want || want == 1 && receipt.Skipped[0].Reason != "missing-attempt" || after.WorkflowRuns[0].Revision != 4 {
+				if len(receipt.Skipped) != want || want == 1 && receipt.Skipped[0].Reason != "missing-attempt" || reprioritizeRecord(t, after.WorkflowRuns, "run").Revision != 4 {
 					t.Fatalf("all skipped: %#v", receipt)
 				}
 			}
-			if !reflect.DeepEqual(before.Attempts, after.Attempts) || !reflect.DeepEqual(before.Assignments, after.Assignments) || !reflect.DeepEqual(before.Activations, after.Activations) {
+			if !reflect.DeepEqual(reprioritizeByID(t, before.Attempts), reprioritizeByID(t, after.Attempts)) || !reflect.DeepEqual(reprioritizeByID(t, before.Assignments), reprioritizeByID(t, after.Assignments)) || !reflect.DeepEqual(reprioritizeByID(t, before.Activations), reprioritizeByID(t, after.Activations)) {
 				t.Fatal("activation/lifecycle changed")
 			}
 		})
@@ -252,20 +288,20 @@ func TestRunReprioritizeAllSkipped(t *testing.T) {
 func TestRunReprioritizePreservesHeldDelayedAndWaitingState(t *testing.T) {
 	s, _, r := reprioritizeFixture(t, domain.ProgressBlocked, domain.ProgressActive)
 	ctx := context.Background()
-	r.WorkflowRuns[0].GraphRevision = 1
-	r.WorkflowRuns[0].Sink = &domain.SinkTask{ID: "sink", Progress: domain.ProgressBlocked, GraphRevision: 1}
-	r.Attempts[0].AdminNotBefore = &adminCommandTestTime
-	r.Attempts[1].Control = domain.ControlRunning
-	r.Attempts[1].ThreadID = "thread"
-	r.Attempts[1].AssignmentID = "assignment"
-	r.Assignments = []domain.Assignment{{ID: "assignment", AttemptID: r.Attempts[1].ID, WorkerID: "worker", State: domain.AssignmentClaimed, Epoch: 1, ThreadID: "thread", LeaseToken: "lease", DispatchToken: "dispatch"}}
+	reprioritizeRecord(t, r.WorkflowRuns, "run").GraphRevision = 1
+	reprioritizeRecord(t, r.WorkflowRuns, "run").Sink = &domain.SinkTask{ID: "sink", Progress: domain.ProgressBlocked, GraphRevision: 1}
+	reprioritizeRecord(t, r.Attempts, "attempt-task-00").AdminNotBefore = &adminCommandTestTime
+	reprioritizeRecord(t, r.Attempts, "attempt-task-01").Control = domain.ControlRunning
+	reprioritizeRecord(t, r.Attempts, "attempt-task-01").ThreadID = "thread"
+	reprioritizeRecord(t, r.Attempts, "attempt-task-01").AssignmentID = "assignment"
+	r.Assignments = []domain.Assignment{{ID: "assignment", AttemptID: reprioritizeRecord(t, r.Attempts, "attempt-task-01").ID, WorkerID: "worker", State: domain.AssignmentClaimed, Epoch: 1, ThreadID: "thread", LeaseToken: "lease", DispatchToken: "dispatch"}}
 	r.QuotaPools = []domain.QuotaPool{{ID: "closed-pool", Admission: domain.AdmissionClosed}}
-	r.Artifacts = []domain.Artifact{{ID: "retained", WorkflowRunID: "run", TaskID: r.Tasks[0].ID, AttemptID: r.Attempts[0].ID, SHA256: "retained-sha"}}
+	r.Artifacts = []domain.Artifact{{ID: "retained", WorkflowRunID: "run", TaskID: reprioritizeRecord(t, r.Tasks, "task-00").ID, AttemptID: reprioritizeRecord(t, r.Attempts, "attempt-task-00").ID, SHA256: "retained-sha"}}
 	reprioritizeSave(t, s, r)
 	if err := s.SaveWorkerSnapshot(ctx, domain.WorkerSnapshot{WorkerID: "worker", WorkerEpoch: "epoch", CoordinatorEpoch: 1, Sequence: 1, Connected: true, ObservedAt: adminCommandTestTime, ValidUntil: adminCommandTestTime.Add(time.Hour), Inventory: domain.WorkerInventory{ID: "worker", AcceptBacklog: true, Health: domain.WorkerHealthReady}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RegisterTaskWait(ctx, taskWaitRegistration(r.Attempts[1], "wait", domain.WakeEach), adminCommandTestTime); err != nil {
+	if _, err := s.RegisterTaskWait(ctx, taskWaitRegistration(*reprioritizeRecord(t, r.Attempts, "attempt-task-01"), "wait", domain.WakeEach), adminCommandTestTime); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.PutSupervision(ctx, SupervisionMaterialization{Record: domain.SupervisionRecord{RunID: "run", Config: supervisionTestConfig()}}); err != nil {
@@ -290,7 +326,7 @@ func TestRunReprioritizePreservesHeldDelayedAndWaitingState(t *testing.T) {
 		t.Fatalf("held blocked task not overridden: %#v", receipt)
 	}
 	after := reprioritizeLoad(t, s)
-	if !reflect.DeepEqual(before.Artifacts, after.Artifacts) || !reflect.DeepEqual(before.Assignments, after.Assignments) || !reflect.DeepEqual(before.QuotaPools, after.QuotaPools) || !reflect.DeepEqual(before.Attempts[1], after.Attempts[1]) || !reflect.DeepEqual(before.WorkflowRuns[0].Sink, after.WorkflowRuns[0].Sink) {
+	if !reflect.DeepEqual(reprioritizeByID(t, before.Artifacts), reprioritizeByID(t, after.Artifacts)) || !reflect.DeepEqual(reprioritizeByID(t, before.Assignments), reprioritizeByID(t, after.Assignments)) || !reflect.DeepEqual(reprioritizeByID(t, before.QuotaPools), reprioritizeByID(t, after.QuotaPools)) || !reflect.DeepEqual(reprioritizeRecord(t, before.Attempts, "attempt-task-01"), reprioritizeRecord(t, after.Attempts, "attempt-task-01")) || !reflect.DeepEqual(reprioritizeRecord(t, before.WorkflowRuns, "run").Sink, reprioritizeRecord(t, after.WorkflowRuns, "run").Sink) {
 		t.Fatal("custody/admission/waiting lifecycle changed")
 	}
 	gotSupervision, err := s.SupervisionReadSet(ctx, "run")
@@ -301,7 +337,7 @@ func TestRunReprioritizePreservesHeldDelayedAndWaitingState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(supervision, gotSupervision) || !reflect.DeepEqual(waits, gotWaits) || !reflect.DeepEqual(before.Attempts[0].AdminNotBefore, after.Attempts[0].AdminNotBefore) {
+	if !reflect.DeepEqual(supervision, gotSupervision) || !reflect.DeepEqual(waits, gotWaits) || !reflect.DeepEqual(reprioritizeRecord(t, before.Attempts, "attempt-task-00").AdminNotBefore, reprioritizeRecord(t, after.Attempts, "attempt-task-00").AdminNotBefore) {
 		t.Fatal("hold/wait/delay mutated")
 	}
 }
@@ -346,17 +382,17 @@ func TestRunReprioritizeRunSetAtomicity(t *testing.T) {
 		after := reprioritizeLoad(t, s)
 		switch d.Command.State {
 		case domain.AdminCommandApplied:
-			if len(reprioritizeReceipt(t, d).Changed) != 1 || after.Attempts[0].Revision != 8 || after.WorkflowRuns[0].Revision != 5 {
+			if len(reprioritizeReceipt(t, d).Changed) != 1 || reprioritizeRecord(t, after.Attempts, "attempt-task-00").Revision != 8 || reprioritizeRecord(t, after.WorkflowRuns, "run").Revision != 5 {
 				t.Fatal("incoherent apply-first selection")
 			}
 		case domain.AdminCommandRejected:
-			if d.CurrentTarget == nil || after.Attempts[0].Revision != 7 || after.WorkflowRuns[0].Revision != 4 {
+			if d.CurrentTarget == nil || reprioritizeRecord(t, after.Attempts, "attempt-task-00").Revision != 7 || reprioritizeRecord(t, after.WorkflowRuns, "run").Revision != 4 {
 				t.Fatal("writer-first fence failed")
 			}
 		default:
 			t.Fatal("unexpected outcome")
 		}
-		if len(after.Tasks) != 2 {
+		if len(after.Tasks) != 2 || reprioritizeRecord(t, after.Tasks, "new-member").Name != "new member" {
 			t.Fatal("membership writer lost")
 		}
 	})
@@ -370,7 +406,7 @@ func TestRunReprioritizeRunSetAtomicity(t *testing.T) {
 		if _, err := s.ApplyAdminCommand(context.Background(), a); err == nil {
 			t.Fatal("expected rollback")
 		}
-		if !reflect.DeepEqual(before, reprioritizeLoad(t, s)) {
+		if !reprioritizeSameRecords(t, before, reprioritizeLoad(t, s)) {
 			t.Fatal("partial run-set or outcome")
 		}
 	})
@@ -408,10 +444,11 @@ func TestRunReprioritizeRunSetAtomicity(t *testing.T) {
 			}
 		}
 		after := reprioritizeLoad(t, s)
-		if len(after.AuditEvents) != len(before.AuditEvents)+1 || after.WorkflowRuns[0].Revision != 4 {
+		if len(after.AuditEvents) != len(before.AuditEvents)+1 || len(before.Attempts) != len(after.Attempts) || reprioritizeRecord(t, after.WorkflowRuns, "run").Revision != 4 {
 			t.Fatal("multiple outcomes")
 		}
-		for _, attempt := range after.Attempts {
+		for id := range reprioritizeByID(t, before.Attempts) {
+			attempt := reprioritizeRecord(t, after.Attempts, id)
 			if attempt.Revision != 8 {
 				t.Fatal("multiple transitions")
 			}
@@ -423,13 +460,13 @@ func TestRunReprioritizeRunSetAtomicity(t *testing.T) {
 			a := reprioritizeSubmit(t, s, "inject", 3, 5)
 			switch field {
 			case "attempt":
-				a.Attempt = &r.Attempts[0]
+				a.Attempt = reprioritizeRecord(t, r.Attempts, "attempt-task-00")
 			case "related":
 				a.RelatedAttempts = r.Attempts
 			case "new":
-				a.NewAttempt = &r.Attempts[0]
+				a.NewAttempt = reprioritizeRecord(t, r.Attempts, "attempt-task-00")
 			case "run":
-				a.WorkflowRun = &r.WorkflowRuns[0]
+				a.WorkflowRun = reprioritizeRecord(t, r.WorkflowRuns, "run")
 			case "schedule":
 				a.Schedule = &domain.Schedule{}
 			case "trigger":
@@ -441,9 +478,9 @@ func TestRunReprioritizeRunSetAtomicity(t *testing.T) {
 			case "validity":
 				a.SafetyValidUntil = &adminCommandTestTime
 			case "wrong-target":
-				c := reprioritizeLoad(t, s).AdminCommands[0]
+				c := *reprioritizeRecord(t, reprioritizeLoad(t, s).AdminCommands, a.CommandID)
 				c.TargetType = domain.AdminTargetAttempt
-				c.TargetID = r.Attempts[0].ID
+				c.TargetID = reprioritizeRecord(t, r.Attempts, "attempt-task-00").ID
 				raw, _ := json.Marshal(c)
 				if _, err := s.db.Exec("UPDATE coordinator_admin_commands SET record=? WHERE id=?", raw, c.ID); err != nil {
 					t.Fatal(err)
@@ -453,7 +490,7 @@ func TestRunReprioritizeRunSetAtomicity(t *testing.T) {
 			if _, err := s.ApplyAdminCommand(context.Background(), a); err == nil {
 				t.Fatal("injected transition accepted")
 			}
-			if !reflect.DeepEqual(before, reprioritizeLoad(t, s)) {
+			if !reprioritizeSameRecords(t, before, reprioritizeLoad(t, s)) {
 				t.Fatal("invalid application wrote state")
 			}
 		})
@@ -462,18 +499,19 @@ func TestRunReprioritizeRunSetAtomicity(t *testing.T) {
 
 func TestRunReprioritizeSelectsNeverStartedTasks(t *testing.T) {
 	s, _, r := reprioritizeFixture(t, domain.ProgressReady, domain.ProgressBlocked, domain.ProgressReady, domain.ProgressReady, domain.ProgressActive, domain.ProgressReady, domain.ProgressReady, domain.ProgressSucceeded)
-	r.Attempts[2].Control = domain.ControlPreparing
-	r.Attempts[3].AssignmentID = "offer"
-	r.Attempts[4].Control = domain.ControlRunning
-	r.Attempts[5].Control = domain.ControlPaused
-	r.Attempts[6].Control = domain.ControlDraining
-	other := r.Attempts[0]
+	reprioritizeRecord(t, r.Attempts, "attempt-task-02").Control = domain.ControlPreparing
+	reprioritizeRecord(t, r.Attempts, "attempt-task-03").AssignmentID = "offer"
+	reprioritizeRecord(t, r.Attempts, "attempt-task-04").Control = domain.ControlRunning
+	reprioritizeRecord(t, r.Attempts, "attempt-task-05").Control = domain.ControlPaused
+	reprioritizeRecord(t, r.Attempts, "attempt-task-06").Control = domain.ControlDraining
+	other := *reprioritizeRecord(t, r.Attempts, "attempt-task-00")
 	other.ID = "other-run"
 	other.WorkflowRunID = "other"
 	r.Attempts = append(r.Attempts, other)
 	r.WorkflowRuns = append(r.WorkflowRuns, domain.WorkflowRun{ID: "other", WorkflowID: "wf", Revision: 1})
 	// Scramble persisted input; receipt order must come from task IDs.
-	r.Tasks[0], r.Tasks[7] = r.Tasks[7], r.Tasks[0]
+	firstTask, lastTask := reprioritizeRecord(t, r.Tasks, "task-00"), reprioritizeRecord(t, r.Tasks, "task-07")
+	*firstTask, *lastTask = *lastTask, *firstTask
 	reprioritizeSave(t, s, r)
 	for round, importance := range []int{5, 5, 1} {
 		before := reprioritizeLoad(t, s)
@@ -485,6 +523,13 @@ func TestRunReprioritizeSelectsNeverStartedTasks(t *testing.T) {
 		if receipt.Importance != importance || len(receipt.Changed) != 2 || len(receipt.Skipped) != 6 {
 			t.Fatalf("receipt: %#v", receipt)
 		}
+		wantChanged := []reprioritizeTestRecord{
+			{TaskID: "task-00", TaskName: "name-task-00"},
+			{TaskID: "task-01", TaskName: "name-task-01"},
+		}
+		if !reflect.DeepEqual(receipt.Changed, wantChanged) {
+			t.Fatalf("changed identities/order: %#v", receipt.Changed)
+		}
 		wantReasons := []string{"control", "history", "control", "control", "control", "terminal"}
 		for i, record := range receipt.Skipped {
 			if record.TaskID != fmt.Sprintf("task-%02d", i+2) || record.TaskName != "name-"+record.TaskID || record.Reason != wantReasons[i] {
@@ -492,8 +537,11 @@ func TestRunReprioritizeSelectsNeverStartedTasks(t *testing.T) {
 			}
 		}
 		after := reprioritizeLoad(t, s)
-		for i, old := range before.Attempts {
-			got := after.Attempts[i]
+		if len(before.Attempts) != len(after.Attempts) || len(before.WorkflowRuns) != len(after.WorkflowRuns) {
+			t.Fatal("record membership changed")
+		}
+		for id, old := range reprioritizeByID(t, before.Attempts) {
+			got := reprioritizeRecord(t, after.Attempts, id)
 			if old.WorkflowRunID == "run" && (old.TaskID == "task-00" || old.TaskID == "task-01") {
 				var override struct {
 					Importance *int `json:"adminImportance"`
@@ -519,8 +567,9 @@ func TestRunReprioritizeSelectsNeverStartedTasks(t *testing.T) {
 				t.Fatalf("skip/other-run changed: %s", old.ID)
 			}
 		}
-		for i, old := range before.WorkflowRuns {
-			got := after.WorkflowRuns[i]
+		for id, original := range reprioritizeByID(t, before.WorkflowRuns) {
+			old := *original
+			got := *reprioritizeRecord(t, after.WorkflowRuns, id)
 			if old.ID == "run" {
 				if got.Revision != old.Revision+1 {
 					t.Fatal("run revision")
@@ -532,7 +581,7 @@ func TestRunReprioritizeSelectsNeverStartedTasks(t *testing.T) {
 				t.Fatal("run fields changed")
 			}
 		}
-		if !reflect.DeepEqual(before.Tasks, after.Tasks) || !reflect.DeepEqual(before.Workflows, after.Workflows) || !reflect.DeepEqual(before.Assignments, after.Assignments) || !reflect.DeepEqual(before.QuotaPools, after.QuotaPools) {
+		if !reflect.DeepEqual(reprioritizeByID(t, before.Tasks), reprioritizeByID(t, after.Tasks)) || !reflect.DeepEqual(reprioritizeByID(t, before.Workflows), reprioritizeByID(t, after.Workflows)) || !reflect.DeepEqual(reprioritizeByID(t, before.Assignments), reprioritizeByID(t, after.Assignments)) || !reflect.DeepEqual(reprioritizeByID(t, before.QuotaPools), reprioritizeByID(t, after.QuotaPools)) {
 			t.Fatal("definitions/admission changed")
 		}
 	}
