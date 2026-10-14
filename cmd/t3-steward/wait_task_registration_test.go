@@ -23,6 +23,11 @@ import (
 // its check, registers over the transport, and stores the local poll itself.
 func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 	t.Helper()
+	return taskWaitCLIFixtureAt(t, time.Now().UTC())
+}
+
+func taskWaitCLIFixtureAt(t *testing.T, now time.Time) (config.Config, *sqlite.Store) {
+	t.Helper()
 	// macOS bounds a Unix socket path at 104 bytes, and t.TempDir() carries the
 	// test name, so the socket beside the state file needs a short root.
 	root, err := os.MkdirTemp("", "t3-")
@@ -37,7 +42,7 @@ func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	store.SetClock(func() time.Time { return now })
 	run := domain.WorkflowRun{
 		ID: "run-1", WorkflowID: "workflow-1", Revision: 1,
 		Progress: domain.ProgressActive, CreatedAt: now, UpdatedAt: now,
@@ -69,6 +74,11 @@ func taskWaitCLIFixture(t *testing.T) (config.Config, *sqlite.Store) {
 		Inventory: domain.WorkerInventory{ID: "worker", AcceptBacklog: true, Health: domain.WorkerHealthReady, ObservedAt: now},
 	}); err != nil {
 		t.Fatal(err)
+	}
+
+	snapshots, err := store.LoadWorkerSnapshots(context.Background())
+	if err != nil || len(snapshots) != 1 || !snapshots[0].ObservedAt.Equal(now) || !snapshots[0].Inventory.ObservedAt.Equal(now) || !snapshots[0].ValidUntil.Equal(now.Add(30*24*time.Hour)) {
+		t.Fatalf("fixture clock/snapshot mismatch: %+v err=%v", snapshots, err)
 	}
 
 	service, err := backlogadmin.New(store, localAdminAuthorizer{})
@@ -192,8 +202,13 @@ func (c *waitTestControl) ObserveNodeWake(_ context.Context, _, messageID string
 // through the command and the transport, the steward's own wait runner polls
 // them, and one settles. The attempt must resume on that settlement alone.
 func TestTwoRegisteredEachWaitsResumeTheAttemptOnOneSettlement(t *testing.T) {
+	testTwoRegisteredEachWaitsAt(t, time.Now().UTC())
+}
+
+func testTwoRegisteredEachWaitsAt(t *testing.T, at time.Time) {
+	t.Helper()
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, at)
 	for _, request := range []string{"req-1", "req-2"} {
 		if err := cmdTaskWaitAdd(ctx, cfg, []string{
 			"--task", "current", "--wake", "each", "--request-id", request,
@@ -202,6 +217,7 @@ func TestTwoRegisteredEachWaitsResumeTheAttemptOnOneSettlement(t *testing.T) {
 			t.Fatalf("registering %s: %v", request, err)
 		}
 	}
+	rebaseLocalChecksAt(t, ctx, store, at)
 	waits, err := store.ListWaits(ctx, "")
 	if err != nil || len(waits) != 2 {
 		t.Fatalf("waits=%v err=%v", waits, err)
@@ -213,7 +229,7 @@ func TestTwoRegisteredEachWaitsResumeTheAttemptOnOneSettlement(t *testing.T) {
 	}}
 	runner := wait.New(store, control, nil)
 	runner.DisableQuotaChecks = true
-	now := time.Now().Add(2 * time.Minute)
+	now := at.Add(2 * time.Minute)
 	runner.SetClock(func() time.Time { return now })
 	runner.Exec = func(_ context.Context, w wait.Wait) (string, int, error) {
 		if w.ID == settling {
@@ -233,5 +249,17 @@ func TestTwoRegisteredEachWaitsResumeTheAttemptOnOneSettlement(t *testing.T) {
 	}
 	if len(control.sends) != 1 {
 		t.Fatalf("the resumed turn was told %d times, want once", len(control.sends))
+	}
+}
+
+func TestTaskWaitClockClosureAndExpiry(t *testing.T) {
+	for _, at := range []time.Time{taskWaitFixtureNow, taskWaitFixtureNow.Add(31 * 24 * time.Hour)} {
+		t.Run(at.Format(time.RFC3339), func(t *testing.T) {
+			for _, after := range []time.Duration{time.Minute, 30 * 24 * time.Hour, 30*24*time.Hour + time.Minute} {
+				t.Run("cancel/"+after.String(), func(t *testing.T) { testLocalCancelAt(t, at, after) })
+			}
+			t.Run("each", func(t *testing.T) { testTwoRegisteredEachWaitsAt(t, at) })
+			t.Run("remote", func(t *testing.T) { testRemoteTaskWaitAt(t, at) })
+		})
 	}
 }

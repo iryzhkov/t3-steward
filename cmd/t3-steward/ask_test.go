@@ -75,7 +75,7 @@ func TestAskOutsideATaskPointsAtTheSessionQuestionTool(t *testing.T) {
 // answer in its message.
 func TestAskAnswerFromTheCLIResumesTheTaskWithTheAnswerFile(t *testing.T) {
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	workspace := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o700); err != nil {
 		t.Fatal(err)

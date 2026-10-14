@@ -5,11 +5,10 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestW2ReviewGitHubMissingLocalIdentityReplay(t *testing.T) {
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	ctx := context.Background()
 	a, b := t.TempDir(), t.TempDir()
 	previous := gitHubCommand
@@ -24,7 +23,7 @@ func TestW2ReviewGitHubMissingLocalIdentityReplay(t *testing.T) {
 	}
 	t.Cleanup(func() { gitHubCommand = previous })
 	args := []string{"--task", "current", "--request-id", "gh-missing", "--github", "run", "123"}
-	spec, err := parseLocalWaitSpec(args, time.Now())
+	spec, err := parseLocalWaitSpec(args, taskWaitFixtureNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +62,7 @@ func TestTaskWaitGitHubCrashSafeReplay(t *testing.T) {
 		{"explicit-same-other-checkout", "owner/project-a", "owner/project-b", true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, store := taskWaitCLIFixture(t)
+			cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 			ctx := context.Background()
 			previous := gitHubCommand
 			gitHubCommand = func(_ context.Context, _ string, args []string) (string, error) {
@@ -77,7 +76,7 @@ func TestTaskWaitGitHubCrashSafeReplay(t *testing.T) {
 			if tc.explicit {
 				args = append(args, "--repo", tc.originalRepo)
 			}
-			spec, err := parseLocalWaitSpec(args, time.Now())
+			spec, err := parseLocalWaitSpec(args, taskWaitFixtureNow)
 			if err != nil {
 				t.Fatal(err)
 			}

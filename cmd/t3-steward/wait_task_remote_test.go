@@ -44,7 +44,12 @@ func TestTaskWaitRemoteExchangeHelper(t *testing.T) {
 
 func remoteTaskWaitFixture(t *testing.T) (config.Config, *sqlite.Store, *sqlite.Store) {
 	t.Helper()
-	cfg, coordinator := taskWaitCLIFixture(t)
+	return remoteTaskWaitFixtureAt(t, time.Now().UTC())
+}
+
+func remoteTaskWaitFixtureAt(t *testing.T, at time.Time) (config.Config, *sqlite.Store, *sqlite.Store) {
+	t.Helper()
+	cfg, coordinator := taskWaitCLIFixtureAt(t, at)
 	previousHome := taskWaitWorkerHome
 	isolatedHome := t.TempDir()
 	taskWaitWorkerHome = func() (string, error) { return isolatedHome, nil }
@@ -72,13 +77,19 @@ func remoteTaskWaitFixture(t *testing.T) (config.Config, *sqlite.Store, *sqlite.
 	if err != nil {
 		t.Fatal(err)
 	}
+	worker.SetClock(func() time.Time { return at })
 	t.Cleanup(func() { worker.Close() })
 	return cfg, coordinator, worker
 }
 
 func TestRemoteTaskWaitRegistrationSettlementAndOwnerDelivery(t *testing.T) {
+	testRemoteTaskWaitAt(t, time.Now().UTC())
+}
+
+func testRemoteTaskWaitAt(t *testing.T, at time.Time) {
+	t.Helper()
 	ctx := context.Background()
-	cfg, coordinator, worker := remoteTaskWaitFixture(t)
+	cfg, coordinator, worker := remoteTaskWaitFixtureAt(t, at)
 	args := []string{"--task", "current", "--request-id", "remote-proof", "--every", "30s", "--max-every", "30s", "--timeout", "5m", "--", "false"}
 	if err := cmdTaskWaitAdd(ctx, cfg, args); err != nil {
 		t.Fatal(err)
@@ -86,6 +97,7 @@ func TestRemoteTaskWaitRegistrationSettlementAndOwnerDelivery(t *testing.T) {
 	if err := cmdTaskWaitAdd(ctx, cfg, args); err != nil {
 		t.Fatal("registration replay", err)
 	}
+	rebaseLocalChecksAt(t, ctx, worker, at)
 	checks, err := worker.ListWaits(ctx, "")
 	if err != nil || len(checks) != 1 {
 		t.Fatalf("duplicate local polls: %v %v", checks, err)
@@ -102,18 +114,19 @@ func TestRemoteTaskWaitRegistrationSettlementAndOwnerDelivery(t *testing.T) {
 	coordinatorRunner.AssignedTaskWakesOnly = true
 	coordinatorRunner.TaskWorkerID = "coordinator-worker"
 	coordinatorRunner.DisableQuotaChecks = true
+	coordinatorRunner.SetClock(func() time.Time { return at })
 	owner := &waitTestControl{threads: map[string]*domain.Thread{"thread-1": {ID: "thread-1", ProviderInstanceID: "codex"}}}
 	runner := wait.New(worker, owner, nil)
 	if err := configureTaskWaitTransport(runner, cfg); err != nil {
 		t.Fatal(err)
 	}
 	runner.DisableQuotaChecks = true
-	runner.SetClock(func() time.Time { return time.Now().Add(time.Minute) })
+	runner.SetClock(func() time.Time { return at.Add(time.Minute) })
 	runner.Exec = func(context.Context, wait.Wait) (string, int, error) { return "done", 0, nil }
 	// Settle locally first, then let the wrong daemon race for the pending wake.
 	check := checks[0]
 	check.Status = wait.StatusMet
-	settled := time.Now()
+	settled := at
 	check.SettledAt = &settled
 	if err := worker.SaveWait(ctx, check); err != nil {
 		t.Fatal(err)
@@ -123,7 +136,7 @@ func TestRemoteTaskWaitRegistrationSettlementAndOwnerDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	coordinatorRunner.Tick(ctx, nil, nil)
-	pending, err := coordinator.TaskWakesAwaitingDelivery(ctx, time.Now())
+	pending, err := coordinator.TaskWakesAwaitingDelivery(ctx, at)
 	if err != nil || len(pending) != 1 || pending[0].WorkerID != "worker" {
 		t.Fatalf("wrong host consumed wake: %v %v", pending, err)
 	}

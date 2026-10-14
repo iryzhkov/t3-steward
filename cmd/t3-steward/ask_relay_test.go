@@ -63,7 +63,7 @@ func (c *relayTestControl) ArchiveThread(_ context.Context, threadID string) err
 		return c.archiveErr
 	}
 	c.archived = append(c.archived, threadID)
-	archived := time.Now()
+	archived := taskWaitFixtureNow.Add(time.Minute)
 	c.threads[threadID].ArchivedAt = &archived
 	return nil
 }
@@ -77,7 +77,7 @@ func relayFixture(t *testing.T, extra ...string) (*relayTestControl, *wait.Runne
 func relayFixtureWithStore(t *testing.T, extra ...string) (*relayTestControl, *wait.Runner, func() []domain.TaskWait, *sqlite.Store) {
 	t.Helper()
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	identity, err := resolveTaskIdentity(os.Getenv)
 	if err != nil {
 		t.Fatal(err)

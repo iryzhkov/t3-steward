@@ -62,7 +62,7 @@ func TestW2ReviewMissingLocalIdentityReplay(t *testing.T) {
 		{"complete-same", true, []string{"false"}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, store := taskWaitCLIFixture(t)
+			cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 			ctx := context.Background()
 			firstDir, secondDir := t.TempDir(), t.TempDir()
 			originalCommand := []string{"false"}

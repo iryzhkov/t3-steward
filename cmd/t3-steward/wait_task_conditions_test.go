@@ -59,21 +59,24 @@ func tickTaskWaits(t *testing.T, ctx context.Context, store *sqlite.Store, at ti
 	return control
 }
 
-// taskWaitFixtureNow is the coordinator clock of taskWaitCLIFixture. The
-// registration probe stamps the local checks with the real clock, so they are
-// moved onto this one before the runner ticks: otherwise a run on any later
-// day sees the coordinator deadline already passed.
+// taskWaitFixtureNow is used only with an explicit historical At fixture.
+// Local probes are rebased to that same injected anchor before polling.
 var taskWaitFixtureNow = time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 
 func rebaseLocalChecks(t *testing.T, ctx context.Context, store *sqlite.Store) []wait.Wait {
+	t.Helper()
+	return rebaseLocalChecksAt(t, ctx, store, taskWaitFixtureNow)
+}
+
+func rebaseLocalChecksAt(t *testing.T, ctx context.Context, store *sqlite.Store, at time.Time) []wait.Wait {
 	t.Helper()
 	locals, err := store.ListWaits(ctx, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for index := range locals {
-		locals[index].CreatedAt = taskWaitFixtureNow
-		locals[index].LastRunAt = &taskWaitFixtureNow
+		locals[index].CreatedAt = at
+		locals[index].LastRunAt = &at
 		if err := store.SaveWait(ctx, locals[index]); err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +100,7 @@ func attemptProgress(t *testing.T, ctx context.Context, store *sqlite.Store) dom
 // reports both conditions.
 func TestTaskWaitSecondConditionJoinsTheParkUnderAll(t *testing.T) {
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	outputs := registerTaskConditions(t, ctx, cfg,
 		[]string{"--task", "current", "--name", "run A", "--", "false"},
 		[]string{"--task", "current", "--name", "run B", "--", "false"},
@@ -163,7 +166,7 @@ func TestTaskWaitSecondConditionJoinsTheParkUnderAll(t *testing.T) {
 // registration says so.
 func TestTaskWaitSecondConditionWithAnyWakesOnTheFirst(t *testing.T) {
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	outputs := registerTaskConditions(t, ctx, cfg,
 		[]string{"--task", "current", "--any", "--name", "run A", "--", "false"},
 		[]string{"--task", "current", "--any", "--name", "run B", "--", "false"},
@@ -326,7 +329,7 @@ func TestTaskWaitSecondConditionRefusals(t *testing.T) {
 // settlement alone resumes it, and the trailer is the single-wait trailer.
 func TestTaskWaitSingleConditionIsUnchanged(t *testing.T) {
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	registerTaskConditions(t, ctx, cfg, []string{"--task", "current", "--name", "only", "--", "false"})
 	if progress := attemptProgress(t, ctx, store); progress != domain.ProgressWaitingExternal {
 		t.Fatalf("one condition did not park the attempt: %q", progress)

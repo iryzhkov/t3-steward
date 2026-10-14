@@ -15,7 +15,7 @@ import (
 // events, once each.
 func TestANativeQuestionInATaskThreadIsRecordedInTheRunsEvents(t *testing.T) {
 	ctx := context.Background()
-	_, store := taskWaitCLIFixture(t)
+	_, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	control := &relayTestControl{
 		waitTestControl: waitTestControl{threads: map[string]*domain.Thread{
 			"thread-1": {ID: "thread-1", HasPendingUserInput: true, Running: true},

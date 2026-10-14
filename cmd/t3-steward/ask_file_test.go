@@ -32,7 +32,7 @@ func reportWorkspace(t *testing.T, store *sqlite.Store, workspace string, sequen
 // so the task never reads a stale answer.
 func TestASecondUnansweredAskRemovesTheFirstAnswerFile(t *testing.T) {
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	workspace := t.TempDir()
 	reportWorkspace(t, store, workspace, 2)
 	identity, err := resolveTaskIdentity(os.Getenv)
@@ -84,7 +84,7 @@ func TestASecondUnansweredAskRemovesTheFirstAnswerFile(t *testing.T) {
 // tells the task to use only the document in the message.
 func TestAnUnwritableAnswerFileIsNamedInTheWake(t *testing.T) {
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	workspace := t.TempDir()
 	if err := os.Mkdir(filepath.Join(workspace, domain.AskAnswerFile), 0o700); err != nil {
 		t.Fatal(err)

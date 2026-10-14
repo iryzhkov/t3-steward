@@ -42,7 +42,7 @@ func writeTaskWaitBootstrap(t *testing.T, workerID, coordinatorID string) string
 // wakes of tasks running there and open their ask relays, from its own store.
 func TestTheCoordinatorHostDeliversTaskWakesAndOpensRelays(t *testing.T) {
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	cfg.BacklogV2.Coordinator.ID = "test-coordinator"
 	writeTaskWaitBootstrap(t, "worker", "test-coordinator")
 

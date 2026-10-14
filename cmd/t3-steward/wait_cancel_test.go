@@ -21,8 +21,13 @@ import (
 // coordinator half, or the attempt stays parked on a wait nothing will ever
 // settle until its deadline.
 func TestLocalCancelOfATaskBoundCheckSettlesTheCoordinatorWait(t *testing.T) {
+	testLocalCancelAt(t, time.Now().UTC(), time.Minute)
+}
+
+func testLocalCancelAt(t *testing.T, at time.Time, wakeAfter time.Duration) {
+	t.Helper()
 	ctx := context.Background()
-	cfg, coordinator := taskWaitCLIFixture(t)
+	cfg, coordinator := taskWaitCLIFixtureAt(t, at)
 	if err := cmdTaskWaitAdd(ctx, cfg, []string{
 		"--task", "current", "--request-id", "cancel-local", "--name", "cancel-local", "--", "false",
 	}); err != nil {
@@ -64,12 +69,18 @@ func TestLocalCancelOfATaskBoundCheckSettlesTheCoordinatorWait(t *testing.T) {
 	}
 	// The coordinator's next tick resumes the attempt with the cancellation as
 	// its outcome; nothing is left in waiting-external.
-	if _, err := coordinator.WakeTaskWaits(ctx, time.Now()); err != nil {
+	if _, err := coordinator.WakeTaskWaits(ctx, at.Add(wakeAfter)); err != nil {
 		t.Fatal(err)
 	}
 	records, err := coordinator.LoadCoordinatorRecords(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if wakeAfter >= 30*24*time.Hour {
+		if records.Attempts[0].Progress != domain.ProgressWaitingExternal {
+			t.Fatal("expired snapshot resumed a canceled wait")
+		}
+		return
 	}
 	if got := records.Attempts[0]; got.Progress == domain.ProgressWaitingExternal {
 		t.Fatalf("the attempt is still parked after its only wait was cancelled: %q/%q", got.Progress, got.Control)

@@ -50,7 +50,7 @@ func TestCoordinatorWaitSpecParsesNode(t *testing.T) {
 // no local row; the coordinator's refusals are reported as command errors.
 func TestTaskBoundNodeWaitRegistersWithoutALocalRow(t *testing.T) {
 	ctx := context.Background()
-	cfg, store := taskWaitCLIFixture(t)
+	cfg, store := taskWaitCLIFixtureAt(t, taskWaitFixtureNow)
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	tasks := []domain.Task{{ID: "task-2", WorkflowID: "workflow-2", Name: "deploy", Class: domain.TaskClassRequired}}
 	run, err := domain.BindRunSink(domain.WorkflowRun{ID: "run-2", WorkflowID: "workflow-2", Revision: 1, Progress: domain.ProgressActive, CreatedAt: now, UpdatedAt: now}, tasks)
