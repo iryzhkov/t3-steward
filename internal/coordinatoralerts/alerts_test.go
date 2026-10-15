@@ -1,14 +1,18 @@
 package coordinatoralerts
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,7 +225,8 @@ func TestListenerLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	if listener.server.ReadHeaderTimeout != 5*time.Second || listener.server.MaxHeaderBytes != 16<<10 {
+	if listener.server.ReadHeaderTimeout != 5*time.Second || listener.server.MaxHeaderBytes != 16<<10 ||
+		listener.server.WriteTimeout != 10*time.Second || listener.server.IdleTimeout != 30*time.Second {
 		t.Fatal("HTTP bounds")
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -242,5 +247,439 @@ func TestListenerLifecycle(t *testing.T) {
 	case <-listener.done:
 	default:
 		t.Fatal("server still running")
+	}
+}
+
+type admissionEvent struct {
+	record *headerAdmission
+	name   string
+}
+
+func nextAdmission(t *testing.T, events <-chan admissionEvent, name string) *headerAdmission {
+	t.Helper()
+	for {
+		select {
+		case event := <-events:
+			if event.name == name {
+				return event.record
+			}
+		case <-time.After(15 * time.Second):
+			t.Fatalf("missing admission event %s", name)
+		}
+	}
+}
+func admissionFixture(t *testing.T, h http.Handler, hooks listenerHooks) (*Listener, chan admissionEvent) {
+	t.Helper()
+	events := make(chan admissionEvent, 128)
+	observe := hooks.event
+	hooks.event = func(a *headerAdmission, name string) {
+		events <- admissionEvent{a, name}
+		if observe != nil {
+			observe(a, name)
+		}
+	}
+	l, err := startWithHooks(context.Background(), "127.0.0.1:0", func(context.Context) http.Handler { return h }, hooks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	return l, events
+}
+func h2Transport(t *testing.T) *http.Transport {
+	t.Helper()
+	protocols := new(http.Protocols)
+	protocols.SetUnencryptedHTTP2(true)
+	tr := &http.Transport{Protocols: protocols, MaxConnsPerHost: 1}
+	t.Cleanup(tr.CloseIdleConnections)
+	return tr
+}
+func TestInitialHeaderAdmissionBounds(t *testing.T) {
+	preface := "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+	for name, prefix := range map[string]string{
+		"silent": "", "short H1": "G", "partial H2": preface[:13],
+		"full H2": preface, "no HEADERS": preface + "\x00\x00\x00\x04\x00\x00\x00\x00\x00",
+		"partial HEADERS": preface + "\x00\x00\x00\x04\x00\x00\x00\x00\x00" + "\x00\x00\x04\x01\x04\x00\x00\x00\x01\x82",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var calls atomic.Int32
+			l, events := admissionFixture(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }), listenerHooks{})
+			conn, err := net.Dial("tcp", l.server.Addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+			if _, err := io.WriteString(conn, prefix); err != nil {
+				t.Fatal(err)
+			}
+			a := nextAdmission(t, events, "armed")
+			if a.deadline.Sub(a.acceptedAt) != 5*time.Second {
+				t.Fatal("initial absolute bound")
+			}
+			if name == "no HEADERS" || name == "partial HEADERS" {
+				// A server SETTINGS byte proves actual H2 handoff. Independently
+				// clear the inherited raw deadline, as stdlib handoff may do.
+				var first [1]byte
+				if _, err := io.ReadFull(conn, first[:]); err != nil {
+					t.Fatal(err)
+				}
+				if err := a.conn.SetReadDeadline(time.Time{}); err != nil {
+					t.Fatal(err)
+				}
+				if nextAdmission(t, events, "expired") != a {
+					t.Fatal("wrong timer owner")
+				}
+			}
+			_, err = io.Copy(io.Discard, conn)
+			if err != nil {
+				var timeout net.Error
+				if errors.As(err, &timeout) && timeout.Timeout() {
+					t.Fatal("connection did not close", err)
+				}
+			}
+			_ = l.Close()
+			<-a.timerDone
+			// net/http may close earlier (for example its SETTINGS timeout).
+			if calls.Load() != 0 {
+				t.Fatal("incomplete headers dispatched")
+			}
+		})
+	}
+}
+func TestHTTP1KeepAliveHeaderBounds(t *testing.T) {
+	l, events := admissionFixture(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(204) }), listenerHooks{})
+	conn, err := net.Dial("tcp", l.server.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+	reader := bufio.NewReader(conn)
+	for range 2 {
+		if _, err := io.WriteString(conn, "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != 204 {
+			t.Fatal(response.Status)
+		}
+	}
+	a := nextAdmission(t, events, "timerjoined")
+	if _, err := io.WriteString(conn, "GET /healthz HTTP/1.1\r\nHost:"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = reader.ReadByte()
+	if err == nil || time.Since(start) < 4*time.Second {
+		t.Fatalf("subsequent headers not bounded: %v", err)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state != "ready" {
+		t.Fatal("first admission lost")
+	}
+}
+func TestHTTP2TransferFirstStreams(t *testing.T) {
+	for _, outcome := range []string{"success", "clear failure", "Close"} {
+		t.Run(outcome, func(t *testing.T) {
+			release, clearing := make(chan struct{}), make(chan struct{})
+			var releaseOnce sync.Once
+			unblock := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			var calls, clears, joins atomic.Int32
+			l, events := admissionFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				if r.ProtoMajor != 2 {
+					t.Error("HTTP2 not negotiated")
+				}
+				w.WriteHeader(204)
+			}), listenerHooks{
+				event: func(_ *headerAdmission, name string) {
+					if name == "timerjoined" {
+						joins.Add(1)
+					}
+				},
+				deadline: func(conn net.Conn, deadline time.Time) error {
+					if deadline.IsZero() {
+						clears.Add(1)
+						close(clearing)
+						<-release
+						if outcome == "clear failure" {
+							return errors.New("injected clear failure")
+						}
+					}
+					return conn.SetReadDeadline(deadline)
+				},
+			})
+			// Cleanup releases a blocked setter before Close waits for its owner.
+			t.Cleanup(func() { unblock(); _ = l.Close() })
+			tr := h2Transport(t)
+			results := make(chan error, 2)
+			var jobs sync.WaitGroup
+			t.Cleanup(func() { unblock(); _ = l.Close(); jobs.Wait() })
+			start := func() {
+				jobs.Add(1)
+				go func() {
+					defer jobs.Done()
+					request, err := http.NewRequestWithContext(t.Context(), "POST", "http://"+l.server.Addr+"/healthz", nil)
+					if err == nil {
+						var response *http.Response
+						response, err = tr.RoundTrip(request)
+						if response != nil {
+							_, _ = io.Copy(io.Discard, response.Body)
+							_ = response.Body.Close()
+							if response.ProtoMajor != 2 || response.StatusCode != 204 {
+								err = fmt.Errorf("unexpected response %s", response.Status)
+							}
+						}
+					}
+					results <- err
+				}()
+			}
+			start()
+			select {
+			case <-clearing:
+			case <-time.After(15 * time.Second):
+				t.Fatal("clear not entered")
+			}
+			start()
+			a := nextAdmission(t, events, "waiting")
+			if calls.Load() != 0 || clears.Load() != 1 || joins.Load() != 1 {
+				t.Fatal("dispatch before transfer", calls.Load(), clears.Load(), joins.Load())
+			}
+			closed := make(chan struct{})
+			if outcome == "Close" {
+				go func() { _ = l.Close(); close(closed) }()
+				nextAdmission(t, events, "closed")
+				select {
+				case <-closed:
+					t.Fatal("Close missed transfer owner")
+				default:
+				}
+			}
+			unblock()
+			for range 2 {
+				select {
+				case err := <-results:
+					if (err == nil) != (outcome == "success") {
+						t.Fatalf("%s request: %v", outcome, err)
+					}
+				case <-time.After(15 * time.Second):
+					t.Fatal("request not joined")
+				}
+			}
+			if outcome == "Close" {
+				<-closed
+			}
+			want := int32(0)
+			if outcome == "success" {
+				want = 2
+			}
+			if calls.Load() != want || clears.Load() != 1 || joins.Load() != 1 {
+				t.Fatal("transfer counts", calls.Load(), clears.Load(), joins.Load())
+			}
+			select {
+			case <-a.transferDone:
+			default:
+				t.Fatal("transfer incomplete")
+			}
+		})
+	}
+}
+func TestHTTP2LongStreamAndMultiplex(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	l, events := admissionFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 2 {
+			t.Error("not HTTP2")
+		}
+		if r.URL.Path == "/worker" {
+			close(entered)
+			w.WriteHeader(200)
+			_ = http.NewResponseController(w).Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.WriteHeader(204)
+	}), listenerHooks{})
+	t.Cleanup(func() { unblock(); _ = l.Close() })
+	tr := h2Transport(t)
+	client := &http.Client{Transport: tr, Timeout: 15 * time.Second}
+	input, output := io.Pipe()
+	defer input.Close()
+	defer output.Close()
+	response, err := client.Post("http://"+l.server.Addr+"/worker", "application/octet-stream", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	<-entered
+	a := nextAdmission(t, events, "cleared")
+	<-a.timerDone
+	timer := time.NewTimer(time.Until(a.deadline) + 50*time.Millisecond)
+	defer timer.Stop()
+	<-timer.C
+	monitor, err := client.Get("http://" + l.server.Addr + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = monitor.Body.Close()
+	if monitor.ProtoMajor != 2 || monitor.StatusCode != 204 {
+		t.Fatal("multiplexed monitor", monitor.Status)
+	}
+	unblock()
+	if _, err := io.Copy(io.Discard, response.Body); err != nil {
+		t.Fatal("long open-upload response", err)
+	}
+	if response.ProtoMajor != 2 {
+		t.Fatal("not negotiated HTTP2")
+	}
+}
+func TestAdmissionFailureAndTimerCloseJoins(t *testing.T) {
+	for _, which := range []string{"initial set", "expired callback", "Close before admission", "late headers"} {
+		t.Run(which, func(t *testing.T) {
+			expiring, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			t.Cleanup(unblock)
+			var calls atomic.Int32
+			l, events := admissionFixture(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }), listenerHooks{
+				event: func(_ *headerAdmission, event string) {
+					if which == "expired callback" && event == "expired" {
+						close(expiring)
+						<-release
+					}
+				},
+				deadline: func(c net.Conn, d time.Time) error {
+					if which == "initial set" {
+						return errors.New("injected set failure")
+					}
+					return c.SetReadDeadline(d)
+				},
+			})
+			t.Cleanup(func() { unblock(); _ = l.Close() })
+			conn, err := net.Dial("tcp", l.server.Addr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			a := nextAdmission(t, events, "armed")
+			if which == "expired callback" {
+				select {
+				case <-expiring:
+				case <-time.After(15 * time.Second):
+					t.Fatal("timer did not claim expiry")
+				}
+			}
+			if which == "late headers" {
+				a.mu.Lock()
+				a.deadline = time.Now().Add(-time.Second)
+				a.mu.Unlock()
+				if a.admit(true) {
+					t.Fatal("late admission allowed")
+				}
+			}
+			done := make(chan struct{})
+			go func() {
+				var group sync.WaitGroup
+				for range 2 {
+					group.Add(1)
+					go func() { defer group.Done(); _ = l.Close() }()
+				}
+				group.Wait()
+				close(done)
+			}()
+			if which == "expired callback" {
+				select {
+				case <-done:
+					t.Fatal("Close failed to join running timer")
+				default:
+				}
+			}
+			unblock()
+			select {
+			case <-done:
+			case <-time.After(15 * time.Second):
+				t.Fatal("Close did not join")
+			}
+			<-a.timerDone
+			if a.admit(true) || calls.Load() != 0 {
+				t.Fatal("failed admission dispatched")
+			}
+		})
+	}
+}
+
+func TestCloseDuringConnectionRegistration(t *testing.T) {
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	var calls atomic.Int32
+	l, events := admissionFixture(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }), listenerHooks{
+		event: func(_ *headerAdmission, event string) {
+			if event == "accepted" {
+				<-release
+			}
+		},
+	})
+	t.Cleanup(func() { unblock(); _ = l.Close() })
+	conn, err := net.Dial("tcp", l.server.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	a := nextAdmission(t, events, "accepted")
+	done := make(chan struct{})
+	go func() { _ = l.Close(); close(done) }()
+	t.Cleanup(func() { unblock(); <-done })
+	nextAdmission(t, events, "closed")
+	select {
+	case <-done:
+		t.Fatal("Close missed ConnContext")
+	default:
+	}
+	unblock()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("ConnContext Close did not join")
+	}
+	<-a.timerDone
+	if a.admit(true) || calls.Load() != 0 {
+		t.Fatal("closing registration dispatched")
+	}
+}
+
+func TestHandlerFactoryLifetime(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	for _, bind := range []string{"", occupied.Addr().String(), "127.0.0.1:0"} {
+		var child context.Context
+		l, err := StartWithHandler(context.Background(), bind, func(ctx context.Context) http.Handler { child = ctx; return http.NotFoundHandler() })
+		if bind == occupied.Addr().String() && err == nil {
+			t.Fatal("missing bind error")
+		}
+		if l != nil {
+			_ = l.Close()
+		}
+		select {
+		case <-child.Done():
+		default:
+			t.Fatal("child lifetime not cancelled")
+		}
 	}
 }

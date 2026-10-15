@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iryzhkov/t3-steward/internal/domain"
@@ -172,43 +174,272 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Listener owns the HTTP server and waits for its serving goroutine on Close.
+// Listener owns acceptance, connection admission, handlers and cancellation work.
 type Listener struct {
 	server      *http.Server
 	done        chan struct{}
+	socket      net.Listener
+	ctx         context.Context
+	cancel      context.CancelFunc
 	stopContext func() bool
+	parentDone  chan struct{}
+	parentOnce  sync.Once
+	closeOnce   sync.Once
+	mu          sync.Mutex
+	closing     bool
+	connections map[net.Conn]*headerAdmission
+	handlers    sync.WaitGroup
+	hooks       listenerHooks
 }
 
-// Start leaves the listener disabled when bind is empty. Binding failures are
-// returned before coordinator readiness is reported.
-func Start(ctx context.Context, bind string, handler Handler) (*Listener, error) {
+// The hooks are private, per listener, and never replace the HTTP implementation.
+type listenerHooks struct {
+	event    func(*headerAdmission, string)
+	deadline func(net.Conn, time.Time) error
+}
+type admissionKey struct{}
+type headerAdmission struct {
+	listener             *Listener
+	conn                 net.Conn
+	acceptedAt, deadline time.Time
+	mu                   sync.Mutex
+	state                string
+	closed               bool
+	transferResult       bool
+	transferDone         chan struct{}
+	timer                *time.Timer
+	timerDone            chan struct{}
+	timerStop            sync.Once
+	connClose            sync.Once
+}
+
+func (a *headerAdmission) event(event string) {
+	if a.listener.hooks.event != nil {
+		a.listener.hooks.event(a, event)
+	}
+}
+func (a *headerAdmission) setDeadline(deadline time.Time) error {
+	if set := a.listener.hooks.deadline; set != nil {
+		return set(a.conn, deadline)
+	}
+	return a.conn.SetReadDeadline(deadline)
+}
+func (a *headerAdmission) finishLocked(success bool) {
+	if a.state == "ready" || a.state == "failed" {
+		return
+	}
+	a.transferResult = success
+	if success {
+		a.state = "ready"
+	} else {
+		a.state = "failed"
+	}
+	close(a.transferDone)
+}
+func (a *headerAdmission) close() {
+	a.mu.Lock()
+	a.closed = true
+	a.finishLocked(false)
+	a.mu.Unlock()
+	a.connClose.Do(func() { _ = a.conn.Close(); a.event("closed") })
+}
+func (a *headerAdmission) joinTimer() {
+	a.timerStop.Do(func() {
+		if a.timer.Stop() {
+			close(a.timerDone)
+		}
+		<-a.timerDone
+		a.event("timerjoined")
+	})
+}
+func (a *headerAdmission) admit(h2 bool) (success bool) {
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return false
+	}
+	switch a.state {
+	case "pending":
+		if !time.Now().Before(a.deadline) {
+			a.mu.Unlock()
+			a.close()
+			a.joinTimer()
+			return false
+		}
+		a.state = "transferring"
+		a.mu.Unlock()
+		// A panic or early failure must release every concurrent first stream.
+		defer func() {
+			if !success {
+				a.close()
+			}
+		}()
+		a.event("admitted")
+		a.joinTimer()
+		if h2 {
+			if err := a.setDeadline(time.Time{}); err != nil {
+				log.Print("coordinator HTTP admission: read deadline clear failed")
+				a.event("clearfailed")
+				return false
+			}
+			a.event("cleared")
+		}
+		a.mu.Lock()
+		a.finishLocked(!a.closed && a.listener.ctx.Err() == nil)
+		success = a.transferResult && !a.closed
+		a.mu.Unlock()
+		return success
+	case "transferring":
+		a.mu.Unlock()
+		a.event("waiting")
+		select {
+		case <-a.transferDone:
+		case <-a.listener.ctx.Done():
+			return false
+		}
+		a.mu.Lock()
+	}
+	success = a.state == "ready" && a.transferResult && !a.closed && a.listener.ctx.Err() == nil
+	a.mu.Unlock()
+	return success
+}
+
+// Start preserves the caller-owned handler API.
+func Start(ctx context.Context, bind string, handler http.Handler) (*Listener, error) {
+	return StartWithHandler(ctx, bind, func(context.Context) http.Handler { return handler })
+}
+
+// StartWithHandler gives middleware an independently owned listener lifetime.
+// It is cancelled on Close, parent cancellation, disabled bind and bind failure.
+func StartWithHandler(ctx context.Context, bind string, factory func(context.Context) http.Handler) (*Listener, error) {
+	return startWithHooks(ctx, bind, factory, listenerHooks{})
+}
+func startWithHooks(parent context.Context, bind string, factory func(context.Context) http.Handler, hooks listenerHooks) (*Listener, error) {
+	ctx, cancel := context.WithCancel(parent)
+	handler := factory(ctx)
 	if bind == "" {
+		cancel()
 		return nil, nil
 	}
-	listener, err := net.Listen("tcp", bind)
+	socket, err := net.Listen("tcp", bind)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	server := &http.Server{
-		Addr: listener.Addr().String(), Handler: handler, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 16 << 10,
-		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second,
+	l := &Listener{socket: socket, ctx: ctx, cancel: cancel, hooks: hooks,
+		done: make(chan struct{}), parentDone: make(chan struct{}), connections: make(map[net.Conn]*headerAdmission)}
+	protocols := new(http.Protocols)
+	protocols.SetHTTP1(true)
+	protocols.SetUnencryptedHTTP2(true)
+	l.server = &http.Server{
+		Addr: socket.Addr().String(), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 16 << 10,
+		WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, Protocols: protocols,
 		BaseContext: func(net.Listener) context.Context { return ctx },
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			now := time.Now()
+			a := &headerAdmission{listener: l, conn: conn, acceptedAt: now, deadline: now.Add(5 * time.Second),
+				state: "pending", transferDone: make(chan struct{}), timerDone: make(chan struct{})}
+			// Publish the timer before expiry can acquire the record mutex.
+			a.mu.Lock()
+			a.timer = time.AfterFunc(time.Until(a.deadline), func() {
+				defer close(a.timerDone)
+				a.mu.Lock()
+				expired := a.state == "pending" && !a.closed
+				if expired {
+					a.closed = true
+					a.finishLocked(false)
+				}
+				a.mu.Unlock()
+				if expired {
+					a.event("expired")
+					a.close()
+				}
+			})
+			a.mu.Unlock()
+			l.mu.Lock()
+			l.connections[conn] = a
+			closing := l.closing
+			l.mu.Unlock()
+			a.event("accepted")
+			if err := a.setDeadline(a.deadline); err != nil {
+				log.Print("coordinator HTTP admission: initial read deadline failed")
+				a.event("setfailed")
+				a.close()
+			}
+			a.event("armed")
+			if closing {
+				a.close()
+				a.joinTimer()
+			}
+			return context.WithValue(ctx, admissionKey{}, a)
+		},
+		ConnState: func(conn net.Conn, state http.ConnState) {
+			if state != http.StateClosed {
+				return
+			}
+			l.mu.Lock()
+			a := l.connections[conn]
+			l.mu.Unlock()
+			if a != nil {
+				a.close()
+				a.joinTimer()
+				l.mu.Lock()
+				delete(l.connections, conn)
+				l.mu.Unlock()
+			}
+		},
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			l.mu.Lock()
+			if l.closing {
+				l.mu.Unlock()
+				return
+			}
+			l.handlers.Add(1)
+			l.mu.Unlock()
+			defer l.handlers.Done()
+			a, ok := r.Context().Value(admissionKey{}).(*headerAdmission)
+			if ok && a.admit(r.ProtoMajor == 2) {
+				handler.ServeHTTP(w, r)
+			}
+		}),
 	}
-	result := &Listener{server: server, done: make(chan struct{})}
-	result.stopContext = context.AfterFunc(ctx, func() { _ = server.Close() })
-	go func() {
-		defer close(result.done)
-		_ = server.Serve(listener)
-	}()
-	return result, nil
+	l.stopContext = context.AfterFunc(parent, func() {
+		defer l.parentOnce.Do(func() { close(l.parentDone) })
+		l.beginClose()
+	})
+	go func() { defer close(l.done); _ = l.server.Serve(socket) }()
+	return l, nil
 }
-
+func (l *Listener) beginClose() {
+	l.closeOnce.Do(func() {
+		_ = l.socket.Close()
+		l.cancel()
+		l.mu.Lock()
+		l.closing = true
+		connections := make([]*headerAdmission, 0, len(l.connections))
+		for _, a := range l.connections {
+			connections = append(connections, a)
+		}
+		l.mu.Unlock()
+		for _, a := range connections {
+			a.close()
+		}
+		_ = l.server.Close()
+		for _, a := range connections {
+			a.joinTimer()
+		}
+	})
+}
 func (l *Listener) Close() error {
 	if l == nil {
 		return nil
 	}
-	l.stopContext()
-	err := l.server.Close()
+	if l.stopContext() {
+		l.parentOnce.Do(func() { close(l.parentDone) })
+	}
+	l.beginClose()
 	<-l.done
-	return err
+	l.handlers.Wait()
+	<-l.parentDone
+	return nil
 }

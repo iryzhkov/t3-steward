@@ -539,6 +539,7 @@ type V2Verification struct {
 }
 
 type V2Coordinator struct {
+	WorkerHTTPEnabled bool `yaml:"worker_http_enabled"`
 	// AuditEventRetention defaults to 30 days when absent or zero.
 	AuditEventRetention Duration `yaml:"audit_event_retention"`
 
@@ -651,6 +652,10 @@ type V2Containment struct {
 }
 
 type V2Worker struct {
+	// Carrier selection belongs to coordinator configuration, not the signed worker catalog.
+	// An absent selector keeps SSH and preserves existing catalog bytes.
+	ExchangeTransport string `yaml:"exchange_transport,omitempty" json:"-"`
+
 	Caches        []V2Cache             `yaml:"caches,omitempty" json:"caches,omitempty"`
 	Containment   *V2Containment        `yaml:"containment,omitempty"`
 	Connection    string                `yaml:"connection" json:"connection,omitempty"`

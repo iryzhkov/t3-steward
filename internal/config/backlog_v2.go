@@ -28,6 +28,17 @@ func (c *Config) validateBacklogV2() error {
 	if err := v.Coordinator.Alerts.validate(); err != nil {
 		return err
 	}
+	if v.Coordinator.WorkerHTTPEnabled && strings.TrimSpace(v.Coordinator.Alerts.Bind) == "" {
+		return errors.New("backlog_v2.coordinator.worker_http_enabled requires alerts.bind")
+	}
+	for id, worker := range v.Workers {
+		if worker.ExchangeTransport != "" && worker.ExchangeTransport != "ssh" && worker.ExchangeTransport != "http" {
+			return fmt.Errorf("backlog_v2: worker %q exchange_transport must be ssh or http", id)
+		}
+		if worker.ExchangeTransport == "http" && !v.Coordinator.WorkerHTTPEnabled {
+			return fmt.Errorf("backlog_v2: worker %q HTTP exchange requires coordinator.worker_http_enabled and alerts.bind", id)
+		}
+	}
 	if v.ResultSecretScan.MaxObjectBytes < 0 {
 		return errors.New("backlog_v2.result_secret_scan.max_object_bytes must be nonnegative")
 	}
@@ -155,7 +166,7 @@ func (c *Config) validateBacklogV2() error {
 		if worker.Connection != "" && worker.Connection != "persistent-ssh" && worker.Connection != "unix" {
 			return fmt.Errorf("backlog_v2: worker %q connection must be persistent-ssh or unix", id)
 		}
-		if worker.Connection != "" && (v.MessageLimits.MaxBytes > 8<<20 || v.MessageLimits.MaxArtifactBytes > 16<<20 || v.Transport.RequestTimeout.D() > 2*time.Minute || v.Freshness.WorkerMaxAge.D() > 5*time.Minute) {
+		if (worker.Connection != "" || worker.ExchangeTransport == "http") && (v.MessageLimits.MaxBytes > 8<<20 || v.MessageLimits.MaxArtifactBytes > 16<<20 || v.Transport.RequestTimeout.D() > 2*time.Minute || v.Freshness.WorkerMaxAge.D() > 5*time.Minute) {
 			return fmt.Errorf("backlog_v2: persistent worker %q exceeds bounded frame, artifact, timeout or freshness limits", id)
 		}
 		if strings.TrimSpace(id) == "" || strings.TrimSpace(worker.Address) == "" ||
