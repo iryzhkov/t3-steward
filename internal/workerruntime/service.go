@@ -70,6 +70,11 @@ type WorkerService struct {
 // NewWorkerService binds configuration, credential identity, local persistence,
 // containment, artifact custody, and the T3 adapter into one worker runtime.
 func NewWorkerService(ctx context.Context, options WorkerServiceOptions) (*WorkerService, error) {
+	if options.Quota == nil && options.Settings.CollectorRecovery != nil {
+		cfg := config.Default()
+		cfg.BacklogV2 = options.Settings
+		options.Quota = HostQuotaGuard{Config: cfg}
+	}
 	if options.ProtocolCredentials == nil {
 		return nil, errors.New("worker service: protocol credential resolver is required")
 	}

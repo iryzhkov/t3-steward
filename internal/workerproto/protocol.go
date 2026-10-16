@@ -196,6 +196,10 @@ const CapabilityZramSwapTelemetry = "resource-telemetry-zram-v1"
 // observations decodes them strictly and would refuse the new fields.
 const CapabilityQuotaRunway = "quota-runway-v1"
 
+// CapabilityQuotaCollectorProvenance negotiates native acquisition evidence.
+// It carries no healthy/error status and is omitted for older strict peers.
+const CapabilityQuotaCollectorProvenance = "quota-collector-provenance-v1"
+
 type SnapshotRequest struct {
 	ReportResourceTelemetry bool `json:"reportResourceTelemetry,omitempty"`
 	// ZramSwapWanted asks for the zram part of the swap figure; see
@@ -239,7 +243,8 @@ type SnapshotRequest struct {
 	// QuotaRunwayWanted asks the worker to add the dispatch runway fields to
 	// the quota observations QuotaObservationsWanted asks for. It is sent only
 	// to a worker advertising CapabilityQuotaRunway.
-	QuotaRunwayWanted bool `json:"quotaRunwayWanted,omitempty"`
+	QuotaRunwayWanted              bool `json:"quotaRunwayWanted,omitempty"`
+	QuotaCollectorProvenanceWanted bool `json:"quotaCollectorProvenanceWanted,omitempty"`
 	// ProviderResume is the coordinator's bound on in-session resumes after
 	// provider errors and the quota pools that admit no resumed turn now. It
 	// also asks for the journal excerpt's ProviderError field. It is sent

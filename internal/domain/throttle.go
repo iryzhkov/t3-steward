@@ -117,6 +117,7 @@ type AttentionStopCommand struct {
 // ThrottleCommand is an idempotent worker request. Its execution identity and
 // placement are fixed for the lifetime of the affected attempt.
 type ThrottleCommand struct {
+	QuotaRecovery   *QuotaRecoveryGrant   `json:"quotaRecovery,omitempty"`
 	ID              string                `json:"id"`
 	DirectiveID     string                `json:"directiveId"`
 	AttemptID       string                `json:"attemptId"`
@@ -168,6 +169,7 @@ type ThrottleAttemptRecord struct {
 	AttemptID       string                        `json:"attemptId"`
 	Revision        int64                         `json:"revision"`
 	Command         ThrottleCommand               `json:"command"`
+	StopReceipt     *QuotaStopReceipt             `json:"stopReceipt,omitempty"`
 	PriorCommandIDs []string                      `json:"priorCommandIds,omitempty"`
 	Delivery        ThrottleDeliveryState         `json:"delivery"`
 	Result          ThrottleAcknowledgementResult `json:"result,omitempty"`

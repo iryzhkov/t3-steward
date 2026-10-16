@@ -46,6 +46,10 @@ const (
 // coordinator ThrottleCommand: the durable intent before the effect, and the
 // evidence the pause reports upward while it is in force.
 type LocalThrottleRequest struct {
+	// Collector coverage is a durable pause boundary. Removing or changing its
+	// declaration cannot turn an already-covered pause into a legacy probe.
+	CollectorCovered        bool   `json:"collectorCovered,omitempty"`
+	CollectorCoverageDigest string `json:"collectorCoverageDigest,omitempty"`
 	// Kind is drain (a checkpoint request) or hard-stop.
 	Kind        domain.ThrottleCommandKind `json:"kind"`
 	Bucket      domain.BucketKey           `json:"bucket"`

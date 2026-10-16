@@ -373,15 +373,16 @@ const AdminCommandRewake AdminCommandKind = "rewake"
 // last saw it. Workers report them so the coordinator's admission does not
 // depend on its own host observing a pool it does not use.
 type WorkerQuotaObservation struct {
-	Key           BucketKey  `json:"key"`
-	Phase         Phase      `json:"phase"`
-	UsedPercent   float64    `json:"usedPercent"`
-	Healthy       bool       `json:"healthy"`
-	ObservedAt    time.Time  `json:"observedAt"`
-	ResetsAt      *time.Time `json:"resetsAt,omitempty"`
-	Epoch         string     `json:"epoch,omitempty"`
-	LimitName     string     `json:"limitName,omitempty"`
-	ModelSelector string     `json:"modelSelector,omitempty"`
+	Provenance    *QuotaProvenance `json:"provenance,omitempty"`
+	Key           BucketKey        `json:"key"`
+	Phase         Phase            `json:"phase"`
+	UsedPercent   float64          `json:"usedPercent"`
+	Healthy       bool             `json:"healthy"`
+	ObservedAt    time.Time        `json:"observedAt"`
+	ResetsAt      *time.Time       `json:"resetsAt,omitempty"`
+	Epoch         string           `json:"epoch,omitempty"`
+	LimitName     string           `json:"limitName,omitempty"`
+	ModelSelector string           `json:"modelSelector,omitempty"`
 	// Runway metadata is optional so observations from older workers retain
 	// their existing admission behaviour. DrainsAt crosses the host ladder,
 	// while DrainDeadline is the grace deadline after draining begins. An rc.115
@@ -532,12 +533,14 @@ type Trigger struct {
 
 // QuotaPool groups provider instances that consume the same provider limit.
 type QuotaPool struct {
-	ChecksDisabled      bool        `json:"checksDisabled,omitempty"`
-	ID                  string      `json:"id"`
-	Provider            string      `json:"provider"`
-	AccountID           string      `json:"accountId,omitempty"`
-	ProviderInstanceIDs []string    `json:"providerInstanceIds"`
-	Buckets             []BucketKey `json:"buckets,omitempty"`
+	Collector           *QuotaCollectorCoverage `json:"collector,omitempty"`
+	Models              []string                `json:"models,omitempty"`
+	ChecksDisabled      bool                    `json:"checksDisabled,omitempty"`
+	ID                  string                  `json:"id"`
+	Provider            string                  `json:"provider"`
+	AccountID           string                  `json:"accountId,omitempty"`
+	ProviderInstanceIDs []string                `json:"providerInstanceIds"`
+	Buckets             []BucketKey             `json:"buckets,omitempty"`
 	// BucketSelection says how far Buckets can be trusted. Empty is an
 	// older coordinator's record: a pool naming no buckets is then read from
 	// every window of its providers. BucketSelectionResolved means Buckets is
@@ -562,6 +565,9 @@ const (
 // when its buckets are unknown; and, only for an older coordinator's pool
 // naming none, every bucket of its provider instances (and account).
 func PoolBucketMatcher(pool QuotaPool) func(BucketState) bool {
+	if pool.Collector != nil && pool.BucketSelection != BucketSelectionUnknown {
+		return func(state BucketState) bool { return CollectorBucketRelevant(pool, state) }
+	}
 	named := make(map[BucketKey]bool, len(pool.Buckets))
 	for _, key := range pool.Buckets {
 		named[key] = true

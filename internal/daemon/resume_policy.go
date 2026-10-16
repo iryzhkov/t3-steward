@@ -16,11 +16,18 @@ import (
 // GoverningPause reports the bucket that requires a thread with the given
 // provider and model to drain or stop right now, when one does. It is the
 // evaluation pollThreads applies to running threads: a bucket in the draining
-// or stopped phase whose window has not expired and is not ignored. The most
-// severe phase wins when several buckets apply.
+// or stopped phase and is not ignored. Covered Claude restrictions remain until
+// verified collector recovery; legacy expired windows retain their old behavior.
+// The most severe phase wins when several buckets apply.
 func GoverningPause(cfg config.Config, thread domain.Thread, states []domain.BucketState, now time.Time) (domain.BucketState, bool) {
 	var governing domain.BucketState
 	found := false
+	covered := CollectorInferenceDisabled(cfg, thread)
+	pool, projected := cfg.CollectorCoverageForThread(thread.ProviderInstanceID, thread.Model)
+	byKey := make(map[domain.BucketKey]domain.BucketState, len(states))
+	for _, state := range states {
+		byKey[state.Key] = state
+	}
 	for _, st := range states {
 		if st.Phase != domain.PhaseDraining && st.Phase != domain.PhaseStopped {
 			continue
@@ -28,8 +35,17 @@ func GoverningPause(cfg config.Config, thread domain.Thread, states []domain.Buc
 		if ignoredWindowIn(cfg.Policy.IgnoreWindows, st.Key.Window) || !thread.MatchesBucket(st.Key, st.ModelSelector) {
 			continue
 		}
-		if st.ResetsAt != nil && !st.ResetsAt.After(now) {
-			// The window passed; a fresh snapshot has to rearm or re-stop it.
+		if covered && projected {
+			stoppedAt := st.ObservedAt
+			if st.StoppedAt != nil {
+				stoppedAt = *st.StoppedAt
+			}
+			if recovered, _ := CollectorBucketsRecovered(cfg, pool, []domain.BucketKey{st.Key}, stoppedAt, thread, byKey, now); recovered {
+				continue
+			}
+		}
+		if !covered && st.ResetsAt != nil && !st.ResetsAt.After(now) {
+			// Legacy windows retain their elapsed-reset behaviour.
 			continue
 		}
 		if StaleDraining(cfg, st, now) {
@@ -52,10 +68,10 @@ func QuotaStaleThreshold(cfg config.Config) time.Duration {
 	return threshold
 }
 
-// StaleDraining excludes only old draining observations from pause decisions.
-// Stopped buckets still require recovery or the existing elapsed-reset probe.
+// StaleDraining excludes old draining observations only on legacy routes.
+// Declared Claude collector coverage retains restrictive evidence during outages.
 func StaleDraining(cfg config.Config, st domain.BucketState, now time.Time) bool {
-	return st.Phase == domain.PhaseDraining && now.Sub(st.ObservedAt) > QuotaStaleThreshold(cfg)
+	return !CollectorBucketInferenceDisabled(cfg, st) && st.Phase == domain.PhaseDraining && now.Sub(st.ObservedAt) > QuotaStaleThreshold(cfg)
 }
 
 // BucketsRecovered applies the resume eligibility rules: every bucket that
@@ -65,6 +81,13 @@ func StaleDraining(cfg config.Config, st domain.BucketState, now time.Time) bool
 // bucket whose reset time has passed without a confirming reading to be
 // probed by resuming; see ProbeWindowOpen.
 func BucketsRecovered(cfg config.Config, stopped []domain.BucketKey, stoppedAt time.Time, thread domain.Thread, byKey map[domain.BucketKey]domain.BucketState, now time.Time, probe func(domain.BucketState) bool) (bool, string) {
+	if CollectorInferenceDisabled(cfg, thread) {
+		pool, ok := cfg.CollectorCoverageForThread(thread.ProviderInstanceID, thread.Model)
+		if !ok {
+			return false, "collector coverage is ambiguous for this thread"
+		}
+		return CollectorBucketsRecovered(cfg, pool, stopped, stoppedAt, thread, byKey, now)
+	}
 	for _, key := range stopped {
 		st, ok := byKey[key]
 		if !ok {
@@ -102,6 +125,9 @@ func BucketsRecovered(cfg config.Config, stopped []domain.BucketKey, stoppedAt t
 // the reset. The daemon additionally limits probes to one per provider and
 // reset; a caller without that bookkeeping probes with at most one thread.
 func ProbeWindowOpen(cfg config.Config, st domain.BucketState, now time.Time) bool {
+	if CollectorBucketInferenceDisabled(cfg, st) {
+		return false
+	}
 	probe := cfg.Resume.ProbeAfterReset.D()
 	if probe <= 0 || st.ResetsAt == nil {
 		return false
@@ -117,6 +143,13 @@ func ProbeWindowOpen(cfg config.Config, st domain.BucketState, now time.Time) bo
 // ApplicableHealthy requires every bucket that applies to the thread to be
 // in the normal phase below the warning threshold.
 func ApplicableHealthy(cfg config.Config, thread domain.Thread, byKey map[domain.BucketKey]domain.BucketState, now time.Time) (bool, string) {
+	if CollectorInferenceDisabled(cfg, thread) {
+		pool, ok := cfg.CollectorCoverageForThread(thread.ProviderInstanceID, thread.Model)
+		if !ok {
+			return false, "collector coverage is ambiguous for this thread"
+		}
+		return CollectorBucketsRecovered(cfg, pool, nil, time.Time{}, thread, byKey, now)
+	}
 	for key, st := range byKey {
 		if ignoredWindowIn(cfg.Policy.IgnoreWindows, key.Window) {
 			continue

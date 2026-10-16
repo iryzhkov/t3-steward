@@ -115,6 +115,9 @@ func (s *Store) CommitThrottleAttemptTransitions(ctx context.Context, input []do
 			}
 			continue
 		}
+		if err := validateCollectorResumeIntentTx(ctx, tx, transition.Record, s.now()); err != nil {
+			return err
+		}
 		if err := syncThrottleAttemptControlTx(ctx, tx, transition); err != nil {
 			return err
 		}
@@ -242,7 +245,9 @@ func syncThrottleAttemptControlTx(
 	}
 
 	if transition.ExpectedRevision == 0 {
-		if transition.Record.Control != domain.ControlDraining || !attempt.Control.HoldsProviderSlot() {
+		grant := transition.Record.Command.QuotaRecovery
+		localCollectorResume := transition.Record.Control == domain.ControlResuming && transition.Record.Command.Kind == domain.ThrottleCommandResume && grant != nil && grant.StopCommandID == "" && grant.StopObservedSequence > 0 && (attempt.Control == domain.ControlPaused || attempt.Control == domain.ControlPausedUncheckpointed)
+		if !localCollectorResume && (transition.Record.Control != domain.ControlDraining || !attempt.Control.HoldsProviderSlot()) {
 			return fmt.Errorf("new throttle control %q is invalid from attempt control %q",
 				transition.Record.Control, attempt.Control)
 		}

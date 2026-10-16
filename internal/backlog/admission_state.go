@@ -178,6 +178,7 @@ func reconcileAdmissionBucketStates(key domain.BucketKey, states []domain.Bucket
 	}
 	latestAt := states[len(states)-1].ObservedAt
 	latest := states[len(states)-1]
+	latest.Epoch = domain.QuotaObservationEpoch(latest)
 	for index := len(states) - 1; index >= 0 && states[index].ObservedAt.Equal(latestAt); index-- {
 		candidate := states[index]
 		if !validAdmissionPhase(candidate.Phase) {
@@ -186,7 +187,7 @@ func reconcileAdmissionBucketStates(key domain.BucketKey, states []domain.Bucket
 				Detail: fmt.Sprintf("quota bucket %q has invalid phase %q", key.String(), candidate.Phase),
 			}, true
 		}
-		if candidate.Epoch != latest.Epoch || domain.EpochFor(candidate.ResetsAt) != domain.EpochFor(latest.ResetsAt) {
+		if domain.QuotaObservationEpoch(candidate) != latest.Epoch || domain.EpochFor(candidate.ResetsAt) != domain.EpochFor(latest.ResetsAt) {
 			return domain.BucketState{}, &QuotaAdmissionIssue{
 				Code: QuotaAdmissionIssueObservationConflict, Bucket: key,
 				Detail: fmt.Sprintf("quota bucket %q has conflicting epochs at observation time %s", key.String(), latestAt.UTC().Format(time.RFC3339)),
@@ -195,6 +196,7 @@ func reconcileAdmissionBucketStates(key domain.BucketKey, states []domain.Bucket
 		if candidate.Phase.Rank() > latest.Phase.Rank() {
 			latest.Phase = candidate.Phase
 		}
+		latest = domain.FoldQuotaEvidence(latest, candidate)
 		latest.Healthy = latest.Healthy && candidate.Healthy
 	}
 	return latest, nil, true
@@ -221,12 +223,22 @@ func deriveQuotaPoolAdmission(pool domain.QuotaPool, statesByKey map[domain.Buck
 		})
 	}
 
+	if pool.Collector != nil {
+		var states []domain.BucketState
+		for _, key := range pool.Buckets {
+			states = append(states, statesByKey[key]...)
+		}
+		if problem, bad := domain.ReadQuotaWindows(pool, states, now, maxAge).Problem(); bad {
+			result.Issues = append(result.Issues, QuotaAdmissionIssue{Code: QuotaAdmissionIssueObservationConflict, Detail: problem.String()})
+		}
+	}
+
 	// Drop expired newest readings only when a fresh governing reading remains.
 	// With no fresh reading, the existing fail-closed projection still applies.
 	hasFresh := false
 	for _, key := range pool.Buckets {
 		state, issue, found := reconcileAdmissionBucketStates(key, statesByKey[key])
-		if found && issue == nil && !state.ObservedAt.After(now) && domain.QuotaReadingFresh(state, now, maxAge) {
+		if found && issue == nil && !state.ObservedAt.After(now) && domain.QuotaReadingFresh(state, now, domain.QuotaObservationMaxAge(pool, state, maxAge)) {
 			hasFresh = true
 		}
 	}
@@ -245,7 +257,11 @@ func deriveQuotaPoolAdmission(pool domain.QuotaPool, statesByKey map[domain.Buck
 			result.Issues = append(result.Issues, *issue)
 			continue
 		}
-		if hasFresh && domain.QuotaReadingExpired(state, now, maxAge) {
+		stateAge := domain.QuotaObservationMaxAge(pool, state, maxAge)
+		if pool.Collector != nil && state.Key.AccountID == "" && !domain.UnknownAccountRestricts(pool, state, now, maxAge) {
+			continue
+		}
+		if hasFresh && domain.QuotaReadingExpired(state, now, stateAge) {
 			continue
 		}
 		result.BucketEpochs = append(result.BucketEpochs, QuotaBucketEpoch{Bucket: key, Epoch: state.Epoch})
@@ -256,7 +272,7 @@ func deriveQuotaPoolAdmission(pool domain.QuotaPool, statesByKey map[domain.Buck
 		if result.ObservedAt.IsZero() || state.ObservedAt.Before(result.ObservedAt) {
 			result.ObservedAt = state.ObservedAt
 		}
-		if state.ObservedAt.IsZero() || now.Sub(state.ObservedAt) > maxAge {
+		if !state.ObservedAt.After(now) && !domain.QuotaReadingFresh(state, now, stateAge) {
 			result.Issues = append(result.Issues, QuotaAdmissionIssue{
 				Code: QuotaAdmissionIssueObservationStale, Bucket: key,
 				Detail: fmt.Sprintf("quota bucket %q observation at %s exceeds maximum age %s", key.String(), state.ObservedAt.UTC().Format(time.RFC3339), maxAge),

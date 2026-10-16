@@ -35,7 +35,10 @@ func QuotaReadingFresh(state BucketState, now time.Time, maxAge time.Duration) b
 	if maxAge <= 0 {
 		maxAge = DefaultQuotaStaleAfter
 	}
-	if state.ObservedAt.IsZero() || now.Sub(state.ObservedAt) > maxAge {
+	if state.OriginValidUntil != nil && !now.Before(*state.OriginValidUntil) {
+		return false
+	}
+	if state.ObservedAt.IsZero() || state.ObservedAt.After(now) || now.Sub(state.ObservedAt) > maxAge {
 		return false
 	}
 	return state.ResetsAt == nil || !state.ObservedAt.Before(*state.ResetsAt) || now.Before(*state.ResetsAt)
@@ -80,12 +83,13 @@ func DeclaredQuotaWindows(provider string, observed []BucketState) []string {
 // QuotaWindowReading is one window of a pool, every value read from the same
 // observation; Missing marks a window with no observation at all.
 type QuotaWindowReading struct {
-	Window      string     `json:"window"`
-	Key         BucketKey  `json:"key"`
-	Phase       Phase      `json:"phase,omitempty"`
-	UsedPercent float64    `json:"usedPercent"`
-	ResetsAt    *time.Time `json:"resetsAt,omitempty"`
-	ObservedAt  time.Time  `json:"observedAt,omitempty"`
+	MaxObservationAge time.Duration `json:"maxObservationAge,omitempty"`
+	Window            string        `json:"window"`
+	Key               BucketKey     `json:"key"`
+	Phase             Phase         `json:"phase,omitempty"`
+	UsedPercent       float64       `json:"usedPercent"`
+	ResetsAt          *time.Time    `json:"resetsAt,omitempty"`
+	ObservedAt        time.Time     `json:"observedAt,omitempty"`
 	// Declared marks a window the provider always reports.
 	Declared  bool `json:"declared,omitempty"`
 	Missing   bool `json:"missing,omitempty"`
@@ -102,61 +106,97 @@ type QuotaWindowSet struct {
 	Windows []QuotaWindowReading `json:"windows"`
 }
 
-// ReadQuotaWindows reads every governing bucket of a pool (PoolBucketMatcher
-// says which govern), keeping the newest reading per bucket, and adds a
-// missing entry for each bucket the pool names and each window its provider
-// declares that has no reading.
+// ReadQuotaWindows keeps every newest competitor. Declared collector pools
+// additionally require one complete native acquisition from a bound origin.
 func ReadQuotaWindows(pool QuotaPool, states []BucketState, now time.Time, maxAge time.Duration) QuotaWindowSet {
 	set := QuotaWindowSet{Pool: pool.ID, Unknown: pool.BucketSelection == BucketSelectionUnknown}
 	if set.Unknown {
 		return set
 	}
 	belongs := PoolBucketMatcher(pool)
-	newest := make(map[BucketKey]BucketState)
+	var relevant []BucketState
 	for _, state := range states {
-		if !belongs(state) {
-			continue
+		if belongs(state) {
+			relevant = append(relevant, state)
 		}
-		if current, ok := newest[state.Key]; ok && !state.ObservedAt.After(current.ObservedAt) {
-			continue
-		}
-		newest[state.Key] = state
 	}
-	governing := make([]BucketState, 0, len(newest))
-	for _, state := range newest {
-		governing = append(governing, state)
-	}
-	declared := make(map[string]bool)
-	for _, window := range DeclaredQuotaWindows(pool.Provider, governing) {
+	latest := NewestQuotaStates(relevant)
+	batchComplete := CollectorBatchComplete(pool, latest)
+	declared := map[string]bool{}
+	for _, window := range DeclaredQuotaWindows(pool.Provider, latest) {
 		declared[window] = true
 	}
-	covered := make(map[string]bool)
-	for _, state := range governing {
+	if pool.Collector != nil {
+		for _, window := range pool.Collector.RequiredWindows {
+			if CollectorWindowGoverns(pool, window.Window) {
+				declared[window.Window] = true
+			}
+		}
+	}
+	covered := map[string]bool{}
+	observed := map[BucketKey]bool{}
+	competing := map[BucketKey]BucketState{}
+	for _, state := range latest {
+		if pool.Collector != nil && state.Key.AccountID == "" && !UnknownAccountRestricts(pool, state, now, maxAge) {
+			continue
+		}
+		if pool.AccountID != "" && state.Key.AccountID != "" && state.Key.AccountID != pool.AccountID {
+			continue
+		}
+		if !ValidQuotaPercent(state.UsedPercent) {
+			set.Unknown = true
+		}
+		if current, ok := competing[state.Key]; ok {
+			if pool.Collector != nil && !SameQuotaAcquisition(current.Provenance, state.Provenance) && current.Key.AccountID != "" {
+				set.Unknown = true
+			}
+			if QuotaObservationEpoch(current) != QuotaObservationEpoch(state) || EpochFor(current.ResetsAt) != EpochFor(state.ResetsAt) {
+				set.Unknown = true
+			}
+		}
+		competing[state.Key] = state
+		age := QuotaObservationMaxAge(pool, state, maxAge)
 		reading := quotaWindowReading(state)
-		reading.Declared = declared[state.Key.Window]
-		reading.Stale = !QuotaReadingFresh(state, now, maxAge)
-		reading.Expired = QuotaReadingExpired(state, now, maxAge)
-		reading.Exhausted = QuotaReadingExhausted(state)
+		reading.Declared = declared[state.Key.Window] && (pool.AccountID == "" || state.Key.AccountID == pool.AccountID)
+		reading.Stale = !QuotaReadingFresh(state, now, age)
+		reading.Expired = QuotaReadingExpired(state, now, age)
+		reading.Exhausted = QuotaReadingExhausted(state) || UnknownAccountRestricts(pool, state, now, maxAge)
+		if CollectorObservationQualified(pool, state) {
+			reading.MaxObservationAge = age
+		}
 		set.Windows = append(set.Windows, reading)
-		covered[state.Key.Window] = true
+		observed[state.Key] = true
+		if pool.AccountID == "" || state.Key.AccountID == pool.AccountID {
+			covered[state.Key.Window] = true
+		}
 	}
 	for _, key := range pool.Buckets {
-		if _, observed := newest[key]; observed {
+		if observed[key] || pool.Collector != nil && key.AccountID == "" {
 			continue
 		}
 		set.Windows = append(set.Windows, QuotaWindowReading{Window: key.Window, Key: key, Declared: declared[key.Window], Missing: true})
 		covered[key.Window] = true
 	}
 	for window := range declared {
-		if !covered[window] {
-			set.Windows = append(set.Windows, QuotaWindowReading{Window: window, Key: BucketKey{Window: window}, Declared: true, Missing: true})
+		if !covered[window] || pool.Collector != nil && !batchComplete {
+			set.Windows = append(set.Windows, QuotaWindowReading{Window: window, Key: BucketKey{AccountID: pool.AccountID, Window: window}, Declared: true, Missing: true})
 		}
 	}
-	sort.Slice(set.Windows, func(i, j int) bool {
-		if set.Windows[i].Window != set.Windows[j].Window {
-			return set.Windows[i].Window < set.Windows[j].Window
+	sort.SliceStable(set.Windows, func(i, j int) bool {
+		a, b := set.Windows[i], set.Windows[j]
+		if a.Window != b.Window {
+			return a.Window < b.Window
 		}
-		return set.Windows[i].Key.String() < set.Windows[j].Key.String()
+		if a.Key.String() != b.Key.String() {
+			return a.Key.String() < b.Key.String()
+		}
+		if a.Phase.Rank() != b.Phase.Rank() {
+			return a.Phase.Rank() > b.Phase.Rank()
+		}
+		if a.UsedPercent != b.UsedPercent {
+			return a.UsedPercent > b.UsedPercent
+		}
+		return a.Missing && !b.Missing
 	})
 	return set
 }
@@ -187,7 +227,7 @@ func (s QuotaWindowSet) Governing() QuotaWindowSet {
 	}
 	result := QuotaWindowSet{Pool: s.Pool, Unknown: s.Unknown}
 	for _, w := range s.Windows {
-		if !w.Expired {
+		if !w.Expired || w.Declared && w.MaxObservationAge > 0 {
 			result.Windows = append(result.Windows, w)
 		}
 	}

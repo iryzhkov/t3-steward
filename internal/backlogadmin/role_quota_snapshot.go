@@ -134,10 +134,15 @@ func RoleQuotaSnapshotFromAnswers(now time.Time, maxAge time.Duration, quotas []
 
 func quotaPoolFreshness(pool domain.QuotaPool, windows domain.QuotaWindowSet, now time.Time, maxAge time.Duration) QuotaPoolFreshness {
 	f := QuotaPoolFreshness{Pool: pool.ID, State: QuotaFresh, MaxAge: maxAge, ChecksDisabled: pool.ChecksDisabled}
-	if !windows.Complete() {
+	// This reports presence and time, not validity or headroom. Unknown numeric
+	// or conflicting evidence remains unusable in the window set and ranking.
+	if len(windows.Windows) == 0 {
 		f.State = QuotaMissing
 	}
 	for _, w := range windows.Windows {
+		if w.Missing {
+			f.State = QuotaMissing
+		}
 		if w.Missing || w.ObservedAt.IsZero() {
 			continue
 		}

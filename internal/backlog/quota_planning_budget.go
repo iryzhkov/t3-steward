@@ -29,20 +29,47 @@ func deriveQuotaPlanningWindows(
 		return nil, fmt.Errorf("quota planning surplus horizon cannot be negative")
 	}
 	admissionByPool := make(map[string]domain.AdmissionState, len(pools))
+	poolByID := make(map[string]domain.QuotaPool, len(pools))
 	for _, pool := range pools {
 		admissionByPool[pool.ID] = pool.Admission
+		poolByID[pool.ID] = pool
 	}
 	// Select the newest reading before dropping expired windows. Retain an
 	// all-expired pool so planning still fails closed.
+	competitors := make(map[domain.BucketKey][]domain.BucketState)
+	for _, state := range domain.NewestQuotaStates(states) {
+		competitors[state.Key] = append(competitors[state.Key], state)
+	}
 	newest := make(map[domain.BucketKey]domain.BucketState)
-	for _, state := range states {
-		if current, ok := newest[state.Key]; !ok || state.ObservedAt.After(current.ObservedAt) {
-			newest[state.Key] = state
+	for key, candidates := range competitors {
+		// Legacy budgets may omit phase. Admission independently closes conflicts;
+		// retaining the largest usage still prevents input order granting headroom.
+		state := candidates[0]
+		for _, candidate := range candidates {
+			if !domain.ValidQuotaPercent(candidate.UsedPercent) {
+				return nil, fmt.Errorf("quota planning window %q usage must be between zero and 100", key)
+			}
+			if candidate.DrainDeadline != nil && (state.DrainDeadline == nil || candidate.DrainDeadline.Before(*state.DrainDeadline)) {
+				state.DrainDeadline = candidate.DrainDeadline
+			}
+			if candidate.DrainsAt != nil && (state.DrainsAt == nil || candidate.DrainsAt.Before(*state.DrainsAt)) {
+				state.DrainsAt = candidate.DrainsAt
+			}
+			if candidate.AppliedThresholds != nil && (state.AppliedThresholds == nil || candidate.AppliedThresholds.DrainPercent < state.AppliedThresholds.DrainPercent) {
+				thresholds := *candidate.AppliedThresholds
+				state.AppliedThresholds = &thresholds
+			}
+			state = domain.FoldQuotaEvidence(state, candidate)
 		}
+		newest[key] = state
+	}
+	states = nil
+	for _, state := range newest {
+		states = append(states, state)
 	}
 	freshByPool := make(map[string]bool)
 	for _, state := range newest {
-		if poolID, ok := poolByProviderInstance[state.Key.ProviderInstanceID]; ok && !state.ObservedAt.After(now) && domain.QuotaReadingFresh(state, now, bridge.MaxObservationAge) {
+		if poolID, ok := poolByProviderInstance[state.Key.ProviderInstanceID]; ok && !state.ObservedAt.After(now) && domain.QuotaReadingFresh(state, now, domain.QuotaObservationMaxAge(poolByID[poolID], state, bridge.MaxObservationAge)) {
 			freshByPool[poolID] = true
 		}
 	}
@@ -53,7 +80,12 @@ func deriveQuotaPlanningWindows(
 		if !configured {
 			continue
 		}
-		if !state.ObservedAt.Equal(newest[state.Key].ObservedAt) || freshByPool[poolID] && domain.QuotaReadingExpired(state, now, bridge.MaxObservationAge) {
+		pool := poolByID[poolID]
+		if pool.Collector != nil && state.Key.AccountID == "" && !domain.UnknownAccountRestricts(pool, state, now, bridge.MaxObservationAge) {
+			continue
+		}
+		age := domain.QuotaObservationMaxAge(pool, state, bridge.MaxObservationAge)
+		if !state.ObservedAt.Equal(newest[state.Key].ObservedAt) || freshByPool[poolID] && domain.QuotaReadingExpired(state, now, age) {
 			continue
 		}
 		windowKey := poolID + "\x00" + state.Key.String()
@@ -70,7 +102,7 @@ func deriveQuotaPlanningWindows(
 				return nil, fmt.Errorf("quota planning window %q drain threshold must be between zero and 100", state.Key.String())
 			}
 		}
-		forecastHorizon := bridge.MaxObservationAge
+		forecastHorizon := age
 		if state.ResetsAt != nil && state.ResetsAt.After(now) {
 			forecastHorizon = state.ResetsAt.Sub(now)
 		}
@@ -86,6 +118,8 @@ func deriveQuotaPlanningWindows(
 			QuotaPoolID:              poolID,
 			WindowID:                 state.Key.String(),
 			ObservedAt:               state.ObservedAt,
+			MaxObservationAge:        age,
+			OriginValidUntil:         state.OriginValidUntil,
 			Admission:                admissionByPool[poolID],
 			Capacity:                 100,
 			CurrentUsage:             state.UsedPercent,

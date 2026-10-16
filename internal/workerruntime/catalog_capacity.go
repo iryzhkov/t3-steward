@@ -61,6 +61,7 @@ func catalogChangeAreas(current, next CatalogProjection) string {
 	differ("message limits", current.MessageLimits, next.MessageLimits)
 	differ("freshness", current.Freshness, next.Freshness)
 	differ("leases", current.Leases, next.Leases)
+	differ("collector recovery policy", current.CollectorRecovery, next.CollectorRecovery)
 	if len(areas) == 0 {
 		return "the catalog identity"
 	}

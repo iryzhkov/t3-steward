@@ -136,6 +136,7 @@ func ReconcileThrottleResumes(
 	admissions []domain.QuotaAdmissionRecord,
 	pools []domain.QuotaPool,
 	now time.Time,
+	recovery ...QuotaRecoveryGrantAuthorizer,
 ) (ThrottleDeliveryReport, error) {
 	if store == nil {
 		return ThrottleDeliveryReport{}, fmt.Errorf("throttle delivery store is required")
@@ -147,7 +148,7 @@ func ReconcileThrottleResumes(
 	if err != nil {
 		return ThrottleDeliveryReport{}, fmt.Errorf("load throttle attempt records: %w", err)
 	}
-	transitions, commands, err := PlanThrottleResumes(previous, admissions, pools, now)
+	transitions, commands, err := PlanThrottleResumes(previous, admissions, pools, now, recovery...)
 	if err != nil {
 		return ThrottleDeliveryReport{}, err
 	}
@@ -353,6 +354,7 @@ func PlanThrottleDeadlineExpirations(
 		record.Revision++
 		record.PriorCommandIDs = append(record.PriorCommandIDs, record.Command.ID)
 		record.Command = followupThrottleCommand(record.Command, domain.ThrottleCommandHardStop, record.Revision, nil, now)
+		record.StopReceipt = nil
 		record.Delivery = domain.ThrottleDeliveryPending
 		record.Result = ""
 		record.AcknowledgedAt = nil
@@ -377,6 +379,7 @@ func PlanThrottleResumes(
 	admissions []domain.QuotaAdmissionRecord,
 	pools []domain.QuotaPool,
 	now time.Time,
+	recovery ...QuotaRecoveryGrantAuthorizer,
 ) ([]domain.ThrottleAttemptTransition, []domain.ThrottleCommand, error) {
 	if now.IsZero() {
 		return nil, nil, fmt.Errorf("throttle resume time must be set")
@@ -446,15 +449,31 @@ func PlanThrottleResumes(
 		if pool.ActiveAssignments >= pool.MaxConcurrent {
 			continue
 		}
+		var grant *domain.QuotaRecoveryGrant
+		if pool.Collector != nil {
+			if len(recovery) == 0 || recovery[0] == nil {
+				continue
+			}
+			grant = recovery[0](pool, record, now)
+			if grant == nil {
+				continue
+			}
+		}
 		pool.ActiveAssignments++
 		poolByID[pool.ID] = pool
 
+		if stop, accepted := record.AcceptedQuotaStop(); accepted {
+			receipt := *stop
+			receipt.Command = cloneThrottleCommand(stop.Command)
+			record.StopReceipt = &receipt
+		}
 		previousRevision := record.Revision
 		record.Revision++
 		record.PriorCommandIDs = append(record.PriorCommandIDs, record.Command.ID)
 		reason := throttleResumeReason(pool, admission)
 		record.Command = followupThrottleCommand(record.Command, domain.ThrottleCommandResume, record.Revision, record.Checkpoint, now)
 		record.Command.Reason = reason
+		record.Command.QuotaRecovery = grant
 		record.Delivery = domain.ThrottleDeliveryPending
 		record.Result = ""
 		record.Control = domain.ControlResuming
@@ -540,6 +559,11 @@ func PlanThrottleAcknowledgements(
 		}
 		record.Revision++
 		record.AcknowledgedAt = cloneTime(&acknowledgement.AcknowledgedAt)
+		if stop, accepted := record.AcceptedQuotaStop(); accepted && acknowledgement.Accepted && record.Command.Kind != domain.ThrottleCommandResume {
+			receipt := *stop
+			receipt.Command = cloneThrottleCommand(stop.Command)
+			record.StopReceipt = &receipt
+		}
 		record.UpdatedAt = now
 		transitions = append(transitions, domain.ThrottleAttemptTransition{
 			ExpectedRevision: record.Revision - 1,
@@ -597,6 +621,7 @@ func applyThrottleAcknowledgement(record *domain.ThrottleAttemptRecord, acknowle
 			return invalidThrottleResult(record.Command, acknowledgement.Result)
 		}
 		record.Control = domain.ControlRunning
+		record.StopReceipt = nil
 	default:
 		return fmt.Errorf("throttle command %q has invalid kind %q", record.Command.ID, record.Command.Kind)
 	}
@@ -803,6 +828,11 @@ func throttleRecordIsNewer(candidate, current domain.ThrottleAttemptRecord) bool
 
 func cloneThrottleAttemptRecord(record domain.ThrottleAttemptRecord) domain.ThrottleAttemptRecord {
 	record.Command = cloneThrottleCommand(record.Command)
+	if record.StopReceipt != nil {
+		receipt := *record.StopReceipt
+		receipt.Command = cloneThrottleCommand(receipt.Command)
+		record.StopReceipt = &receipt
+	}
 	record.PriorCommandIDs = append([]string(nil), record.PriorCommandIDs...)
 	record.Checkpoint = cloneCheckpoint(record.Checkpoint)
 	record.AcknowledgedAt = cloneTime(record.AcknowledgedAt)
@@ -822,6 +852,16 @@ func cloneThrottleCommand(command domain.ThrottleCommand) domain.ThrottleCommand
 	command.BucketEpochs = cloneDomainBucketEpochs(command.BucketEpochs)
 	command.Deadline = cloneTime(command.Deadline)
 	command.Checkpoint = cloneCheckpoint(command.Checkpoint)
+	if command.QuotaRecovery != nil {
+		grant := *command.QuotaRecovery
+		grant.EvidenceScope.ProviderInstanceIDs = append([]string(nil), grant.EvidenceScope.ProviderInstanceIDs...)
+		grant.EvidenceScope.Models = append([]string(nil), grant.EvidenceScope.Models...)
+		grant.EvidenceScope.RequiredWindows = append([]domain.QuotaCollectorWindow(nil), grant.EvidenceScope.RequiredWindows...)
+		for index := range grant.EvidenceScope.RequiredWindows {
+			grant.EvidenceScope.RequiredWindows[index].Models = append([]string(nil), grant.EvidenceScope.RequiredWindows[index].Models...)
+		}
+		command.QuotaRecovery = &grant
+	}
 	return command
 }
 

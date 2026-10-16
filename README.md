@@ -414,12 +414,20 @@ Intents are cancelled, not resumed, when a human interacted with the thread
 after the stop, when the thread was archived or deleted, or after
 `resume.max_intent_age`.
 
-Readings only come from running turns, so a reset that nobody is around to
-observe would never be confirmed. When the reset time has passed by
-`resume.probe_after_reset` (5 minutes) with no reading, one stopped thread
-per provider is resumed as a probe: its first call yields the reading that
-rearms the bucket and releases the others, or gets it stopped again at
-once if the window has not actually reset.
+Declared Claude collector routes recover only from a fresh, complete native
+acquisition for the configured account and origin, below the resume threshold,
+with post-stop reset confirmation and the settle delay satisfied. Collector
+outages and elapsed resets keep the pause. Historical anonymous bucket keys
+remain stored and require the explicit account binding before recovery.
+Neither a missing local collector credential nor an old probe marker enables
+an inference probe on a covered route. A covered local pause records its policy
+binding; changing or removing coverage keeps that pause held until its owner
+reconciles it.
+
+Legacy routes, including Codex, retain `resume.probe_after_reset` (5 minutes):
+one stopped thread per provider may resume to obtain telemetry after an
+unobserved reset. This behavior remains until a prompt-free source is qualified
+for that route.
 
 ## Consumption report
 

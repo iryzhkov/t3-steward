@@ -41,6 +41,17 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 	}
 	now := r.now()
 	if !required {
+		if record.LocalThrottle != nil && record.LocalThrottle.CollectorCovered {
+			if !collectorPauseCoverageCurrent(r.config.Quota, record.Package.Package.Route, *record.LocalThrottle) {
+				return nil
+			}
+		}
+		if guard, ok := r.config.Quota.(collectorQuotaGuard); ok && guard.CollectorCoveredRoute(record.Package.Package.Route) && record.LocalThrottle != nil {
+			allowed, _, recoveryErr := r.config.Quota.ResumeAllowed(ctx, *record.LocalThrottle, record.Package.Package.Route)
+			if recoveryErr != nil || !allowed {
+				return nil
+			}
+		}
 		// A queued notice can still end this turn after quota recovers. Keep
 		// the durable intent until a stopped observation and completion check;
 		// even a failed send may have reached T3 before its reply was lost.
@@ -52,7 +63,11 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 	// starts over from first contact, with its own notice and its own
 	// escalation window.
 	prior := record.LocalThrottle
-	if prior != nil && quotaEpisodeEnded(*prior, pause, now) {
+	covered := prior != nil && prior.CollectorCovered
+	if guard, ok := r.config.Quota.(collectorQuotaGuard); ok {
+		covered = covered || guard.CollectorCoveredRoute(record.Package.Package.Route)
+	}
+	if prior != nil && quotaEpisodeEnded(*prior, pause, now, covered) {
 		r.log.Info("new quota episode for an attempt with an earlier drain intent; the pause starts over", "assignment", id,
 			"thread", record.Package.Package.Identity.ThreadID, "bucket", pause.Bucket.String(), "earlier_bucket", prior.Bucket.String(),
 			"recovered", prior.RecoveredAt != nil)
@@ -105,6 +120,14 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 		// Only this build writes the marker, so a drain request without it
 		// is one the previous binary already sent through Checkpoint.
 		DrainNoticePending: kind == domain.ThrottleCommandDrain,
+	}
+	if guard, ok := r.config.Quota.(collectorQuotaGuard); ok && guard.CollectorCoveredRoute(record.Package.Package.Route) {
+		request.CollectorCovered = true
+		request.CollectorCoverageDigest = guard.CollectorCoverageDigest(record.Package.Package.Route)
+	}
+	if prior != nil && prior.CollectorCovered {
+		request.CollectorCovered = true
+		request.CollectorCoverageDigest = prior.CollectorCoverageDigest
 	}
 	if prior != nil {
 		// A hard stop after a drain request keeps the earlier request time,
@@ -185,7 +208,10 @@ func (r *Runtime) pauseForQuota(ctx context.Context, id string, record *AttemptR
 
 // quotaEpisodeEnded reports whether the pause in force belongs to an earlier
 // quota episode than the one now governing the route.
-func quotaEpisodeEnded(prior LocalThrottleRequest, pause QuotaPause, now time.Time) bool {
+func quotaEpisodeEnded(prior LocalThrottleRequest, pause QuotaPause, now time.Time, covered bool) bool {
+	if covered {
+		return prior.RecoveredAt != nil
+	}
 	switch {
 	case prior.RecoveredAt != nil:
 		// A pass saw the bucket recover while the thread kept working.
@@ -383,6 +409,9 @@ func (r *Runtime) markLocalPauseStopped(ctx context.Context, id string, checkpoi
 			request.StoppedTurnID = turnID
 		}
 		current.LocalThrottle = &request
+		if guard, ok := r.config.Quota.(collectorQuotaGuard); ok && guard.CollectorCoveredRoute(current.Package.Package.Route) && current.StopObservedSequence == 0 {
+			current.StopObservedSequence = state.Sequence + 1
+		}
 		current.Phase = PhaseStopped
 		current.Failure = ""
 		current.ThreadID = current.Package.Package.Identity.ThreadID
@@ -489,6 +518,9 @@ func (r *Runtime) reconcileLocalPause(ctx context.Context, id string, record Att
 	}
 	if r.config.Quota == nil {
 		return nil
+	}
+	if record.LocalThrottle.CollectorCovered && !collectorPauseCoverageCurrent(r.config.Quota, pkg.Route, *record.LocalThrottle) {
+		return nil // Coverage changes require explicit owner reconciliation.
 	}
 	allowed, why, err := r.config.Quota.ResumeAllowed(ctx, *record.LocalThrottle, pkg.Route)
 	if err != nil {

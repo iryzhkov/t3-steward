@@ -37,6 +37,29 @@ t3:
   # server-runtime.json when url is empty (a boot that starts them first).
   discovery_timeout: 2m
 
+
+# Opt-in collector for an existing local Claude subscription login.
+# Keep disabled until account/model binding and scoped freshness propagation
+# have passed the integration qualification in docs/claude-quota-collector.md.
+claude_quota_collector:
+  enabled: false
+  source_id: ""
+  origin_worker_id: ""
+  provider_instance_id: ""
+  account_id: ""
+  quota_pool: ""
+  # Empty selects this user's ~/.claude. Never copies or refreshes credentials.
+  credential_dir: ""
+  # Empty writes sanitized status next to the watchdog state database.
+  status_path: ""
+  interval: 5m
+  jitter: 15s
+  timeout: 10s
+  # Covers exchange tick + transport deadline + scheduler tick. Increase for
+  # measured processing delay; the selected pool's age must cover all bounds.
+  pipeline_budget: 50s
+  model_bindings: []
+
 policy:
   # Usage thresholds in percent. warn < drain < stop <= 100 is enforced.
   warn_percent: 85    # one warning per affected running thread
@@ -108,7 +131,9 @@ resume:
   # The worker applies the same duration to a bucket stopped below
   # stop_percent: once the stored reading is that old and nothing on the
   # host is running to refresh it, one paused attempt per bucket epoch is
-  # resumed as a probe. Zero disables both probes.
+  # resumed as a probe. Zero disables both legacy probes.
+  # Declared Claude collector routes never infer to obtain quota, including
+  # during a collector outage; they require complete verified recovery.
   probe_after_reset: 5m
   # prompt: |
   #   Resume is permitted; inspect current instructions and the checkpoint...

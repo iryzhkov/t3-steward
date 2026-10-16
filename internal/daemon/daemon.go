@@ -525,12 +525,16 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 	// resume intent recorded for them is cancelled below.
 	owned := d.ownedThreads(ctx)
 	stoppedAny := false
+	byKey := make(map[domain.BucketKey]domain.BucketState, len(states))
+	for _, state := range states {
+		byKey[state.Key] = state
+	}
 	for _, st := range states {
 		if !d.cfg.QuotaChecksEnabled() || st.Phase == domain.PhaseNormal || d.ignoredWindow(st.Key.Window) {
 			continue
 		}
-		if st.ResetsAt != nil && !st.ResetsAt.After(now) {
-			// The window passed; wait for a fresh snapshot to rearm.
+		if !CollectorBucketInferenceDisabled(d.cfg, st) && st.ResetsAt != nil && !st.ResetsAt.After(now) {
+			// Uncovered windows retain the legacy elapsed-reset rule.
 			continue
 		}
 		if StaleDraining(d.cfg, st, now) {
@@ -547,6 +551,15 @@ func (d *Daemon) pollThreads(ctx context.Context) {
 		var running []domain.Thread
 		for _, t := range unownedThreads(threads, owned) {
 			if t.Running && t.MatchesBucket(st.Key, st.ModelSelector) {
+				if pool, covered := d.cfg.CollectorCoverageForThread(t.ProviderInstanceID, t.Model); covered && CollectorPoolCovered(pool) {
+					stoppedAt := st.ObservedAt
+					if st.StoppedAt != nil {
+						stoppedAt = *st.StoppedAt
+					}
+					if recovered, _ := CollectorBucketsRecovered(d.cfg, pool, []domain.BucketKey{st.Key}, stoppedAt, t, byKey, now); recovered {
+						continue
+					}
+				}
 				running = append(running, t)
 			}
 		}

@@ -29,8 +29,10 @@ Commands:
                                  Set the bucket's phase to normal with the
                                  recovery time now, clear the stop and drain
                                  bookkeeping, and record a rearm action. The
-                                 worker treats it as a confirmed recovery, so
-                                 its resume rules apply as after a real reset:
+                                 legacy worker treats it as confirmed recovery.
+                                 Covered Claude routes still need fresh complete
+                                 verified post-stop collector evidence and the
+                                 settle delay. Legacy resume rules apply:
                                  a paused owned attempt resumes after the
                                  settle delay without waiting for a reading
                                  only when the stored usage is below
@@ -203,6 +205,13 @@ func cmdBucketRearm(g globalFlags, args []string) error {
 	if err != nil {
 		return err
 	}
+	if daemon.CollectorBucketInferenceDisabled(cfg, result.Before) {
+		states, err := store.ListBuckets(context.Background())
+		if err != nil {
+			return err
+		}
+		result = qualifyBucketRearmRecovery(cfg, result, states, now)
+	}
 	if *asJSON {
 		return printJSON(result)
 	}
@@ -212,11 +221,61 @@ func cmdBucketRearm(g globalFlags, args []string) error {
 	fmt.Printf("  recorded: %s\n", result.Action.Detail)
 	if result.ResumeEligible {
 		fmt.Printf("  paused attempts on this bucket may resume after %s\n", cfg.Resume.ResetSettleDelay.D())
+	} else if result.ResumeBlockedBy.Reason != "" {
+		fmt.Printf("  paused attempts remain paused: %s; the rearm still reopens the bucket\n", result.ResumeBlockedBy.Reason)
 	} else {
 		fmt.Printf("  paused attempts will not resume until a reading below %.0f%% (resume.below_percent) and %.0f%% (policy.warn_percent) lands; the rearm still reopens the bucket\n",
 			result.ResumeBlockedBy.BelowPercent, result.ResumeBlockedBy.WarnPercent)
 	}
 	return nil
+}
+
+// qualifyBucketRearmRecovery keeps covered-route output tied to the same rule
+// the watchdog and worker use. A phase change alone grants no collector authority.
+func qualifyBucketRearmRecovery(cfg config.Config, result daemon.RearmResult, states []domain.BucketState, now time.Time) daemon.RearmResult {
+	if !daemon.CollectorBucketInferenceDisabled(cfg, result.Before) {
+		return result
+	}
+	byKey := make(map[domain.BucketKey]domain.BucketState, len(states))
+	for _, state := range states {
+		byKey[state.Key] = state
+	}
+	stoppedAt := result.Before.ObservedAt
+	if result.Before.StoppedAt != nil {
+		stoppedAt = *result.Before.StoppedAt
+	}
+	reason := "declared collector coverage has no recoverable configured route"
+	matched := false
+	for workerID, worker := range cfg.BacklogV2.Workers {
+		provider, ok := worker.Providers[result.Before.Key.ProviderInstanceID]
+		if !ok {
+			continue
+		}
+		for _, model := range provider.Models {
+			thread := domain.Thread{ProviderInstanceID: result.Before.Key.ProviderInstanceID, Model: model}
+			if !thread.MatchesBucket(result.Before.Key, result.Before.ModelSelector) {
+				continue
+			}
+			pool, covered := cfg.CollectorCoverage(domain.ProviderRoute{WorkerID: workerID, ProviderInstanceID: thread.ProviderInstanceID, Model: model, QuotaPoolID: provider.QuotaPool})
+			if !covered || !daemon.CollectorPoolCovered(pool) {
+				continue
+			}
+			matched = true
+			if recovered, why := daemon.CollectorBucketsRecovered(cfg, pool, []domain.BucketKey{result.Before.Key}, stoppedAt, thread, byKey, now); !recovered {
+				reason = why
+				result.ResumeEligible = false
+				result.ResumeBlockedBy = &daemon.ResumeBlock{BelowPercent: cfg.Resume.BelowPercent, WarnPercent: daemon.ThresholdsFor(cfg, result.Before.Key, result.Before.LimitName, result.Before.WindowDuration).WarnPercent, Reason: reason}
+				return result
+			}
+		}
+	}
+	result.ResumeEligible = matched
+	if matched {
+		result.ResumeBlockedBy = nil
+	} else {
+		result.ResumeBlockedBy = &daemon.ResumeBlock{BelowPercent: cfg.Resume.BelowPercent, Reason: reason}
+	}
+	return result
 }
 
 // actorName is user@host, for the action record.

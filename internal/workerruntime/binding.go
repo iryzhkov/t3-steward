@@ -18,11 +18,12 @@ import (
 )
 
 type catalogRuntimeIdentity struct {
-	CoordinatorID string
-	Transport     config.V2Transport
-	MessageLimits config.V2MessageLimits
-	Freshness     config.V2Freshness
-	Leases        config.V2Leases
+	CollectorRecovery *config.CollectorRecoveryMetadata `json:",omitempty"`
+	CoordinatorID     string
+	Transport         config.V2Transport
+	MessageLimits     config.V2MessageLimits
+	Freshness         config.V2Freshness
+	Leases            config.V2Leases
 }
 
 type WorkerBinding struct {
@@ -275,7 +276,7 @@ func BuildWorkerBinding(settings config.BacklogV2, workerID string, now time.Tim
 	if worker.Connection != "" {
 		// Admission is coordinator policy; draining does not replace execution packages.
 		revisionInput.Worker.AcceptBacklog = true
-		revisionInput.Runtime = &catalogRuntimeIdentity{CoordinatorID: settings.Coordinator.ID, Transport: settings.Transport, MessageLimits: settings.MessageLimits, Freshness: settings.Freshness, Leases: settings.Leases}
+		revisionInput.Runtime = &catalogRuntimeIdentity{CollectorRecovery: (config.Config{BacklogV2: settings}).CollectorRecoveryMetadataForWorker(workerID), CoordinatorID: settings.Coordinator.ID, Transport: settings.Transport, MessageLimits: settings.MessageLimits, Freshness: settings.Freshness, Leases: settings.Leases}
 	}
 	raw, err := json.Marshal(revisionInput)
 	if err != nil {

@@ -16,7 +16,7 @@ import (
 // engine and the load-time re-derivation. It runs from the bucket rearm verb
 // against the host's state database, sets the phase to normal with
 // RecoveredAt now, and records who did it and why. The worker's resume rule
-// treats it as a confirmed recovery, so its percentage rules apply exactly as
+// treats it as confirmed recovery on legacy routes, so its percentage rules apply as
 // after a real reset: a paused owned attempt resumes after the settle delay
 // without a reading only when the stored percentage is below
 // resume.below_percent and below the warn threshold; otherwise the rearm
@@ -65,6 +65,7 @@ type RearmResult struct {
 type ResumeBlock struct {
 	BelowPercent float64 `json:"belowPercent"`
 	WarnPercent  float64 `json:"warnPercent"`
+	Reason       string  `json:"reason,omitempty"`
 }
 
 // RearmRefusedError is a rearm the rule refused; nothing was written.

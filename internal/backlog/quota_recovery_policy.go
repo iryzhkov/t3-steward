@@ -31,6 +31,7 @@ type QuotaRecoverySkipTransition struct {
 // QuotaRecoveryInput is the deterministic coordinator snapshot used to order
 // resumptions against new required work.
 type QuotaRecoveryInput struct {
+	RecoveryGrantAuthorizer     QuotaRecoveryGrantAuthorizer
 	Now                         time.Time
 	DeadlineRiskWindow          time.Duration
 	PlanningState               QuotaPlanningState
@@ -231,10 +232,13 @@ func PlanQuotaRecovery(input QuotaRecoveryInput) (QuotaRecoveryPlan, error) {
 		}
 		record := latest[entry.attemptID]
 		transitions, commands, planErr := PlanThrottleResumes(
-			[]domain.ThrottleAttemptRecord{record}, input.Admissions, pools, input.Now,
+			[]domain.ThrottleAttemptRecord{record}, input.Admissions, pools, input.Now, input.RecoveryGrantAuthorizer,
 		)
 		if planErr != nil {
 			return QuotaRecoveryPlan{}, planErr
+		}
+		if len(transitions) == 0 && len(commands) == 0 {
+			continue
 		}
 		if len(transitions) != 1 || len(commands) != 1 {
 			return QuotaRecoveryPlan{}, fmt.Errorf("quota recovery attempt %q did not produce one resume", entry.attemptID)

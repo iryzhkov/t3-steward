@@ -30,7 +30,9 @@ const (
 type QuotaWindowBudget struct {
 	QuotaPoolID                 string
 	WindowID                    string
-	ObservedAt                  time.Time // Collection time for every value in this window.
+	ObservedAt                  time.Time     // Collection time for every value in this window.
+	MaxObservationAge           time.Duration // Qualified source scope, zero retains the legacy default.
+	OriginValidUntil            *time.Time
 	Admission                   domain.AdmissionState
 	Capacity                    float64
 	CurrentUsage                float64
@@ -243,8 +245,15 @@ func (session *quotaAdmissionSession) quotaObservationStaleness(window QuotaWind
 		return fmt.Sprintf("quota window %q observation at %s is after planning time %s", key, window.ObservedAt.UTC().Format(time.RFC3339), session.now.UTC().Format(time.RFC3339)), true
 	}
 	age := session.now.Sub(window.ObservedAt)
-	if age > session.maxObservationAge {
-		return fmt.Sprintf("quota window %q observation at %s is %s old, exceeding maximum age %s", key, window.ObservedAt.UTC().Format(time.RFC3339), age, session.maxObservationAge), true
+	maxAge := session.maxObservationAge
+	if window.MaxObservationAge > 0 {
+		maxAge = window.MaxObservationAge
+	}
+	if window.OriginValidUntil != nil && !session.now.Before(*window.OriginValidUntil) {
+		return fmt.Sprintf("quota window %q origin observation expired", key), true
+	}
+	if age > maxAge {
+		return fmt.Sprintf("quota window %q observation at %s is %s old, exceeding maximum age %s", key, window.ObservedAt.UTC().Format(time.RFC3339), age, maxAge), true
 	}
 	return "", false
 }

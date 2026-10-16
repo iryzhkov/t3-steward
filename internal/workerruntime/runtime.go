@@ -115,7 +115,8 @@ type Runtime struct {
 	// again on every exchange.
 	reportQuota bool
 	// reportQuotaRunway records that it also asked for the runway fields.
-	reportQuotaRunway bool
+	reportQuotaRunway              bool
+	reportQuotaCollectorProvenance bool
 	// titleFailures holds, per assignment, the session title whose last update
 	// failed, so it is retried at the next state change rather than on every
 	// exchange. It is not durable on purpose; see titleFailed.
@@ -205,6 +206,9 @@ func AdvertisedCapabilities(configured []string) []string {
 	if !slices.Contains(merged, workerproto.CapabilityQuotaObservations) {
 		merged = append(merged, workerproto.CapabilityQuotaObservations)
 	}
+	if !slices.Contains(merged, workerproto.CapabilityQuotaCollectorProvenance) {
+		merged = append(merged, workerproto.CapabilityQuotaCollectorProvenance)
+	}
 	if !slices.Contains(merged, workerproto.CapabilityQuotaRunway) {
 		merged = append(merged, workerproto.CapabilityQuotaRunway)
 	}
@@ -252,7 +256,7 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 	now := r.now()
 	var quota []domain.WorkerQuotaObservation
 	if r.reportQuota && r.config.Quota != nil {
-		observed, err := quotaObservations(ctx, r.config.Quota, r.reportQuotaRunway)
+		observed, err := quotaObservations(ctx, r.config.Quota, r.reportQuotaRunway, r.reportQuotaCollectorProvenance)
 		if err != nil {
 			r.log.Warn("host quota observations unavailable; snapshot carries none", "error", err)
 		} else {
@@ -269,6 +273,9 @@ func (r *Runtime) Snapshot(ctx context.Context) (domain.WorkerSnapshot, error) {
 				record.Failure = withheldFailure
 			}
 			observed := observation(record, now, r.reportQuota)
+			if r.reportQuotaCollectorProvenance && record.LocalThrottle != nil && record.LocalThrottle.StoppedAt != nil && record.StopObservedSequence > 0 {
+				observed.QuotaStop = &domain.QuotaStopObservation{StoppedAt: *record.LocalThrottle.StoppedAt, ObservedSequence: record.StopObservedSequence, Bucket: record.LocalThrottle.Bucket, Epoch: domain.EpochFor(record.LocalThrottle.ResetsAt)}
+			}
 			if r.reportTurnEnd && record.TurnEnd != nil && observed.Journal != nil {
 				observed.Journal.TurnEnd = truncateText(record.TurnEnd.Note, maxTurnEndNote)
 			}
@@ -620,6 +627,25 @@ func (r *Runtime) executeThrottle(ctx context.Context, command domain.ThrottleCo
 		err = r.driver.StopThread(ctx, pkg)
 		result = domain.ThrottleResultStopped
 	case domain.ThrottleCommandResume:
+		guard, hasValidator := r.config.Quota.(collectorQuotaGuard)
+		if (command.QuotaRecovery != nil || (record.LocalThrottle != nil && record.LocalThrottle.CollectorCovered)) && !hasValidator {
+			return r.finishThrottle(command, false, "", nil, "no configured quota recovery validator")
+		}
+		if hasValidator && (guard.CollectorCoveredRoute(pkg.Route) || command.QuotaRecovery != nil || (record.LocalThrottle != nil && record.LocalThrottle.CollectorCovered)) {
+			if record.LocalThrottle != nil && record.LocalThrottle.CollectorCovered && !collectorPauseCoverageCurrent(r.config.Quota, pkg.Route, *record.LocalThrottle) {
+				return r.finishThrottle(command, false, "", nil, "collector pause coverage was removed or changed; owner reconciliation required")
+			}
+			if bound, why := collectorResumeBoundToStop(record, command, r.now()); !bound {
+				return r.finishThrottle(command, false, "", nil, why)
+			}
+			allowed, why, quotaErr := guard.CoordinatorResumeAllowed(ctx, command)
+			if quotaErr != nil {
+				return r.finishThrottle(command, false, "", nil, "local quota state unavailable for coordinator recovery")
+			}
+			if !allowed {
+				return r.finishThrottle(command, false, "", nil, why)
+			}
+		}
 		// A pause snapshot still owed is of the paused turn: it is taken
 		// before a new turn can change the file, or forgone.
 		if err = r.closePendingContinuation(ctx, command.AssignmentID); err != nil {

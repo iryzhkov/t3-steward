@@ -48,6 +48,14 @@ type QuotaGuard interface {
 	Observations(ctx context.Context) ([]domain.WorkerQuotaObservation, error)
 }
 
+// collectorQuotaGuard validates recovery authority for declared collector routes.
+// Ordinary QuotaGuard implementations retain their existing behaviour.
+type collectorQuotaGuard interface {
+	CollectorCoveredRoute(domain.ProviderRoute) bool
+	CollectorCoverageDigest(domain.ProviderRoute) string
+	CoordinatorResumeAllowed(context.Context, domain.ThrottleCommand) (bool, string, error)
+}
+
 // BucketLister reads the watchdog's stored bucket states.
 type BucketLister interface {
 	ListBuckets(context.Context) ([]domain.BucketState, error)
@@ -109,11 +117,26 @@ func (g HostQuotaGuard) PauseRequired(ctx context.Context, route domain.Provider
 		return QuotaPause{}, false, err
 	}
 	now := g.now()
+	pool, covered := g.Config.CollectorCoverage(route)
+	covered = covered && daemon.CollectorPoolCovered(pool)
+	byKey := make(map[domain.BucketKey]domain.BucketState, len(states))
+	for _, state := range states {
+		byKey[state.Key] = state
+	}
 	// A bucket whose probe is still out has one owned thread running on
 	// purpose, to produce the reading; pausing it again before the reading
 	// arrives would make the probe pointless.
 	considered := make([]domain.BucketState, 0, len(states))
 	for _, st := range states {
+		if covered && (st.Phase == domain.PhaseStopped || st.Phase == domain.PhaseDraining) && routeThread(route).MatchesBucket(st.Key, st.ModelSelector) {
+			stoppedAt := st.ObservedAt
+			if st.StoppedAt != nil {
+				stoppedAt = *st.StoppedAt
+			}
+			if recovered, _ := daemon.CollectorBucketsRecovered(g.Config, pool, []domain.BucketKey{st.Key}, stoppedAt, routeThread(route), byKey, now); recovered {
+				continue
+			}
+		}
 		if g.probeOutstanding(st, now) {
 			continue
 		}
@@ -130,13 +153,18 @@ func (g HostQuotaGuard) PauseRequired(ctx context.Context, route domain.Provider
 }
 
 // ResumeAllowed implements QuotaGuard with the watchdog's eligibility rules.
-// A bucket whose reset passed without a confirming reading may be probed by
-// resuming, as the watchdog probes with one interactive thread.
+// Declared Claude coverage requires positive collector evidence. Legacy routes
+// retain the watchdog's elapsed-reset and stale-reading inference probes.
 func (g HostQuotaGuard) ResumeAllowed(ctx context.Context, pause LocalThrottleRequest, route domain.ProviderRoute) (bool, string, error) {
+	if pause.CollectorCovered && !collectorPauseCoverageCurrent(g, route, pause) {
+		return false, "collector pause coverage was removed or changed; owner reconciliation required", nil
+	}
 	if g.Buckets == nil {
 		return false, "no watchdog state on this host", nil
 	}
-	if !g.Config.QuotaChecksEnabled() {
+	pool, covered := g.Config.CollectorCoverage(route)
+	covered = covered && daemon.CollectorPoolCovered(pool)
+	if !covered && !g.Config.QuotaChecksEnabled() {
 		return true, "quota checks are disabled", nil
 	}
 	states, err := g.Buckets.ListBuckets(ctx)
@@ -148,6 +176,18 @@ func (g HostQuotaGuard) ResumeAllowed(ctx context.Context, pause LocalThrottleRe
 		byKey[st.Key] = st
 	}
 	now := g.now()
+	if covered {
+		// The drain request precedes the actual stop. Evidence obtained while
+		// draining cannot authorize a new turn after the stop is acknowledged.
+		if pause.StoppedAt == nil || pause.StoppedAt.IsZero() || pause.StoppedAt.After(now) {
+			return false, "collector recovery waits for a durable actual stop acknowledgement", nil
+		}
+		ok, why := daemon.CollectorBucketsRecovered(g.Config, pool, []domain.BucketKey{pause.Bucket}, *pause.StoppedAt, routeThread(route), byKey, now)
+		if ok {
+			why = fmt.Sprintf("%s recovered from a fresh complete verified collector acquisition", pause.Bucket)
+		}
+		return ok, why, nil
+	}
 	// Record the successful callback, rather than infer permission from prose.
 	elapsedResetProbe := false
 	ok, why := daemon.BucketsRecovered(g.Config, []domain.BucketKey{pause.Bucket}, pause.RequestedAt, routeThread(route), byKey, now, func(st domain.BucketState) bool {
@@ -181,6 +221,9 @@ func (g HostQuotaGuard) ResumeAllowed(ctx context.Context, pause LocalThrottleRe
 // epoch and no reading has arrived since, within the time a probe is given
 // to produce one (resume.probe_after_reset again).
 func (g HostQuotaGuard) probeOutstanding(st domain.BucketState, now time.Time) bool {
+	if daemon.CollectorBucketInferenceDisabled(g.Config, st) {
+		return false
+	}
 	if st.ProbedAt == nil || st.ObservedAt.After(*st.ProbedAt) {
 		return false
 	}
@@ -197,6 +240,9 @@ func (g HostQuotaGuard) probeOutstanding(st domain.BucketState, now time.Time) b
 // rearms or re-stops the bucket honestly. When the rule refuses it says why,
 // and an empty reason means the rule does not apply at all.
 func (g HostQuotaGuard) probe(ctx context.Context, st domain.BucketState, now time.Time) (bool, string, error) {
+	if daemon.CollectorBucketInferenceDisabled(g.Config, st) {
+		return false, "declared collector coverage never resumes a turn to obtain quota", nil
+	}
 	if st.Phase != domain.PhaseStopped || g.Config.Resume.ProbeAfterReset.D() <= 0 {
 		return false, "", nil
 	}
@@ -243,8 +289,13 @@ func (g HostQuotaGuard) probe(ctx context.Context, st domain.BucketState, now ti
 	return true, why, nil
 }
 
-// quotaRunwayObserver is a QuotaGuard that can also report the dispatch
-// runway of each bucket.
+// CollectorCoveredRoute is declared coverage, independent of local producer health.
+func (g HostQuotaGuard) CollectorCoveredRoute(route domain.ProviderRoute) bool {
+	pool, covered := g.Config.CollectorCoverage(route)
+	return covered && daemon.CollectorPoolCovered(pool)
+}
+
+// quotaRunwayObserver is a QuotaGuard that can also report dispatch runway.
 type quotaRunwayObserver interface {
 	RunwayObservations(ctx context.Context) ([]domain.WorkerQuotaObservation, error)
 }
@@ -252,17 +303,31 @@ type quotaRunwayObserver interface {
 // quotaObservations answers the coordinator's request for bucket
 // observations, with the runway fields only when it asked for them (see
 // workerproto.CapabilityQuotaRunway).
-func quotaObservations(ctx context.Context, guard QuotaGuard, runway bool) ([]domain.WorkerQuotaObservation, error) {
+func quotaObservations(ctx context.Context, guard QuotaGuard, runway, provenance bool) ([]domain.WorkerQuotaObservation, error) {
+	var observed []domain.WorkerQuotaObservation
+	var err error
 	if observer, ok := guard.(quotaRunwayObserver); ok && runway {
-		return observer.RunwayObservations(ctx)
+		observed, err = observer.RunwayObservations(ctx)
+	} else {
+		observed, err = guard.Observations(ctx)
 	}
-	return guard.Observations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := append([]domain.WorkerQuotaObservation(nil), observed...)
+	for i := range out {
+		if provenance {
+			out[i].Provenance = domain.CloneQuotaProvenance(out[i].Provenance)
+		} else {
+			out[i].Provenance = nil
+		}
+	}
+	return out, nil
 }
 
 // Observations implements QuotaGuard. The runway fields of
-// WorkerQuotaObservation stay unset: a coordinator that asks for observations
-// through quota-observations-v1 alone decodes them strictly and would reject
-// the whole snapshot.
+// WorkerQuotaObservation stay unset. Native provenance is returned internally;
+// quotaObservations strips it unless its separate capability was requested.
 func (g HostQuotaGuard) Observations(ctx context.Context) ([]domain.WorkerQuotaObservation, error) {
 	return g.observations(ctx, false)
 }
@@ -289,7 +354,8 @@ func (g HostQuotaGuard) observations(ctx context.Context, runway bool) ([]domain
 			continue
 		}
 		observation := domain.WorkerQuotaObservation{
-			Key: st.Key, Phase: st.Phase, UsedPercent: st.UsedPercent, Healthy: st.Healthy,
+			Provenance: domain.CloneQuotaProvenance(st.Provenance),
+			Key:        st.Key, Phase: st.Phase, UsedPercent: st.UsedPercent, Healthy: st.Healthy,
 			ObservedAt: st.ObservedAt, ResetsAt: st.ResetsAt, Epoch: st.Epoch,
 			LimitName: st.LimitName, ModelSelector: st.ModelSelector,
 		}

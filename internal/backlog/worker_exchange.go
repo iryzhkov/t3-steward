@@ -248,6 +248,7 @@ func ParkedAssignmentsFor(ctx context.Context, source any, workerID string) (wor
 				request.QuotaObservationsWanted = true
 				// The runway fields likewise go only to a build that sends them.
 				request.QuotaRunwayWanted = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaRunway)
+				request.QuotaCollectorProvenanceWanted = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaCollectorProvenance)
 			}
 			// Session states likewise go only to a build that decodes them.
 			sessionTitles = slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilitySessionTitles)
@@ -573,6 +574,7 @@ func leaseRenewalsForWorker(assignments []domain.Assignment, snapshot domain.Wor
 }
 
 type workerThrottleTransport struct {
+	pools     []domain.QuotaPool
 	workerID  string
 	snapshot  domain.WorkerSnapshot
 	transport WorkerControlTransport
@@ -591,12 +593,26 @@ func (t workerThrottleTransport) DeliverThrottleCommands(ctx context.Context, wo
 	if workerID != t.workerID {
 		return nil, fmt.Errorf("throttle batch for worker %q reached session for %q", workerID, t.workerID)
 	}
-	return t.transport.DeliverThrottle(ctx, t.snapshot, commands)
+	filtered := make([]domain.ThrottleCommand, 0, len(commands))
+	for _, command := range commands {
+		covered := command.QuotaRecovery != nil
+		for _, pool := range t.pools {
+			covered = covered || pool.ID == command.QuotaPoolID && pool.Collector != nil
+		}
+		if command.Kind == domain.ThrottleCommandResume && covered && (command.QuotaRecovery == nil || !slices.Contains(t.snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaCollectorProvenance)) {
+			continue
+		}
+		filtered = append(filtered, command)
+	}
+	if len(filtered) == 0 {
+		return nil, nil
+	}
+	return t.transport.DeliverThrottle(ctx, t.snapshot, filtered)
 }
 
 func (c FleetCoordinator) reconcileWorkerThrottle(ctx context.Context, store WorkerExchangeStore, transport WorkerControlTransport, snapshot domain.WorkerSnapshot, directives []domain.ThrottleDirective, pools []domain.QuotaPool, now time.Time, report *WorkerExchangeReport) error {
 	throttleStore := workerThrottleStore{WorkerExchangeStore: store, workerID: snapshot.WorkerID}
-	adapter := workerThrottleTransport{workerID: snapshot.WorkerID, snapshot: snapshot, transport: transport}
+	adapter := workerThrottleTransport{workerID: snapshot.WorkerID, snapshot: snapshot, transport: transport, pools: pools}
 	pending, err := ReconcilePendingThrottleCommands(ctx, throttleStore, adapter, now)
 	report.Throttle = append(report.Throttle, pending)
 	if err != nil {
@@ -639,8 +655,43 @@ func (c FleetCoordinator) reconcileWorkerThrottle(ctx context.Context, store Wor
 	if err != nil {
 		return err
 	}
-	resumed, err := ReconcileThrottleResumes(ctx, throttleStore, adapter, admissions, pools, now)
+	var grantError error
+	var authorize QuotaRecoveryGrantAuthorizer
+	if c.QuotaRecoveryGrant != nil && slices.Contains(snapshot.Inventory.Capabilities, workerproto.CapabilityQuotaCollectorProvenance) {
+		authorize = func(pool domain.QuotaPool, record domain.ThrottleAttemptRecord, at time.Time) *domain.QuotaRecoveryGrant {
+			grant, err := c.QuotaRecoveryGrant(ctx, pool, record, snapshot, at)
+			if err != nil {
+				grantError = errors.Join(grantError, err)
+			}
+			return grant
+		}
+	}
+	resumed, err := ReconcileThrottleResumes(ctx, throttleStore, adapter, admissions, pools, now, authorize)
+	if grantError != nil {
+		err = errors.Join(err, grantError)
+	}
 	report.Throttle = append(report.Throttle, resumed)
+	if err != nil {
+		return err
+	}
+	previous, err := throttleStore.LoadThrottleAttemptRecords(ctx)
+	if err != nil {
+		return err
+	}
+	localPools := append([]domain.QuotaPool(nil), pools...)
+	for _, command := range resumed.Commands {
+		for index := range localPools {
+			if localPools[index].ID == command.QuotaPoolID {
+				localPools[index].ActiveAssignments++
+			}
+		}
+	}
+	transitions, commands := PlanLocalCollectorResumes(snapshot, bindings, previous, admissions, localPools, authorize, now)
+	if grantError != nil {
+		return grantError
+	}
+	local, err := reconcilePlannedThrottleCommands(ctx, throttleStore, adapter, previous, transitions, commands, now)
+	report.Throttle = append(report.Throttle, local)
 	return err
 }
 

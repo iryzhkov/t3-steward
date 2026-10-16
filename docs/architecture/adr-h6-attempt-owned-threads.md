@@ -153,8 +153,14 @@ Must:
    [--force]`, which sets normal with `RecoveredAt` now and records the actor, the reason and the
    phase before and after, refusing a stored percentage at or above `stop_percent` without
    `--force`. No phase changes without its record; a save failure keeps the stored phase and logs
-   at ERROR. The worker's resume rule needs no change: a rearm is a recovery newer than the pause.
-   The worker's probe rule resumes one paused attempt per bucket epoch when the bucket is stopped
+   at ERROR. Legacy routes treat a rearm newer than the pause as recovery.
+   Declared Claude collector routes additionally require a fresh complete verified account
+   acquisition below the resume threshold, acquired after the stop and satisfying reset
+   confirmation and the settle delay. Outages and elapsed resets do not allow inference;
+   anonymous historical keys remain stored and resolve only through explicit account binding.
+   A newer or tied local restriction vetoes recovery. Coordinator commands retain their identity
+   and replay fences and must also carry current source-qualified recovery authority.
+   The legacy worker probe rule, including Codex, resumes one paused attempt per bucket epoch when the bucket is stopped
    below the current `stop_percent`, the stored reading is older than `resume.probe_after_reset`,
    the host's thread list is known and no running thread on it matches the bucket; `ProbedAt` on
    the bucket and a resume action record it, the probing thread is not paused again while its

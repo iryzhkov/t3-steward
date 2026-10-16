@@ -37,6 +37,7 @@ func (r *Runtime) ApplyParkedAssignments(request workerproto.SnapshotRequest) er
 	r.reportQuota = request.QuotaObservationsWanted
 	r.reportTurnEnd = request.TurnEndWanted
 	r.reportQuotaRunway = request.QuotaObservationsWanted && request.QuotaRunwayWanted
+	r.reportQuotaCollectorProvenance = request.QuotaObservationsWanted && request.QuotaCollectorProvenanceWanted
 	// Session states ride the same statement and are applied whether or not it
 	// reports parked assignments; the titles they drive are updated after the
 	// reconcile that Snapshot performs.

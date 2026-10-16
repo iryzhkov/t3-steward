@@ -1,0 +1,64 @@
+diff --git a/inventory/host_vars/normandy.yml b/inventory/host_vars/normandy.yml
+--- a/inventory/host_vars/normandy.yml
++++ b/inventory/host_vars/normandy.yml
+@@ -3,6 +3,12 @@
+   - {capability: igpu, mode: passthrough}
+ observability_gpu_owners:
+   - {physical_host: proxmox-b, physical_device: '0000:00:02.0', gpu_kind: igpu, mode: passthrough, vendor: intel, model_name: Intel UHD 630, telemetry: native}
++# Preserve the inherited swarm-worker Gatus target when overriding this list.
++# Coordinator placement: docs/transition/phase6/2026-10-03-agent-vms.md.
++observability_extra_scrapes:
++  - name: gatus
++    address: "{{ ansible_host }}:3002"
++  - {name: steward, job: steward, address: '127.0.0.1:9469', interval: '30s'}
+ # Adopted 2026-09-06.
+ 
+ # The unused ml-orchestrator credential was retired on 2026-10-05.
+diff --git a/roles/observability_grafana/files/dashboards/agents.json b/roles/observability_grafana/files/dashboards/agents.json
+--- a/roles/observability_grafana/files/dashboards/agents.json
++++ b/roles/observability_grafana/files/dashboards/agents.json
+@@ -452,7 +452,7 @@
+           "targets": [
+             {
+               "refId": "A",
+-              "expr": "steward_token_aggregation_supported{job=\"steward\"} and on(job,instance) (up{job=\"steward\"} == 1)",
++              "expr": "steward_token_aggregation_supported{job=\"steward\"} and on(job,instance,host) (up{job=\"steward\"} == 1) and on(job,instance,host) (steward_metrics_snapshot_fresh{job=\"steward\"} == 1)",
+               "legendFormat": "Capability",
+               "range": true,
+               "instant": false
+@@ -528,7 +528,7 @@
+           "targets": [
+             {
+               "refId": "A",
+-              "expr": "100 * (steward_quota_worst_used_ratio{job=\"steward\"} and on(job,instance) (up{job=\"steward\"} == 1))",
++              "expr": "100 * (steward_quota_worst_used_ratio{job=\"steward\"} and on(job,instance,host) (up{job=\"steward\"} == 1) and on(job,instance,host) (steward_metrics_snapshot_fresh{job=\"steward\"} == 1))",
+               "legendFormat": "{{window}}",
+               "range": true,
+               "instant": false
+@@ -594,7 +594,7 @@
+           "targets": [
+             {
+               "refId": "A",
+-              "expr": "sum(steward_tasks{job=\"steward\",state=~\"queued|ready\"} and on(job,instance) (up{job=\"steward\"} == 1))",
++              "expr": "sum(steward_tasks{job=\"steward\",state=~\"queued|ready\"} and on(job,instance,host) (up{job=\"steward\"} == 1) and on(job,instance,host) (steward_metrics_snapshot_fresh{job=\"steward\"} == 1))",
+               "legendFormat": "Queue + ready",
+               "range": false,
+               "instant": true
+@@ -663,7 +663,7 @@
+           "targets": [
+             {
+               "refId": "A",
+-              "expr": "steward_workers{job=\"steward\",state=\"fresh\"} and on(job,instance) (up{job=\"steward\"} == 1)",
++              "expr": "steward_workers{job=\"steward\",state=\"fresh\"} and on(job,instance,host) (up{job=\"steward\"} == 1) and on(job,instance,host) (steward_metrics_snapshot_fresh{job=\"steward\"} == 1)",
+               "legendFormat": "Fresh workers",
+               "range": false,
+               "instant": true
+@@ -732,7 +732,7 @@
+           "targets": [
+             {
+               "refId": "A",
+-              "expr": "(time() - steward_metrics_snapshot_timestamp_seconds{job=\"steward\"}) and on(job,instance) (up{job=\"steward\"} == 1)",
++              "expr": "(time() - steward_metrics_snapshot_timestamp_seconds{job=\"steward\"}) and on(job,instance,host) (up{job=\"steward\"} == 1) and on(job,instance,host) (steward_metrics_snapshot_fresh{job=\"steward\"} == 1)",
+               "legendFormat": "Snapshot age",
+               "range": false,
+               "instant": true

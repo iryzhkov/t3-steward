@@ -1,0 +1,30 @@
+diff --git a/desired/release.json b/desired/release.json
+--- a/desired/release.json
++++ b/desired/release.json
+@@ -2752,26 +2752,6 @@
+       "schema_version": 1
+     },
+     "t3": {
+-      "artifact": {
+-        "assets": {
+-          "linux-arm64": {
+-            "asset": "t3-fleet-0.0.45-linux-arm64.tar.gz",
+-            "receipt_asset": "t3-fleet-0.0.45-linux-arm64.receipt.json",
+-            "receipt_sha256": "3c668b5aee3032ecab2e96fced3f50f5390ca31c7e4b6143a49410ca7bc34e36",
+-            "sha256": "3d2e460f46d5691977784086118b00ee4bf4a438fe26263f1e135b4cf09a3300"
+-          },
+-          "linux-x64": {
+-            "asset": "t3-fleet-0.0.45-linux-x64.tar.gz",
+-            "receipt_asset": "t3-fleet-0.0.45-linux-x64.receipt.json",
+-            "receipt_sha256": "4c3fbd7c30059438b02c0cb77bb728a969a3067e67c6d37b6a553bdc7470fd04",
+-            "sha256": "aafeb8d19497adb93fd03e1c6384dc96a78fcd140b2f1ee7ea7e552926bf49d5"
+-          }
+-        },
+-        "repository": "iryzhkov/t3code",
+-        "source_commit": "57b900a98bc5482a6d0e6b66742fb8cd3570e264",
+-        "source_tree": "62f724e2e4f8a0e9966586100d9b29c9f824622c",
+-        "tag": "fleet-v0.0.45-m16-20261005"
+-      },
+       "compatibility": {
+         "max": "0.0.45",
+         "min": "0.0.38",

@@ -25,6 +25,9 @@ func (c *Config) validateBacklogV2() error {
 	if v.Coordinator.AuditEventRetention.D() < 0 {
 		return errors.New("backlog_v2.coordinator.audit_event_retention must be nonnegative")
 	}
+	if err := v.Coordinator.Metrics.validate(); err != nil {
+		return err
+	}
 	if err := v.Coordinator.Alerts.validate(); err != nil {
 		return err
 	}

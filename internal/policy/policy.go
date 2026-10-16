@@ -412,6 +412,9 @@ func (e *Engine) Evaluate(snap domain.QuotaSnapshot, prev domain.BucketState, no
 	state.Epoch = domain.EpochFor(snap.ResetsAt)
 	state.ObservedAt = snap.ObservedAt
 	state.LastEventID = snap.SourceEventID
+	// A newer ordinary log must not inherit a prior native acquisition tag.
+	state.Provenance = domain.CloneQuotaProvenance(snap.Provenance)
+	state.OriginValidUntil = nil
 	state.UpdatedAt = now
 	state.Healthy = state.Phase == domain.PhaseNormal && snap.UsedPercent < e.t.WarnPercent
 	state.AppliedThresholds = e.applied()

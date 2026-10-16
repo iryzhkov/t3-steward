@@ -188,10 +188,10 @@ type Resume struct {
 	Prompt string `yaml:"prompt"`
 	// MaxIntentAge cancels intents older than this.
 	MaxIntentAge Duration `yaml:"max_intent_age"`
-	// ProbeAfterReset: when the reset time has passed by this long and no
-	// reading has confirmed it (nothing is running to produce one), one
-	// stopped thread per provider is resumed to obtain that reading. Zero
-	// disables the probe.
+	// ProbeAfterReset permits one inference probe on legacy routes after
+	// reset or an old stopped reading. Zero disables legacy probes.
+	// Declared Claude collector routes never infer to obtain quota, even
+	// when the collector is unavailable.
 	ProbeAfterReset Duration `yaml:"probe_after_reset"`
 }
 
@@ -503,8 +503,9 @@ type V2ResultSecretScan struct {
 }
 
 type BacklogV2 struct {
-	ResultSecretScan V2ResultSecretScan `yaml:"result_secret_scan"`
-	ProviderResume   V2ProviderResume   `yaml:"provider_resume"`
+	CollectorRecovery *CollectorRecoveryMetadata `yaml:"-" json:"collectorRecovery,omitempty"`
+	ResultSecretScan  V2ResultSecretScan         `yaml:"result_secret_scan"`
+	ProviderResume    V2ProviderResume           `yaml:"provider_resume"`
 	// ReviewRoutes classifies explicit routes without choosing routes or applying role policy.
 	ReviewRoutes      map[string]ReviewRouteMetadata `yaml:"review_routes"`
 	Mode              string                         `yaml:"mode"`
@@ -543,9 +544,10 @@ type V2Coordinator struct {
 	// AuditEventRetention defaults to 30 days when absent or zero.
 	AuditEventRetention Duration `yaml:"audit_event_retention"`
 
-	Alerts            V2CoordinatorAlerts `yaml:"alerts"`
-	ID                string              `yaml:"id"`
-	ResourcePlacement V2ResourcePlacement `yaml:"resource_placement"`
+	Metrics           V2CoordinatorMetrics `yaml:"metrics"`
+	Alerts            V2CoordinatorAlerts  `yaml:"alerts"`
+	ID                string               `yaml:"id"`
+	ResourcePlacement V2ResourcePlacement  `yaml:"resource_placement"`
 	// LegacyFileIntakeEnabled is a compatibility boolean. False/default is accepted;
 	// true is rejected because Markdown intake has been retired.
 	LegacyFileIntakeEnabled bool `yaml:"legacy_file_intake_enabled"`
@@ -761,8 +763,14 @@ type V2SetupProfile struct {
 }
 
 type V2QuotaPool struct {
-	Provider      string `yaml:"provider"`
-	MaxConcurrent int    `yaml:"max_concurrent"`
+	Collector     *V2QuotaCollectorCoverage `yaml:"collector"`
+	Provider      string                    `yaml:"provider"`
+	MaxConcurrent int                       `yaml:"max_concurrent"`
+	// AccountID is an explicit account binding, never inferred from the pool name.
+	AccountID string `yaml:"account_id"`
+	// ObservationMaxAge scopes a collector horizon to this pool. Zero preserves
+	// the existing global quota_max_age default.
+	ObservationMaxAge Duration `yaml:"observation_max_age"`
 }
 
 type V2Storage struct {
@@ -857,18 +865,19 @@ type Config struct {
 		// t3-steward ask to the owner in T3.
 		AskRelay AskRelayConfig `yaml:"ask_relay"`
 	} `yaml:"wait"`
-	T3            T3            `yaml:"t3"`
-	Policy        Policy        `yaml:"policy"`
-	Resume        Resume        `yaml:"resume"`
-	Polling       Polling       `yaml:"polling"`
-	Overrides     []Override    `yaml:"overrides"`
-	Messages      Messages      `yaml:"messages"`
-	Notifications Notifications `yaml:"notifications"`
-	Report        Report        `yaml:"report"`
-	Backlog       Backlog       `yaml:"backlog"`
-	BacklogV2     BacklogV2     `yaml:"backlog_v2"`
-	Archive       Archive       `yaml:"archive"`
-	UIArchive     UIArchive     `yaml:"ui_archive"`
+	ClaudeQuotaCollector ClaudeQuotaCollector `yaml:"claude_quota_collector"`
+	T3                   T3                   `yaml:"t3"`
+	Policy               Policy               `yaml:"policy"`
+	Resume               Resume               `yaml:"resume"`
+	Polling              Polling              `yaml:"polling"`
+	Overrides            []Override           `yaml:"overrides"`
+	Messages             Messages             `yaml:"messages"`
+	Notifications        Notifications        `yaml:"notifications"`
+	Report               Report               `yaml:"report"`
+	Backlog              Backlog              `yaml:"backlog"`
+	BacklogV2            BacklogV2            `yaml:"backlog_v2"`
+	Archive              Archive              `yaml:"archive"`
+	UIArchive            UIArchive            `yaml:"ui_archive"`
 
 	ProjectCleanup ProjectCleanup `yaml:"project_cleanup"`
 	// StatePath is the SQLite database. Empty means the platform default.
@@ -895,6 +904,10 @@ func (c Config) QuotaChecksEnabled() bool { return c.QuotaChecks == nil || *c.Qu
 // Default returns the shipped defaults.
 func Default() Config {
 	var c Config
+	c.ClaudeQuotaCollector.Interval = Duration(300 * time.Second)
+	c.ClaudeQuotaCollector.Jitter = Duration(15 * time.Second)
+	c.ClaudeQuotaCollector.Timeout = Duration(10 * time.Second)
+	c.ClaudeQuotaCollector.PipelineBudget = Duration(50 * time.Second)
 	c.T3.TokenTTL = Duration(1 * time.Hour)
 	c.T3.RequestTimeout = Duration(30 * time.Second)
 	c.T3.DiscoveryTimeout = Duration(2 * time.Minute)
@@ -1316,6 +1329,9 @@ func (c *Config) Validate() error {
 		return errors.New("messages: warn and drain must not be empty")
 	}
 	if err := c.Notifications.validate(c.BacklogV2.Mode == "coordinator"); err != nil {
+		return err
+	}
+	if err := c.validateClaudeQuotaCollector(); err != nil {
 		return err
 	}
 	return c.validateBacklogV2()

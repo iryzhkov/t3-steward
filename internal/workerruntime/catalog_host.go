@@ -108,6 +108,11 @@ func (h *CatalogHost) activate(ctx context.Context, c retainedCatalog) error {
 		options.RuntimeIdentity = &identity
 	}
 	options.Settings = settings
+	if guard, ok := options.Quota.(interface {
+		WithCollectorRecovery(config.BacklogV2) QuotaGuard
+	}); ok {
+		options.Quota = guard.WithCollectorRecovery(settings)
+	}
 	options.CompatibleCatalogRevisions = slices.Clone(c.PreviousRevisions)
 	options.WorkerID = h.Bootstrap.WorkerID
 	options.WorkerEpoch = c.Projection.Worker.Epoch
@@ -331,7 +336,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 	}
 	response, err := server.Handle(ctx, envelope, func(ctx context.Context, _ workerproto.Envelope) (workerproto.MessageType, any, error) {
 		if h.service != nil && h.retained != nil && reflect.DeepEqual(h.retained.Projection, projection) && h.Options.CoordinatorEpoch == envelope.CoordinatorEpoch && reflect.DeepEqual(credentials, h.activeCredentials) {
-			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
+			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID, "collectorProvenance": workerproto.CapabilityQuotaCollectorProvenance}, nil
 		}
 		next := retainedCatalog{Projection: projection, CoordinatorEpoch: envelope.CoordinatorEpoch, AppliedAt: time.Now().UTC()}
 		switch {
@@ -361,7 +366,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 			h.Options.Settings = settings
 			h.Options.CompatibleCatalogRevisions = slices.Clone(next.PreviousRevisions)
 			h.logger().Info("catalog admission settings adopted in place", "worker", h.Bootstrap.WorkerID, "revision", projection.Revision, "previous", next.PreviousRevisions)
-			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
+			return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID, "collectorProvenance": workerproto.CapabilityQuotaCollectorProvenance}, nil
 		}
 		// Validate the complete runtime before publishing its durable pointer.
 		candidate := &CatalogHost{Home: h.Home, Bootstrap: h.Bootstrap, Options: h.Options}
@@ -380,7 +385,7 @@ func (h *CatalogHost) acceptCatalog(ctx context.Context, envelope workerproto.En
 		h.activeCredentials = candidate.activeCredentials
 		h.Options = candidate.Options
 		h.unusable = nil
-		return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID}, nil
+		return MessageCatalog, map[string]string{"revision": projection.Revision, "workerId": h.Bootstrap.WorkerID, "collectorProvenance": workerproto.CapabilityQuotaCollectorProvenance}, nil
 	})
 	if err != nil {
 		return nil, err

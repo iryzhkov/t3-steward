@@ -664,8 +664,9 @@ func coordinatorQuotaPoolBindings(cfg config.Config) []backlog.QuotaPoolBinding 
 			models = append(models, model)
 		}
 		sort.Strings(models)
+		projected, _ := cfg.CollectorCoverage(domain.ProviderRoute{QuotaPoolID: poolID, ProviderInstanceID: firstInstance(instances)})
 		bindings = append(bindings, backlog.QuotaPoolBinding{
-			ID: poolID, Provider: pool.Provider,
+			ID: poolID, Provider: pool.Provider, AccountID: pool.AccountID, Collector: projected.Collector,
 			ProviderInstanceIDs: instances, MaxConcurrent: pool.MaxConcurrent,
 			Models: models, IgnoredWindows: append([]string(nil), cfg.Policy.IgnoreWindows...),
 		})
@@ -1188,8 +1189,10 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		RequestTimeout:     cfg.BacklogV2.Transport.RequestTimeout.D(),
 		MaxConcurrent:      16,
 	}
+	cfg.BacklogV2.CollectorRecovery = cfg.CollectorRecoveryMetadataForWorker("")
 	workers, err := newCoordinatorWorkerSessions(
 		cfg.BacklogV2, store, epoch, workerruntime.ProtocolResolver{}, nil, artifactStore,
+		newCoordinatorQuotaRecoveryGrant(cfg, store),
 	)
 	if err != nil {
 		return err
@@ -1284,6 +1287,11 @@ func runCoordinatorConfiguration(ctx context.Context, cfg config.Config, logger 
 		return fmt.Errorf("start coordinator alerts: %w", err)
 	}
 	defer stopAlerts.Close()
+	stopMetrics, err := startCoordinatorMetrics(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("start coordinator metrics: %w", err)
+	}
+	defer stopMetrics.Close()
 	ready()
 	return serveCoordinatorBoundaries(ctx, &server, cycle, cfg.BacklogV2.Scheduling.Interval.D())
 }
