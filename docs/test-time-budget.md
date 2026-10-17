@@ -7,7 +7,8 @@ detector, checkptr, or a declared gate. A breach needs a measured follow-up unit
 fixture changes are outside Unit 1.3a.
 
 Implementers and fixers iterate with `make test-affected BASE=<pinned-original-base>`
-where that target exists, or Huyang `verify_run` with `test_scope=affected`.
+where that target exists; otherwise run focused checks of the changed packages
+and their importers through the shell.
 Reviewers reproduce suspected defects with a focused test or command first, then
 run affected tests. The worker runs the full declared gate once on the final
 candidate; reviewers do not repeat it. Record commands, exit codes, elapsed time,

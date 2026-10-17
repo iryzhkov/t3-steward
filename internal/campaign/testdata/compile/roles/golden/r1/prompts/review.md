@@ -31,8 +31,8 @@ Outputs:
 
 Verification: first reproduce any suspected defect with a focused test or command.
 Then run `make test-affected BASE=d2e827681336e76413fdab34392f029a3e131cf4` where the repository has that
-make target; with Huyang, use `verify_run` with `test_scope=affected`. Otherwise
-run focused checks of the changed packages and their importers.
+make target. Otherwise run focused checks of the changed packages and their
+importers through the shell.
 Do not rerun the full declared gate (`make test`): the implement task only succeeds after the
 worker has run that gate on the implementation commit. Record focused commands
 and their exit codes.
