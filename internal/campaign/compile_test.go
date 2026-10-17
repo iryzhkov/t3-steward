@@ -206,8 +206,8 @@ func TestCompiledImplementPromptIteratesOnAffectedPackages(t *testing.T) {
 		for _, want := range []string{
 			"While iterating",
 			"`make test-affected BASE=" + plan.Ref + "`",
-			"Huyang `verify_run`",
-			"`test_scope=affected`",
+			"changed packages and their importers",
+			"through the shell",
 			"still runs once",
 		} {
 			if !strings.Contains(prompt, want) {
@@ -218,7 +218,7 @@ func TestCompiledImplementPromptIteratesOnAffectedPackages(t *testing.T) {
 		for _, want := range []string{
 			"first reproduce any suspected defect with a focused test or command",
 			"`make test-affected BASE=" + plan.Ref + "`",
-			"`test_scope=affected`",
+			"importers through the shell",
 			"Do not rerun the full declared gate",
 			"worker has run that gate on the implementation commit",
 		} {

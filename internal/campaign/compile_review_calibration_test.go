@@ -42,8 +42,8 @@ func TestCompiledReviewCalibration(t *testing.T) {
 				if fixture.prompt == "review" {
 					verification = []string{"Do not modify, commit or push source",
 						"first reproduce any suspected defect with a focused test or command",
-						"make test-affected BASE=", "test_scope=affected",
-						"changed packages and their importers", "Do not rerun the full declared gate"}
+						"make test-affected BASE=", "importers through the shell",
+						"focused checks of the changed packages and their", "Do not rerun the full declared gate"}
 				}
 				for _, want := range verification {
 					if !strings.Contains(prompt, want) {
